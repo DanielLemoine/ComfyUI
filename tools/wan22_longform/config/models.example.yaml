@@ -1,0 +1,18 @@
+{
+  "preset": "P0_IDENTITY_BASELINE",
+  "models": {
+    "high": "wan-high.safetensors",
+    "low": "wan-low.safetensors"
+  },
+  "loras": {
+    "identity": {"mode": "none"},
+    "vbvr": {"enabled": false},
+    "motion": {"enabled": false},
+    "corrective": {"enabled": false},
+    "permissiveness": {
+      "mystic": {"enabled": false},
+      "wan_general": {"enabled": false}
+    }
+  },
+  "dangerous_override": false
+}

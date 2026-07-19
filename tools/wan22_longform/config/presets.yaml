@@ -1,0 +1,44 @@
+{
+  "presets": {
+    "P0_IDENTITY_BASELINE": {
+      "vbvr_high": 0.0,
+      "permissiveness_mode": "none",
+      "permissiveness_low": 0.0,
+      "motion_high": 0.0,
+      "identity_high": 0.90,
+      "identity_low": 0.90
+    },
+    "P1_BASE_CONTROL": {
+      "vbvr_high": 0.25,
+      "permissiveness_mode": "none",
+      "permissiveness_low": 0.0,
+      "motion_high": 0.0,
+      "identity_high": 0.90,
+      "identity_low": 0.90
+    },
+    "P2_BALANCED_MYSTIC": {
+      "vbvr_high": 0.25,
+      "permissiveness_mode": "mystic",
+      "permissiveness_low": 0.25,
+      "motion_high": 0.0,
+      "identity_high": 0.90,
+      "identity_low": 0.90
+    },
+    "P3_MYSTIC_MOTION": {
+      "vbvr_high": 0.25,
+      "permissiveness_mode": "mystic",
+      "permissiveness_low": 0.25,
+      "motion_high": 0.25,
+      "identity_high": 0.90,
+      "identity_low": 0.90
+    },
+    "P4_GENERAL_FALLBACK": {
+      "vbvr_high": 0.20,
+      "permissiveness_mode": "wan_general",
+      "permissiveness_low": 0.20,
+      "motion_high": 0.0,
+      "identity_high": 0.90,
+      "identity_low": 0.90
+    }
+  }
+}

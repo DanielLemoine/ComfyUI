@@ -1,0 +1,11 @@
+{
+  "WanImageToVideo": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE"
+        ]
+      }
+    }
+  }
+}

@@ -55,6 +55,10 @@ _TRANSITIONS: Mapping[AttemptState, frozenset[AttemptState]] = {
     AttemptState.FINAL: frozenset(),
 }
 
+_OPERATOR_OUTCOMES = frozenset(
+    {AttemptState.ACCEPTED, AttemptState.REJECTED, AttemptState.RETRY_REQUESTED}
+)
+
 
 def create_attempt(
     project: ProjectConfig,
@@ -131,11 +135,23 @@ def transition_attempt(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Attempt:
     """Append one validated state decision and return the new immutable value."""
-    if target not in _TRANSITIONS[attempt.state]:
-        raise ProjectStateError(f"invalid attempt transition: {attempt.state} -> {target}")
+    persisted, decision_paths = _load_attempt(attempt.path)
+    if attempt.attempt_id != persisted.attempt_id:
+        raise ProjectStateError("attempt identity does not match its persisted record")
+    if attempt.state != persisted.state:
+        raise ProjectStateError(
+            f"stale attempt state: supplied {attempt.state}, persisted {persisted.state}"
+        )
+    if target not in _TRANSITIONS[persisted.state]:
+        raise ProjectStateError(f"invalid attempt transition: {persisted.state} -> {target}")
+    if target in _OPERATOR_OUTCOMES and not _has_operator_note(note):
+        raise ProjectStateError(f"{target} requires a non-empty operator note")
+    if _decision_paths(attempt.path) != decision_paths:
+        raise ProjectStateError("attempt decision chain changed before transition")
+
     decision_dir = attempt.path / "decisions"
     decision_dir.mkdir(exist_ok=True)
-    decision_number = len(list(decision_dir.glob("*.json"))) + 1
+    decision_number = len(decision_paths) + 1
     timestamp = _as_utc(now())
     continuation = None
     if selected_continuation_frame is not None:
@@ -144,28 +160,32 @@ def transition_attempt(
             "sha256": sha256_file(selected_continuation_frame),
         }
     payload = {
-        "attempt_id": attempt.attempt_id,
-        "from": attempt.state,
+        "attempt_id": persisted.attempt_id,
+        "from": persisted.state,
         "note": note,
-        "parent_attempt": str(attempt.parent_attempt) if attempt.parent_attempt else None,
-        "retry_of": str(attempt.parent_attempt) if attempt.parent_attempt else None,
+        "parent_attempt": str(persisted.parent_attempt) if persisted.parent_attempt else None,
+        "retry_of": str(persisted.parent_attempt) if persisted.parent_attempt else None,
         "selected_continuation_frame": continuation,
         "timestamp": _utc_timestamp(timestamp),
         "to": target,
     }
-    while True:
-        decision_path = decision_dir / f"{decision_number:04d}-{target}.json"
-        try:
-            _write_json(decision_path, payload)
-            break
-        except FileExistsError:
-            decision_number += 1
-    return replace(attempt, state=target)
+    decision_path = decision_dir / f"{decision_number:04d}-{target}.json"
+    try:
+        _write_json(decision_path, payload)
+    except FileExistsError as error:
+        raise ProjectStateError("attempt decision chain changed during transition") from error
+    return replace(persisted, state=target)
+
+
+def load_attempt(path: Path) -> Attempt:
+    """Reconstruct the current attempt state from its immutable decision log."""
+    attempt, _ = _load_attempt(path)
+    return attempt
 
 
 def needs_render(attempt: Attempt) -> bool:
     """Only a planned attempt needs a render request; accepted attempts never do."""
-    return attempt.state is AttemptState.PLANNED
+    return load_attempt(attempt.path).state is AttemptState.PLANNED
 
 
 def _attempts_root(project: ProjectConfig) -> Path:
@@ -214,6 +234,101 @@ def _write_json(path: Path, payload: Any) -> None:
     with path.open("x", encoding="utf-8") as destination:
         json.dump(_json_ready(payload), destination, indent=2, sort_keys=True)
         destination.write("\n")
+
+
+def _load_attempt(path: Path) -> tuple[Attempt, tuple[Path, ...]]:
+    record = _read_json(path / "attempt.json")
+    attempt_id = _required_string(record, "attempt_id", "attempt record")
+    shot_id = _required_string(record, "shot_id", "attempt record")
+    segment_id = _required_string(record, "segment_id", "attempt record")
+    initial_state = _attempt_state(record.get("state"), "attempt record state")
+    if initial_state is not AttemptState.PLANNED:
+        raise ProjectStateError("attempt record must begin in planned state")
+    created_at = _timestamp(record.get("created_at"), "attempt record created_at")
+    parent_raw = record.get("parent_attempt")
+    if parent_raw is not None and not isinstance(parent_raw, str):
+        raise ProjectStateError("attempt record parent_attempt must be a string or null")
+    attempt = Attempt(
+        path=path,
+        attempt_id=attempt_id,
+        shot_id=shot_id,
+        segment_id=segment_id,
+        state=AttemptState.PLANNED,
+        created_at=created_at,
+        parent_attempt=Path(parent_raw) if parent_raw else None,
+    )
+    decision_paths = _decision_paths(path)
+    state = attempt.state
+    for expected_number, decision_path in enumerate(decision_paths, start=1):
+        if _decision_number(decision_path) != expected_number:
+            raise ProjectStateError("attempt decision log is not sequential")
+        decision = _read_json(decision_path)
+        if decision.get("attempt_id") != attempt_id:
+            raise ProjectStateError("attempt decision belongs to a different attempt")
+        source = _attempt_state(decision.get("from"), "decision from state")
+        target = _attempt_state(decision.get("to"), "decision target state")
+        if source is not state:
+            raise ProjectStateError("attempt decision log has a stale source state")
+        if target not in _TRANSITIONS[state]:
+            raise ProjectStateError(f"invalid persisted attempt transition: {state} -> {target}")
+        if target in _OPERATOR_OUTCOMES and not _has_operator_note(decision.get("note")):
+            raise ProjectStateError(f"persisted {target} decision lacks a non-empty operator note")
+        _timestamp(decision.get("timestamp"), "decision timestamp")
+        state = target
+    return replace(attempt, state=state), decision_paths
+
+
+def _decision_paths(attempt_path: Path) -> tuple[Path, ...]:
+    decision_dir = attempt_path / "decisions"
+    if not decision_dir.exists():
+        return ()
+    if not decision_dir.is_dir():
+        raise ProjectStateError("attempt decisions path is not a directory")
+    return tuple(sorted(decision_dir.glob("*.json"), key=lambda path: path.name))
+
+
+def _decision_number(path: Path) -> int:
+    prefix, separator, _ = path.stem.partition("-")
+    if not separator or not prefix.isdigit():
+        raise ProjectStateError("attempt decision filename is invalid")
+    return int(prefix)
+
+
+def _read_json(path: Path) -> Mapping[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ProjectStateError(f"invalid attempt record: {path}") from error
+    if not isinstance(value, Mapping):
+        raise ProjectStateError(f"attempt record must be a JSON object: {path}")
+    return value
+
+
+def _required_string(record: Mapping[str, Any], key: str, context: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str) or not value:
+        raise ProjectStateError(f"{context} {key} must be a non-empty string")
+    return value
+
+
+def _attempt_state(value: Any, context: str) -> AttemptState:
+    try:
+        return AttemptState(value)
+    except (TypeError, ValueError) as error:
+        raise ProjectStateError(f"{context} is invalid") from error
+
+
+def _timestamp(value: Any, context: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ProjectStateError(f"{context} must be a UTC timestamp")
+    try:
+        return _as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError as error:
+        raise ProjectStateError(f"{context} must be a UTC timestamp") from error
+
+
+def _has_operator_note(note: Any) -> bool:
+    return isinstance(note, str) and bool(note.strip())
 
 
 def _json_ready(value: Any) -> Any:

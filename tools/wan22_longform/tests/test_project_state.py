@@ -18,6 +18,7 @@ from wan22_longform.project import (  # noqa: E402
     AttemptState,
     ProjectStateError,
     create_attempt,
+    load_attempt,
     needs_render,
     transition_attempt,
 )
@@ -109,6 +110,43 @@ class ProjectStateTests(unittest.TestCase):
 
         self.assertFalse(needs_render(accepted))
 
+    def test_disk_round_trip_reconstructs_accepted_state_for_resume(self) -> None:
+        attempt = self._review_attempt()
+        accepted = transition_attempt(attempt, AttemptState.ACCEPTED, "approved", now=self.now)
+
+        resumed = load_attempt(accepted.path)
+
+        self.assertEqual(resumed.state, AttemptState.ACCEPTED)
+        self.assertFalse(needs_render(resumed))
+        self.assertFalse(needs_render(attempt))
+
+    def test_stale_attempt_cannot_append_a_second_decision(self) -> None:
+        attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)
+        transition_attempt(attempt, AttemptState.RENDERING, "queued", now=self.now)
+        decision_dir = attempt.path / "decisions"
+        before = sorted(path.name for path in decision_dir.glob("*.json"))
+
+        with self.assertRaisesRegex(ProjectStateError, "stale.*persisted"):
+            transition_attempt(attempt, AttemptState.RENDERING, "again", now=self.now)
+
+        self.assertEqual(sorted(path.name for path in decision_dir.glob("*.json")), before)
+
+    def test_operator_outcomes_require_a_non_empty_note(self) -> None:
+        for state, note in (
+            (AttemptState.ACCEPTED, None),
+            (AttemptState.REJECTED, ""),
+            (AttemptState.RETRY_REQUESTED, "  "),
+        ):
+            with self.subTest(state=state):
+                review = self._review_attempt()
+                decision_dir = review.path / "decisions"
+                before = sorted(path.name for path in decision_dir.glob("*.json"))
+
+                with self.assertRaisesRegex(ProjectStateError, "non-empty operator note"):
+                    transition_attempt(review, state, note, now=self.now)
+
+                self.assertEqual(sorted(path.name for path in decision_dir.glob("*.json")), before)
+
     def test_accepted_attempt_follows_the_only_assembly_path_to_final(self) -> None:
         attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)
         for state in (
@@ -120,7 +158,8 @@ class ProjectStateTests(unittest.TestCase):
             AttemptState.ASSEMBLED,
             AttemptState.FINAL,
         ):
-            attempt = transition_attempt(attempt, state, None, now=self.now)
+            note = "approved" if state is AttemptState.ACCEPTED else None
+            attempt = transition_attempt(attempt, state, note, now=self.now)
 
         self.assertEqual(attempt.state, AttemptState.FINAL)
         with self.assertRaisesRegex(ProjectStateError, "final.*rendering"):
@@ -172,6 +211,16 @@ inputs:
             json.loads((attempt.path / "workflow-api.json").read_text(encoding="utf-8")),
             {"node": {}},
         )
+
+    def _review_attempt(self):
+        attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)
+        for state in (
+            AttemptState.RENDERING,
+            AttemptState.RENDERED,
+            AttemptState.NEEDS_REVIEW,
+        ):
+            attempt = transition_attempt(attempt, state, None, now=self.now)
+        return attempt
 
 
 if __name__ == "__main__":

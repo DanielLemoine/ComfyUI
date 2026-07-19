@@ -49,6 +49,11 @@ class FakeRenderClient:
         self.video = video
         self.submitted: list[dict[str, dict[str, object]]] = []
         self.waited: list[str] = []
+        self.uploaded: list[Path] = []
+
+    def upload_image(self, path: Path) -> str:
+        self.uploaded.append(path)
+        return "uploaded-opening.png"
 
     def submit(self, graph: dict[str, dict[str, object]]) -> str:
         self.submitted.append(graph)
@@ -154,6 +159,68 @@ class ComfyClientTests(unittest.TestCase):
                 with self.assertRaisesRegex(ComfyClientError, "path component"):
                     client.wait(prompt_id)
 
+    def test_history_rejects_traversal_subfolder_before_view_request(self) -> None:
+        transport = FakeTransport(
+            [
+                {
+                    "prompt-123": {
+                        "status": {"completed": True},
+                        "outputs": {
+                            "14": {
+                                "gifs": [
+                                    {
+                                        "filename": "segment.mp4",
+                                        "subfolder": "../outside",
+                                        "type": "output",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            ]
+        )
+        client = ComfyClient("http://127.0.0.1:8188", transport=transport)
+
+        with self.assertRaisesRegex(ComfyClientError, "subfolder"):
+            client.wait("prompt-123")
+
+        self.assertEqual(
+            [request[1] for request in transport.requests],
+            ["http://127.0.0.1:8188/history/prompt-123"],
+        )
+
+    def test_history_rejects_unexpected_output_type_before_view_request(self) -> None:
+        transport = FakeTransport(
+            [
+                {
+                    "prompt-123": {
+                        "status": {"completed": True},
+                        "outputs": {
+                            "14": {
+                                "gifs": [
+                                    {
+                                        "filename": "segment.mp4",
+                                        "subfolder": "clips",
+                                        "type": "temp",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            ]
+        )
+        client = ComfyClient("http://127.0.0.1:8188", transport=transport)
+
+        with self.assertRaisesRegex(ComfyClientError, "output type"):
+            client.wait("prompt-123")
+
+        self.assertEqual(
+            [request[1] for request in transport.requests],
+            ["http://127.0.0.1:8188/history/prompt-123"],
+        )
+
 
 class RenderSegmentTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -168,16 +235,23 @@ class RenderSegmentTests(unittest.TestCase):
         source = {
             "preset": "P0_IDENTITY_BASELINE",
             "models": {
-                "high": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
-                "low": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+                "high": "configured-high.safetensors",
+                "low": "configured-low.safetensors",
             },
             "workflow_api": str(self.workflow),
-            "request": {"prompt": "fixture segment"},
+            "request": {
+                "positive": "configured positive prompt",
+                "negative": "configured negative prompt",
+                "seed": 424242,
+                "width": 832,
+                "height": 480,
+                "frames": 81,
+            },
             "inputs": {"opening_frame": str(self.opening)},
             "attempts_dir": str(self.root / "attempts"),
             "model_files": [
-                "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
-                "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+                "configured-high.safetensors",
+                "configured-low.safetensors",
             ],
             "candidate_count": 5,
         }
@@ -211,6 +285,7 @@ class RenderSegmentTests(unittest.TestCase):
         extract.side_effect = fake_extract
         contact_sheet.side_effect = fake_contact_sheet
         client = FakeRenderClient(self.video)
+        manifest_before = self.manifest.read_bytes()
 
         attempt = render_segment(self.project, "S010", "S010_C001", client)
 
@@ -222,7 +297,9 @@ class RenderSegmentTests(unittest.TestCase):
         self.assertEqual(len(qc["candidate_frames"]["head"]), 5)
         self.assertEqual(len(qc["candidate_frames"]["tail"]), 5)
         self.assertTrue((attempt.path / "submission-request.json").is_file())
+        self.assertTrue((attempt.path / "configured-workflow-api.json").is_file())
         self.assertEqual(client.waited, ["fixture-prompt"])
+        self.assertEqual(client.uploaded, [self.opening])
         metadata = json.loads(
             (attempt.path / "render-metadata.json").read_text(encoding="utf-8")
         )
@@ -233,6 +310,26 @@ class RenderSegmentTests(unittest.TestCase):
         )
         self.assertIn("contact_sheet", metadata["outputs"])
         self.assertEqual(len(client.submitted), 1)
+        graph = client.submitted[0]
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "configured-high.safetensors")
+        self.assertEqual(graph["2"]["inputs"]["unet_name"], "configured-low.safetensors")
+        self.assertEqual(graph["7"]["inputs"]["text"], "configured positive prompt")
+        self.assertEqual(graph["8"]["inputs"]["text"], "configured negative prompt")
+        self.assertEqual(graph["9"]["inputs"]["image"], "uploaded-opening.png")
+        self.assertEqual(graph["10"]["inputs"]["width"], 832)
+        self.assertEqual(graph["10"]["inputs"]["height"], 480)
+        self.assertEqual(graph["10"]["inputs"]["length"], 81)
+        self.assertEqual(graph["11"]["inputs"]["noise_seed"], 424242)
+        self.assertEqual(graph["12"]["inputs"]["noise_seed"], 424242)
+        self.assertEqual(
+            json.loads((attempt.path / "configured-workflow-api.json").read_text(encoding="utf-8")),
+            graph,
+        )
+        self.assertEqual(
+            json.loads((attempt.path / "submission-request.json").read_text(encoding="utf-8")),
+            {"prompt": graph},
+        )
+        self.assertEqual(self.manifest.read_bytes(), manifest_before)
 
     def test_invalid_model_policy_stops_before_submission(self) -> None:
         source = dict(self.project.source)

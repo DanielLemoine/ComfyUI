@@ -138,11 +138,11 @@ class ComfyClient:
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         name = response.get("name")
-        if not isinstance(name, str) or not name:
-            raise ComfyClientError("Local ComfyUI upload response lacks image name")
+        _validate_filename(name, "upload image name")
         return name
 
     def fetch_output(self, output: HistoryOutput, destination: Path) -> Path:
+        _validate_history_output(output.filename, output.subfolder, output.type)
         if output.local_path is not None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(output.local_path, destination)
@@ -241,16 +241,41 @@ def _history_outputs(value: object) -> tuple[HistoryOutput, ...]:
                 if not isinstance(candidate, Mapping):
                     continue
                 filename = candidate.get("filename")
-                if not isinstance(filename, str) or not filename:
-                    continue
                 subfolder = candidate.get("subfolder", "")
                 output_type = candidate.get("type", "output")
-                if not isinstance(subfolder, str) or not isinstance(output_type, str):
-                    continue
+                _validate_history_output(filename, subfolder, output_type)
                 outputs.append(
                     HistoryOutput(str(node_id), filename, subfolder, output_type)
                 )
     return tuple(outputs)
+
+
+def _validate_history_output(filename: object, subfolder: object, output_type: object) -> None:
+    _validate_filename(filename, "history output filename")
+    if not isinstance(subfolder, str):
+        raise ComfyClientError("Local ComfyUI history output subfolder must be a string")
+    if subfolder and (
+        "\\" in subfolder
+        or subfolder.startswith("/")
+        or subfolder.endswith("/")
+        or ":" in subfolder
+        or any(component in {"", ".", ".."} for component in subfolder.split("/"))
+    ):
+        raise ComfyClientError("Local ComfyUI history output subfolder is unsafe")
+    if output_type != "output":
+        raise ComfyClientError("Local ComfyUI history output type is not permitted")
+
+
+def _validate_filename(value: object, label: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or ":" in value
+    ):
+        raise ComfyClientError(f"Local ComfyUI {label} is unsafe")
 
 
 def _multipart_image(path: Path, boundary: str) -> bytes:

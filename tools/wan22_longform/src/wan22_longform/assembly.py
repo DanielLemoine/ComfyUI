@@ -47,6 +47,8 @@ class AssemblyPlan:
     normalize_first: bool
     audio_policy: Literal["drop", "preserve"]
     concat_manifest: Path
+    expected_duration: Fraction
+    output_fps: Fraction
     operations: tuple[AssemblyOperation, ...]
 
 
@@ -120,10 +122,36 @@ def write_boundary_decision(decision: BoundaryDecision, destination: Path) -> Pa
     return destination
 
 
+def validate_output_duration(
+    output: Path,
+    expected_duration: Fraction,
+    *,
+    output_fps: Fraction | None = None,
+) -> MediaSpec:
+    """Probe assembled media and reject timeline drift greater than one output frame."""
+    if expected_duration <= 0:
+        raise AssemblyError("expected duration must be positive")
+    spec = probe_media(output)
+    if output_fps is not None and spec.fps != output_fps:
+        raise AssemblyError(
+            f"assembled output FPS {spec.fps} differs from planned FPS {output_fps}"
+        )
+    tolerance_fps = output_fps or spec.fps
+    if tolerance_fps <= 0:
+        raise AssemblyError("output FPS must be positive")
+    actual_duration = duration_seconds(spec.frame_count, spec.fps)
+    if abs(actual_duration - expected_duration) > Fraction(1, 1) / tolerance_fps:
+        raise AssemblyError(
+            "assembled output duration differs from the expected duration by more than one output frame"
+        )
+    return spec
+
+
 def plan_assembly(
     inputs: list[MediaSpec],
     output: AssemblyTargets,
     *,
+    boundary_decisions: list[BoundaryDecision] | None = None,
     request_rife: bool = False,
     qc_approved: bool = False,
 ) -> AssemblyPlan:
@@ -138,17 +166,31 @@ def plan_assembly(
         if output.rife_review_mp4 is None:
             raise AssemblyError("RIFE requires an explicit review MP4 target")
     _validate_inputs(inputs)
+    trims = _trim_counts(inputs, boundary_decisions)
 
     concat_manifest = output.review_mp4.with_suffix(".concat.txt")
     if concat_manifest.exists():
         raise AssemblyError(f"assembly concat manifest already exists: {concat_manifest}")
-    normalized_inputs, normalization = _normalization_operations(inputs, output, concat_manifest)
+    normalized_inputs, normalization = _normalization_operations(
+        inputs,
+        output,
+        concat_manifest,
+        force_normalization=any(trims),
+    )
+    concat_inputs, trims_operations = _trim_operations(
+        normalized_inputs,
+        inputs,
+        trims,
+        output,
+        concat_manifest,
+    )
     native = concat_manifest.with_name(f"{concat_manifest.stem}-native.mkv")
     if native.exists():
         raise AssemblyError(f"assembly native output already exists: {native}")
+    manifest_operation = _write_concat_manifest(concat_inputs, concat_manifest)
     concat = AssemblyOperation(
         kind="concat",
-        inputs=normalized_inputs,
+        inputs=concat_inputs,
         output=native,
         command=(
             "-f",
@@ -183,7 +225,7 @@ def plan_assembly(
         output=output.edit_master_prores,
         command=("-i", str(native), "-c:v", "prores_ks", "-profile:v", "3", *_audio_args(output.audio_policy), str(output.edit_master_prores)),
     )
-    operations = [*normalization, concat, review, ffv1, prores]
+    operations = [*normalization, *trims_operations, manifest_operation, concat, review, ffv1, prores]
     if request_rife:
         operations.append(
             AssemblyOperation(
@@ -197,6 +239,8 @@ def plan_assembly(
         normalize_first=bool(normalization),
         audio_policy=output.audio_policy,
         concat_manifest=concat_manifest,
+        expected_duration=_expected_duration(inputs, trims),
+        output_fps=inputs[0].fps,
         operations=tuple(operations),
     )
 
@@ -235,9 +279,11 @@ def _normalization_operations(
     inputs: list[MediaSpec],
     output: AssemblyTargets,
     concat_manifest: Path,
+    *,
+    force_normalization: bool = False,
 ) -> tuple[tuple[Path, ...], list[AssemblyOperation]]:
     reference = inputs[0]
-    needs_normalization = any(
+    needs_normalization = force_normalization or any(
         not _compatible(spec, reference, output.audio_policy) for spec in inputs
     )
     if not needs_normalization:
@@ -272,6 +318,100 @@ def _normalization_operations(
             )
         )
     return tuple(normalized), operations
+
+
+def _trim_counts(
+    inputs: list[MediaSpec],
+    boundary_decisions: list[BoundaryDecision] | None,
+) -> tuple[int, ...]:
+    if boundary_decisions is None:
+        return (0,) * len(inputs)
+    if len(boundary_decisions) != len(inputs) - 1:
+        raise AssemblyError("assembly requires one boundary decision between each input pair")
+    counts = [0] * len(inputs)
+    for index, decision in enumerate(boundary_decisions, start=1):
+        if decision.requires_review:
+            raise AssemblyError("boundary decision requires review before automatic assembly")
+        if decision.trim_right_frames not in {0, 1}:
+            raise AssemblyError("boundary decisions may trim exactly one right-hand frame")
+        if decision.trim_right_frames >= inputs[index].frame_count:
+            raise AssemblyError("boundary trim would remove the complete right-hand segment")
+        counts[index] = decision.trim_right_frames
+    return tuple(counts)
+
+
+def _trim_operations(
+    normalized_inputs: tuple[Path, ...],
+    inputs: list[MediaSpec],
+    trims: tuple[int, ...],
+    output: AssemblyTargets,
+    concat_manifest: Path,
+) -> tuple[tuple[Path, ...], list[AssemblyOperation]]:
+    reference = inputs[0]
+    concat_inputs = list(normalized_inputs)
+    operations: list[AssemblyOperation] = []
+    for index, trim_frames in enumerate(trims):
+        if trim_frames == 0:
+            continue
+        target = concat_manifest.with_name(
+            f"{concat_manifest.stem}-trimmed-{index + 1:04d}.mkv"
+        )
+        if target.exists():
+            raise AssemblyError(f"boundary trim target already exists: {target}")
+        source = normalized_inputs[index]
+        concat_inputs[index] = target
+        operations.append(
+            AssemblyOperation(
+                kind="trim_boundary",
+                inputs=(source,),
+                output=target,
+                command=(
+                    "-i",
+                    str(source),
+                    "-vf",
+                    f"trim=start_frame={trim_frames},setpts=PTS-STARTPTS",
+                    "-map",
+                    "0:v:0",
+                    "-r",
+                    str(reference.fps),
+                    "-c:v",
+                    "ffv1",
+                    *_color_args(reference),
+                    *_audio_args(output.audio_policy),
+                    str(target),
+                ),
+            )
+        )
+    return tuple(concat_inputs), operations
+
+
+def _write_concat_manifest(inputs: tuple[Path, ...], destination: Path) -> AssemblyOperation:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("x", encoding="utf-8", newline="\n") as manifest:
+        for path in inputs:
+            manifest.write(_concat_manifest_line(path))
+    return AssemblyOperation(
+        kind="write_concat_manifest",
+        inputs=inputs,
+        output=destination,
+        command=(),
+    )
+
+
+def _concat_manifest_line(path: Path) -> str:
+    value = path.resolve().as_posix()
+    if "\r" in value or "\n" in value:
+        raise AssemblyError(f"concat path contains a line break: {path}")
+    escaped = value.replace("'", r"'\''")
+    return f"file '{escaped}'\n"
+
+
+def _expected_duration(inputs: list[MediaSpec], trims: tuple[int, ...]) -> Fraction:
+    total = sum(
+        (duration_seconds(spec.frame_count, spec.fps) for spec in inputs),
+        start=Fraction(),
+    )
+    return total - duration_seconds(sum(trims), inputs[0].fps) if any(trims) else total
 
 
 def _compatible(left: MediaSpec, right: MediaSpec, audio_policy: str) -> bool:

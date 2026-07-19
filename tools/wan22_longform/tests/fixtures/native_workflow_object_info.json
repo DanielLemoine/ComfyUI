@@ -1,0 +1,133 @@
+{
+  "UNETLoader": {
+    "input": {
+      "required": {
+        "unet_name": ["COMBO"],
+        "weight_dtype": ["COMBO"]
+      },
+      "optional": {}
+    },
+    "output": ["MODEL"]
+  },
+  "ModelSamplingSD3": {
+    "input": {
+      "required": {
+        "model": ["MODEL"],
+        "shift": ["FLOAT"]
+      },
+      "optional": {}
+    },
+    "output": ["MODEL"]
+  },
+  "CLIPLoader": {
+    "input": {
+      "required": {
+        "clip_name": ["COMBO"],
+        "type": ["COMBO"]
+      },
+      "optional": {
+        "device": ["COMBO"]
+      }
+    },
+    "output": ["CLIP"]
+  },
+  "VAELoader": {
+    "input": {
+      "required": {
+        "vae_name": ["COMBO"]
+      },
+      "optional": {}
+    },
+    "output": ["VAE"]
+  },
+  "CLIPTextEncode": {
+    "input": {
+      "required": {
+        "clip": ["CLIP"],
+        "text": ["STRING"]
+      },
+      "optional": {}
+    },
+    "output": ["CONDITIONING"]
+  },
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": ["COMBO"]
+      },
+      "optional": {}
+    },
+    "output": ["IMAGE", "MASK"]
+  },
+  "WanImageToVideo": {
+    "input": {
+      "required": {
+        "positive": ["CONDITIONING"],
+        "negative": ["CONDITIONING"],
+        "vae": ["VAE"],
+        "width": ["INT"],
+        "height": ["INT"],
+        "length": ["INT"],
+        "batch_size": ["INT"]
+      },
+      "optional": {
+        "start_image": ["IMAGE"],
+        "clip_vision_output": ["CLIP_VISION_OUTPUT"]
+      }
+    },
+    "output": ["CONDITIONING", "CONDITIONING", "LATENT"]
+  },
+  "KSamplerAdvanced": {
+    "input": {
+      "required": {
+        "model": ["MODEL"],
+        "positive": ["CONDITIONING"],
+        "negative": ["CONDITIONING"],
+        "latent_image": ["LATENT"],
+        "add_noise": ["COMBO"],
+        "noise_seed": ["INT"],
+        "steps": ["INT"],
+        "cfg": ["FLOAT"],
+        "sampler_name": ["COMBO"],
+        "scheduler": ["COMBO"],
+        "start_at_step": ["INT"],
+        "end_at_step": ["INT"],
+        "return_with_leftover_noise": ["COMBO"]
+      },
+      "optional": {}
+    },
+    "output": ["LATENT"]
+  },
+  "VAEDecode": {
+    "input": {
+      "required": {
+        "samples": ["LATENT"],
+        "vae": ["VAE"]
+      },
+      "optional": {}
+    },
+    "output": ["IMAGE"]
+  },
+  "CreateVideo": {
+    "input": {
+      "required": {
+        "images": ["IMAGE"],
+        "fps": ["FLOAT"]
+      },
+      "optional": {}
+    },
+    "output": ["VIDEO"]
+  },
+  "SaveVideo": {
+    "input": {
+      "required": {
+        "video": ["VIDEO"],
+        "filename_prefix": ["STRING"],
+        "format": ["COMBO"],
+        "codec": ["COMBO"]
+      },
+      "optional": {}
+    },
+    "output": ["VIDEO"]
+  }
+}

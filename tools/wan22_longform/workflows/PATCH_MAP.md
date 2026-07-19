@@ -8,7 +8,7 @@
 - Inputs: `SEGMENT_FIRST_IMAGE`, `POSITIVE_PROMPT`
 - Native conditioning: `I2V_CONDITIONING`
 
-The clean base contains no `LoraLoaderModelOnly` nodes. After `validate_lora_policy` confirms configured model and LoRA filenames against discovered local model files, `build_api_graph` inserts enabled adapters in this fixed order:
+The clean base contains no `LoraLoaderModelOnly` nodes. `build_api_graph` requires an explicit `ModelFiles` available-file inventory and independently refuses an enabled adapter whose filename is absent from that inventory. `validate_lora_policy` remains the configuration-policy gate. With both checks satisfied, the builder inserts enabled adapters in this fixed order:
 
 - High expert: `MODEL_HIGH` → `LORA_VBVR_HIGH` → `LORA_MOTION_HIGH` → `LORA_IDENTITY_HIGH` → `MODEL_SAMPLING_HIGH`
 - Low expert: `MODEL_LOW` → one `LORA_PERMISSIVENESS_LOW` → `LORA_CORRECTIVE_LOW` → `LORA_IDENTITY_LOW` → `MODEL_SAMPLING_LOW`

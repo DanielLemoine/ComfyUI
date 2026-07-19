@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 from wan22_longform.config import (  # noqa: E402
     IdentityLora,
     LoraSlot,
+    ModelFiles,
     Models,
     Permissiveness,
     ResolvedRenderConfig,
@@ -48,6 +49,30 @@ def base_render_config(**changes: object) -> ResolvedRenderConfig:
     return ResolvedRenderConfig(**values)  # type: ignore[arg-type]
 
 
+def available_files(*extra: str) -> ModelFiles:
+    return ModelFiles.from_names(
+        {
+            "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+            "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+            "vbvr.safetensors",
+            "motion.safetensors",
+            "mystic.safetensors",
+            "corrective.safetensors",
+            "identity-high.safetensors",
+            "identity-low.safetensors",
+            *extra,
+        }
+    )
+
+
+def load_native_schema() -> dict[str, object]:
+    return json.loads(
+        (
+            PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
 def titles(graph: dict[str, dict[str, object]]) -> set[str]:
     return {
         str(node.get("_meta", {}).get("title"))
@@ -60,7 +85,7 @@ class WorkflowPatchTests(unittest.TestCase):
     def test_disabled_loras_are_absent_from_executable_graph(self) -> None:
         base = load_fixture("native_segment_api.json")
 
-        graph = build_api_graph(base, base_render_config())
+        graph = build_api_graph(base, base_render_config(), available_files())
 
         self.assertFalse(
             any(node["class_type"] == "LoraLoaderModelOnly" for node in graph.values())
@@ -131,7 +156,9 @@ class WorkflowPatchTests(unittest.TestCase):
             ),
         )
 
-        graph = build_api_graph(load_fixture("native_segment_api.json"), render)
+        graph = build_api_graph(
+            load_fixture("native_segment_api.json"), render, available_files()
+        )
 
         self.assertEqual(
             self._model_chain_titles(graph, "MODEL_SAMPLING_HIGH"),
@@ -158,7 +185,9 @@ class WorkflowPatchTests(unittest.TestCase):
             models=Models("configured-high.safetensors", "configured-low.safetensors")
         )
 
-        graph = build_api_graph(load_fixture("native_segment_api.json"), render)
+        graph = build_api_graph(
+            load_fixture("native_segment_api.json"), render, available_files()
+        )
 
         self.assertEqual(
             find_unique_node(graph, "MODEL_HIGH", "UNETLoader").node["inputs"]["unet_name"],
@@ -175,15 +204,32 @@ class WorkflowPatchTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(WorkflowError, "configured filename"):
-            build_api_graph(load_fixture("native_segment_api.json"), render)
+            build_api_graph(
+                load_fixture("native_segment_api.json"), render, available_files()
+            )
+
+    def test_enabled_lora_missing_from_available_inventory_is_rejected(self) -> None:
+        base = load_fixture("native_segment_api.json")
+        render = base_render_config(
+            vbvr=LoraSlot("definitely-missing.safetensors", "high", 0.25)
+        )
+
+        with self.assertRaisesRegex(WorkflowError, "available-file inventory"):
+            build_api_graph(base, render, available_files())
+        self.assertNotIn("LORA_VBVR_HIGH", titles(base))
+
+    def test_two_stage_graph_rejects_case_insensitive_duplicate_model_files(self) -> None:
+        graph = load_fixture("native_segment_api.json")
+        graph["2"]["inputs"]["unet_name"] = graph["1"]["inputs"][
+            "unet_name"
+        ].upper()
+
+        with self.assertRaisesRegex(WorkflowError, "high and low model filenames must differ"):
+            validate_two_stage_graph(graph)
 
     def test_clean_fixture_matches_installed_schema_and_official_topology(self) -> None:
         graph = load_fixture("native_segment_api.json")
-        object_info = json.loads(
-            (PROJECT_DIR / "artifacts" / "preflight" / "object_info.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        object_info = load_native_schema()
 
         validate_graph_against_object_info(graph, object_info)
         validate_two_stage_graph(graph)
@@ -193,16 +239,19 @@ class WorkflowPatchTests(unittest.TestCase):
 
     def test_installed_schema_validation_rejects_incompatible_link_types(self) -> None:
         graph = load_fixture("native_segment_api.json")
-        object_info = json.loads(
-            (PROJECT_DIR / "artifacts" / "preflight" / "object_info.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        object_info = load_native_schema()
         low = find_unique_node(graph, "SAMPLER_LOW", "KSamplerAdvanced").node
         low["inputs"]["model"] = ["11", 0]
 
         with self.assertRaisesRegex(WorkflowError, "expects MODEL.*provides LATENT"):
             validate_graph_against_object_info(graph, object_info)
+
+    def test_installed_schema_validation_rejects_negative_output_index(self) -> None:
+        graph = load_fixture("native_segment_api.json")
+        graph["4"]["inputs"]["model"] = ["2", -1]
+
+        with self.assertRaisesRegex(WorkflowError, "unavailable output -1"):
+            validate_graph_against_object_info(graph, load_native_schema())
 
     def test_persisted_i2v_graphs_are_clean_and_flf_is_documented_not_built(self) -> None:
         ui_path = PROJECT_DIR / "workflows" / "ui" / "wan22_segment_i2v_native.json"

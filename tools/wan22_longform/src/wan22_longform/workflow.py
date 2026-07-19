@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping, TypeAlias
 
-from .config import LoraSlot, ResolvedRenderConfig
+from .config import LoraSlot, ModelFiles, ResolvedRenderConfig
 
 
 ApiNode: TypeAlias = dict[str, Any]
@@ -41,8 +41,10 @@ def find_unique_node(graph: ApiGraph, title: str, class_type: str) -> NodeRef:
     return matches[0]
 
 
-def build_api_graph(base_graph: ApiGraph, render: ResolvedRenderConfig) -> ApiGraph:
-    """Build from a clean base after config.validate_lora_policy validates files."""
+def build_api_graph(
+    base_graph: ApiGraph, render: ResolvedRenderConfig, available_files: ModelFiles
+) -> ApiGraph:
+    """Build from a clean base with enabled LoRAs checked against available files."""
     graph = deepcopy(base_graph)
     if any(node.get("class_type") == "LoraLoaderModelOnly" for node in graph.values()):
         raise WorkflowError("base graph must be clean and contain no optional LoRA nodes")
@@ -62,7 +64,9 @@ def build_api_graph(base_graph: ApiGraph, render: ResolvedRenderConfig) -> ApiGr
 
     for sampling_title, lora_title, slot in _ordered_lora_slots(render):
         if slot.is_enabled:
-            _insert_model_only_lora(graph, sampling_title, lora_title, slot)
+            _insert_model_only_lora(
+                graph, sampling_title, lora_title, slot, available_files
+            )
 
     validate_two_stage_graph(graph)
     return graph
@@ -74,6 +78,10 @@ def validate_two_stage_graph(graph: ApiGraph) -> None:
 
     model_high = find_unique_node(graph, "MODEL_HIGH", "UNETLoader")
     model_low = find_unique_node(graph, "MODEL_LOW", "UNETLoader")
+    high_filename = _unet_filename(model_high)
+    low_filename = _unet_filename(model_low)
+    if high_filename.casefold() == low_filename.casefold():
+        raise WorkflowError("high and low model filenames must differ")
     sampling_high = find_unique_node(
         graph, "MODEL_SAMPLING_HIGH", "ModelSamplingSD3"
     )
@@ -213,7 +221,11 @@ def validate_graph_against_object_info(
                 else None
             )
             output_index = value[1]
-            if not isinstance(source_outputs, list) or output_index >= len(source_outputs):
+            if (
+                not isinstance(source_outputs, list)
+                or output_index < 0
+                or output_index >= len(source_outputs)
+            ):
                 raise WorkflowError(
                     f"node {node_id} input {input_name} uses unavailable output "
                     f"{output_index} from node {source_id}"
@@ -267,10 +279,19 @@ def _ordered_lora_slots(
 
 
 def _insert_model_only_lora(
-    graph: ApiGraph, sampling_title: str, lora_title: str, slot: LoraSlot
+    graph: ApiGraph,
+    sampling_title: str,
+    lora_title: str,
+    slot: LoraSlot,
+    available_files: ModelFiles,
 ) -> None:
     if not slot.file:
         raise WorkflowError(f"enabled optional LoRA {lora_title} needs a configured filename")
+    if not available_files.contains(slot.file):
+        raise WorkflowError(
+            f"enabled optional LoRA {lora_title} is absent from the available-file "
+            f"inventory: {slot.file}"
+        )
     sampling = find_unique_node(graph, sampling_title, "ModelSamplingSD3")
     upstream = sampling.node.get("inputs", {}).get("model")
     if not _is_link(upstream):
@@ -291,6 +312,13 @@ def _insert_model_only_lora(
 def _next_node_id(graph: ApiGraph) -> str:
     numeric_ids = [int(node_id) for node_id in graph if str(node_id).isdigit()]
     return str(max(numeric_ids, default=0) + 1)
+
+
+def _unet_filename(node: NodeRef) -> str:
+    filename = node.node.get("inputs", {}).get("unet_name")
+    if not isinstance(filename, str) or not filename:
+        raise WorkflowError(f"{node.node_id} requires a configured UNET filename")
+    return filename
 
 
 def _model_chain(

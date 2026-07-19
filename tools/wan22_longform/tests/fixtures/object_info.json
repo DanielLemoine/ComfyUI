@@ -7,5 +7,17 @@
         ]
       }
     }
+  },
+  "WanFirstLastFrameToVideo": {
+    "input": {
+      "required": {
+        "first_frame": [
+          "IMAGE"
+        ],
+        "last_frame": [
+          "IMAGE"
+        ]
+      }
+    }
   }
 }

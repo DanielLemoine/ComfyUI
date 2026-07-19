@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from .errors import PreflightError
 
@@ -21,6 +21,23 @@ class PreflightResult:
     active_workflow_dir: Path | None
     native_i2v_template: Path | None
     native_flf_template: Path | None
+    status: str
+    blockers: tuple[str, ...]
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: Any,
+        _fp: Any,
+        _code: int,
+        _message: str,
+        _headers: Any,
+        new_url: str,
+    ) -> Any:
+        raise PreflightError(
+            f"Local object-info redirects are not allowed: {request.full_url} -> {new_url}"
+        )
 
 
 def collect_preflight(
@@ -39,6 +56,10 @@ def collect_preflight(
     custom_nodes = _custom_nodes(comfy_root)
     native_i2v_template, native_flf_template, templates = _official_templates(comfy_root)
     active_workflow_dir = _active_workflow_dir(comfy_root)
+    blockers = _preflight_blockers(
+        object_info_data, native_i2v_template, native_flf_template
+    )
+    status = "BLOCKED" if blockers else "READY"
 
     object_info_path = artifact_dir / "object_info.json"
     _write_json(artifact_dir / "environment.json", _environment(comfy_root, comfy_url))
@@ -46,7 +67,9 @@ def collect_preflight(
     _write_json(artifact_dir / "custom_nodes.json", custom_nodes)
     _write_json(object_info_path, object_info_data)
     (artifact_dir / "official_template_inventory.md").write_text(
-        _template_inventory_markdown(templates, native_i2v_template, native_flf_template),
+        _template_inventory_markdown(
+            templates, native_i2v_template, native_flf_template, blockers
+        ),
         encoding="utf-8",
         newline="\n",
     )
@@ -59,6 +82,8 @@ def collect_preflight(
             native_flf_template=native_flf_template,
             model_root_count=len(model_inventory["roots"]),
             custom_node_count=len(custom_nodes["nodes"]),
+            status=status,
+            blockers=blockers,
         ),
         encoding="utf-8",
         newline="\n",
@@ -70,6 +95,8 @@ def collect_preflight(
         active_workflow_dir=active_workflow_dir,
         native_i2v_template=native_i2v_template,
         native_flf_template=native_flf_template,
+        status=status,
+        blockers=blockers,
     )
 
 
@@ -86,12 +113,14 @@ def _object_info(
     if not endpoint.endswith("/object_info"):
         endpoint = f"{endpoint}/object_info"
     try:
-        with urlopen(endpoint, timeout=10) as response:  # noqa: S310 - local URL is enforced above.
+        with build_opener(ProxyHandler({}), _RejectRedirects()).open(
+            endpoint, timeout=10
+        ) as response:
             payload = json.load(response)
     except OSError as error:
-        raise PreflightError(f"Unable to read local object info from {endpoint}: {error}") from error
+        return {}, f"unavailable: unable to read local object info from {endpoint}: {error}"
     if not isinstance(payload, dict):
-        raise PreflightError(f"Local object info from {endpoint} was not a JSON object")
+        return {}, f"unavailable: local object info from {endpoint} was not a JSON object"
     return payload, f"collected from {endpoint}"
 
 
@@ -107,6 +136,40 @@ def _require_local_url(comfy_url: str) -> None:
         is_loopback = False
     if not is_loopback:
         raise PreflightError(f"ComfyUI URL must resolve to a loopback address: {comfy_url}")
+
+
+def _preflight_blockers(
+    object_info: dict[str, object],
+    native_i2v_template: Path | None,
+    native_flf_template: Path | None,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    required_schemas = ("WanImageToVideo", "WanFirstLastFrameToVideo")
+    if not object_info:
+        blockers.append(
+            "object_info is empty or unavailable; collect local /object_info with "
+            "WanImageToVideo and WanFirstLastFrameToVideo schemas"
+        )
+    else:
+        for schema in required_schemas:
+            if not isinstance(object_info.get(schema), dict):
+                blockers.append(
+                    f"required object-info schema {schema} is unavailable; "
+                    "install or enable the matching native ComfyUI node"
+                )
+    if native_i2v_template is None:
+        blockers.append(
+            "official native Wan I2V template could not be verified; provide a valid "
+            "JSON template containing a WanImageToVideo node under an official "
+            "ComfyUI template directory"
+        )
+    if native_flf_template is None:
+        blockers.append(
+            "official native Wan FLF template could not be verified; provide a valid "
+            "JSON template containing a WanFirstLastFrameToVideo node under an "
+            "official ComfyUI template directory"
+        )
+    return tuple(blockers)
 
 
 def _environment(comfy_root: Path, comfy_url: str | None) -> dict[str, object]:
@@ -228,27 +291,57 @@ def _official_templates(comfy_root: Path) -> tuple[Path | None, Path | None, lis
         comfy_root / "workflow_templates",
         comfy_root / "web" / "assets" / "workflow_templates",
     ]
+    resolved_roots = [root.resolve() for root in template_roots if root.is_dir()]
     templates = sorted(
         {
             path.resolve()
-            for root in template_roots
-            if root.is_dir()
+            for root in resolved_roots
             for path in root.rglob("*.json")
-            if path.is_file()
+            if path.is_file() and path.resolve().is_relative_to(root)
         },
         key=str,
     )
-    i2v = next((path for path in templates if "wan" in path.name.lower() and "i2v" in path.name.lower()), None)
+    i2v = next(
+        (path for path in templates if _template_has_native_node(path, "WanImageToVideo")),
+        None,
+    )
     flf = next(
         (
             path
             for path in templates
-            if "wan" in path.name.lower()
-            and ("flf" in path.name.lower() or "first_last" in path.name.lower())
+            if _template_has_native_node(path, "WanFirstLastFrameToVideo")
         ),
         None,
     )
     return i2v, flf, templates
+
+
+def _template_has_native_node(template_path: Path, expected_node: str) -> bool:
+    try:
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return expected_node in _template_node_types(template)
+
+
+def _template_node_types(value: object) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    workflow_nodes = value.get("nodes")
+    if isinstance(workflow_nodes, list):
+        return {
+            node_type
+            for node in workflow_nodes
+            if isinstance(node, dict)
+            and isinstance((node_type := node.get("type")), str)
+        }
+    return {
+        node_type
+        for node in value.values()
+        if isinstance(node, dict)
+        and isinstance(node.get("inputs"), dict)
+        and isinstance((node_type := node.get("class_type")), str)
+    }
 
 
 def _active_workflow_dir(comfy_root: Path) -> Path | None:
@@ -257,7 +350,10 @@ def _active_workflow_dir(comfy_root: Path) -> Path | None:
 
 
 def _template_inventory_markdown(
-    templates: list[Path], native_i2v_template: Path | None, native_flf_template: Path | None
+    templates: list[Path],
+    native_i2v_template: Path | None,
+    native_flf_template: Path | None,
+    blockers: tuple[str, ...],
 ) -> str:
     lines = ["# Official Template Inventory", "", "## Official template files"]
     lines.extend(f"- `{path}`" for path in templates)
@@ -272,8 +368,15 @@ def _template_inventory_markdown(
             "",
             "Community workflow graphs were not substituted for unavailable official templates.",
             "",
+            "## Preflight gate",
+            "",
         ]
     )
+    if blockers:
+        lines.extend(f"- BLOCKED: {blocker}" for blocker in blockers)
+    else:
+        lines.append("- READY: official native templates and object-info schemas were verified")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -286,6 +389,8 @@ def _preflight_report(
     native_flf_template: Path | None,
     model_root_count: int,
     custom_node_count: int,
+    status: str,
+    blockers: tuple[str, ...],
 ) -> str:
     lines = [
         "# Wan2.2 Long-Form Preflight",
@@ -296,12 +401,23 @@ def _preflight_report(
         f"- Custom nodes: {custom_node_count}",
         f"- Active workflow directory: `{active_workflow_dir}`" if active_workflow_dir else "- Active workflow directory: unavailable",
         "",
+        "## Preflight status",
+        f"- Status: {status}",
+        "",
+    ]
+    if blockers:
+        lines.extend(["## BLOCKED", *(f"- BLOCKED: {blocker}" for blocker in blockers), ""])
+    else:
+        lines.extend(["## READY", "- READY: all required native schemas and templates were verified.", ""])
+    lines.extend(
+        [
         "## Template gate",
         f"- Native Wan I2V template: `{native_i2v_template}`" if native_i2v_template else "- Native Wan I2V template: unavailable",
         f"- Native Wan FLF template: `{native_flf_template}`" if native_flf_template else "- Native Wan FLF template: unavailable",
         "- No community graph was substituted for an unavailable official template.",
         "",
-    ]
+        ]
+    )
     return "\n".join(lines)
 
 

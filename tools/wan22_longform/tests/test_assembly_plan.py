@@ -20,6 +20,7 @@ from wan22_longform.assembly import (  # noqa: E402
     compare_frame_hashes,
     plan_assembly,
     write_boundary_decision,
+    write_boundary_decisions,
 )
 from wan22_longform.ffmpeg import MediaSpec, probe_media  # noqa: E402
 
@@ -32,12 +33,12 @@ class AssemblyPlanTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
-    def test_exact_duplicate_is_trimmed_once(self) -> None:
+    def test_unverified_hash_match_requires_full_fidelity_confirmation(self) -> None:
         decision = compare_frame_hashes("same", "same", perceptual_distance=0)
 
-        self.assertEqual(decision.trim_right_frames, 1)
-        self.assertFalse(decision.requires_review)
-        self.assertEqual(decision.reason, "exact duplicate boundary frame")
+        self.assertEqual(decision.trim_right_frames, 0)
+        self.assertTrue(decision.requires_review)
+        self.assertIn("full-fidelity", decision.reason)
 
     def test_similar_frame_is_not_silently_trimmed(self) -> None:
         decision = compare_frame_hashes("different", "different", perceptual_distance=3)
@@ -47,13 +48,28 @@ class AssemblyPlanTests(unittest.TestCase):
         self.assertIn("perceptually similar", decision.reason)
 
     def test_boundary_decision_log_is_append_only(self) -> None:
-        decision = compare_frame_hashes("same", "same", perceptual_distance=0)
+        decision = compare_frame_hashes("left", "right", perceptual_distance=9)
         destination = self.root / "reviews" / "boundary.json"
 
         self.assertEqual(write_boundary_decision(decision, destination), destination)
-        self.assertEqual(json.loads(destination.read_text(encoding="utf-8"))["trim_right_frames"], 1)
+        self.assertEqual(json.loads(destination.read_text(encoding="utf-8"))["trim_right_frames"], 0)
         with self.assertRaises(FileExistsError):
             write_boundary_decision(decision, destination)
+
+    def test_boundary_decision_set_is_immutable(self) -> None:
+        decisions = (
+            compare_frame_hashes("left", "right", perceptual_distance=9),
+            compare_frame_hashes("right", "left", perceptual_distance=9),
+        )
+        destination = self.root / "reviews" / "boundaries.json"
+
+        self.assertEqual(write_boundary_decisions(decisions, destination), destination)
+        self.assertEqual(
+            len(json.loads(destination.read_text(encoding="utf-8"))["decisions"]),
+            2,
+        )
+        with self.assertRaises(FileExistsError):
+            write_boundary_decisions(decisions, destination)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
     def test_probe_reads_exact_video_and_audio_policy_fields(self) -> None:
@@ -138,6 +154,20 @@ class AssemblyPlanTests(unittest.TestCase):
         self.assertEqual(decision.trim_right_frames, 1)
         self.assertFalse(decision.requires_review)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
+    def test_chroma_only_boundary_difference_never_auto_trims(self) -> None:
+        left = self._chroma_only_ffv1_media("left.mkv", chroma_u=64)
+        right = self._chroma_only_ffv1_media("right.mkv", chroma_u=192)
+
+        decision = compare_boundary(left.path, right.path)
+
+        self.assertNotEqual(decision.left_hash, decision.right_hash)
+        self.assertEqual(decision.perceptual_distance, 0)
+        self.assertEqual(decision.trim_right_frames, 0)
+        self.assertTrue(decision.requires_review)
+        with self.assertRaisesRegex(AssemblyError, "requires review"):
+            plan_assembly([left, right], self._targets(), boundary_decisions=[decision])
+
     def test_incompatible_inputs_receive_normalization_before_concat(self) -> None:
         left = self._media("left.mp4", width=1280, fps=Fraction(16, 1))
         right = self._media("right.mp4", width=1024, fps=Fraction(24, 1))
@@ -183,7 +213,7 @@ class AssemblyPlanTests(unittest.TestCase):
         self.assertEqual(trim.command[trim.command.index("-vf") + 1], "trim=start_frame=1,setpts=PTS-STARTPTS")
         self.assertIn(trim.output, concat.inputs)
         self.assertNotIn(right.path, concat.inputs)
-        self.assertEqual(plan.expected_duration, Fraction(31, 16))
+        self.assertIsNone(plan.expected_duration)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
     def test_forged_exact_trim_decision_blocks_automatic_assembly(self) -> None:
@@ -208,7 +238,7 @@ class AssemblyPlanTests(unittest.TestCase):
 
         self.assertFalse(targets.review_mp4.with_suffix(".concat.txt").exists())
 
-    def test_plan_writes_safely_quoted_concat_manifest_before_concat(self) -> None:
+    def test_plan_defers_safely_quoted_manifest_creation_until_execution(self) -> None:
         left = self._media("left clip.mp4")
         right = self._media("right clip's.mp4")
         targets = self._targets()
@@ -226,14 +256,8 @@ class AssemblyPlanTests(unittest.TestCase):
         concat = next(operation for operation in plan.operations if operation.kind == "concat")
         self.assertEqual(write_operation.output, manifest)
         self.assertLess(plan.operations.index(write_operation), plan.operations.index(concat))
-        self.assertEqual(
-            manifest.read_text(encoding="utf-8"),
-            "file '"
-            + left.path.resolve().as_posix()
-            + "'\nfile '"
-            + right.path.resolve().as_posix().replace("'", r"'\''")
-            + "'\n",
-        )
+        self.assertEqual(write_operation.inputs, (left.path, right.path))
+        self.assertFalse(manifest.exists())
 
     def test_existing_target_is_never_overwritten(self) -> None:
         left = self._media("left.mp4")
@@ -242,6 +266,20 @@ class AssemblyPlanTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AssemblyError, "already exists"):
             plan_assembly([left], targets)
+
+    def test_preserve_audio_is_rejected_without_full_av_validation(self) -> None:
+        left = self._media("left.mp4")
+        targets = AssemblyTargets(
+            review_mp4=self.root / "review.mp4",
+            edit_master_ffv1=self.root / "master.mkv",
+            edit_master_prores=self.root / "master.mov",
+            audio_policy="preserve",
+        )
+
+        with self.assertRaisesRegex(AssemblyError, "audio preservation is not supported"):
+            plan_assembly([left], targets)
+
+        self.assertFalse(targets.review_mp4.with_suffix(".concat.txt").exists())
 
     def test_existing_native_target_does_not_leave_a_concat_manifest(self) -> None:
         left = self._media("left.mp4")
@@ -285,6 +323,45 @@ class AssemblyPlanTests(unittest.TestCase):
                 f"color=c={color}:size=16x8:rate=16:duration=1",
                 "-frames:v",
                 "16",
+                "-c:v",
+                "ffv1",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return probe_media(path)
+
+    def _chroma_only_ffv1_media(self, name: str, *, chroma_u: int) -> MediaSpec:
+        width, height = 16, 8
+        raw = self.root / f"{name}.yuv"
+        y_plane = bytes([128]) * (width * height)
+        u_plane = bytes([chroma_u]) * (width * height // 4)
+        v_plane = bytes([128]) * (width * height // 4)
+        raw.write_bytes((y_plane + u_plane + v_plane) * 2)
+        path = self.root / name
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostdin",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "yuv420p",
+                "-video_size",
+                f"{width}x{height}",
+                "-framerate",
+                "16",
+                "-i",
+                str(raw),
+                "-frames:v",
+                "2",
                 "-c:v",
                 "ffv1",
                 "-pix_fmt",

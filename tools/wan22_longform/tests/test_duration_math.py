@@ -63,7 +63,7 @@ class DurationMathTests(unittest.TestCase):
                 )
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
-    def test_plan_uses_normalized_frame_count_and_runs_final_duration_checks(self) -> None:
+    def test_plan_defers_duration_validation_until_intermediates_are_probed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             left = self._media(root / "left.mkv", frame_count=5, fps=Fraction(16, 1))
@@ -79,13 +79,8 @@ class DurationMathTests(unittest.TestCase):
                 boundary_decisions=[compare_frame_hashes("left", "right", perceptual_distance=9)],
             )
 
-            self.assertEqual(plan.expected_frame_count, 9)
-            self.assertEqual(plan.expected_duration, Fraction(9, 16))
-            self.assertNotEqual(
-                plan.expected_duration,
-                duration_seconds(left.frame_count, left.fps)
-                + duration_seconds(right.frame_count, right.fps),
-            )
+            self.assertIsNone(plan.expected_frame_count)
+            self.assertIsNone(plan.expected_duration)
             checks = [operation for operation in plan.operations if operation.kind == "validate_duration"]
             normalization = [operation for operation in plan.operations if operation.kind == "normalize"]
             final_outputs = [
@@ -103,9 +98,7 @@ class DurationMathTests(unittest.TestCase):
                     for operation in normalization
                 )
             )
-            self.assertTrue(
-                all(operation.expected_duration == plan.expected_duration for operation in checks)
-            )
+            self.assertTrue(all(operation.expected_duration is None for operation in checks))
             self.assertTrue(
                 all(plan.operations.index(check) > plan.operations.index(final_outputs[-1]) for check in checks)
             )
@@ -113,7 +106,11 @@ class DurationMathTests(unittest.TestCase):
             self._write_video(targets.review_mp4, frame_count=9, fps=Fraction(16, 1))
             self._write_video(targets.edit_master_ffv1, frame_count=9, fps=Fraction(16, 1))
             self._write_video(targets.edit_master_prores, frame_count=9, fps=Fraction(16, 1))
-            checked = validate_assembly_outputs(plan)
+            checked = validate_assembly_outputs(
+                plan,
+                expected_duration=Fraction(9, 16),
+                output_fps=Fraction(16, 1),
+            )
 
         self.assertEqual(len(checked), 3)
 
@@ -136,7 +133,11 @@ class DurationMathTests(unittest.TestCase):
             self._write_video(targets.review_mp4, frame_count=7, fps=Fraction(16, 1))
 
             with self.assertRaisesRegex(AssemblyError, "more than one output frame"):
-                validate_assembly_outputs(plan)
+                validate_assembly_outputs(
+                    plan,
+                    expected_duration=Fraction(9, 16),
+                    output_fps=Fraction(16, 1),
+                )
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
     def test_normalization_operations_match_explicit_target_frame_rounding(self) -> None:
@@ -162,7 +163,8 @@ class DurationMathTests(unittest.TestCase):
                 run_ffmpeg(operation.command)
             normalized_frame_count = sum(probe_media(operation.output).frame_count for operation in normalizations)
 
-        self.assertEqual(normalized_frame_count, plan.expected_frame_count)
+        self.assertEqual(normalized_frame_count, 9)
+        self.assertIsNone(plan.expected_frame_count)
 
     @staticmethod
     def _write_video(

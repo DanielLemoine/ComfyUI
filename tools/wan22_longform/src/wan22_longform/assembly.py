@@ -23,6 +23,11 @@ class BoundaryDecision:
     trim_right_frames: int
     requires_review: bool
     reason: str
+    canonical_width: int | None = None
+    canonical_height: int | None = None
+    thumbnail_left_hash: str | None = None
+    thumbnail_right_hash: str | None = None
+    full_fidelity: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,10 +54,22 @@ class AssemblyPlan:
     normalize_first: bool
     audio_policy: Literal["drop", "preserve"]
     concat_manifest: Path
+    expected_frame_count: int | None
+    expected_duration: Fraction | None
+    output_fps: Fraction
+    boundary_decisions: tuple[BoundaryDecision, ...]
+    operations: tuple[AssemblyOperation, ...]
+
+
+@dataclass(frozen=True)
+class AssemblyExecution:
+    """Post-output evidence from a successfully validated native assembly."""
+
     expected_frame_count: int
     expected_duration: Fraction
     output_fps: Fraction
-    operations: tuple[AssemblyOperation, ...]
+    validated_outputs: tuple[MediaSpec, ...]
+    rife_ready: Path | None
 
 
 def duration_seconds(frame_count: int, fps: Fraction) -> Fraction:
@@ -69,6 +86,7 @@ def compare_frame_hashes(
     *,
     perceptual_distance: int,
 ) -> BoundaryDecision:
+    """Classify unverified hashes for review; they cannot authorize a trim."""
     if perceptual_distance < 0:
         raise AssemblyError("perceptual distance must not be negative")
     if left_hash == right_hash and perceptual_distance == 0:
@@ -76,9 +94,9 @@ def compare_frame_hashes(
             left_hash=left_hash,
             right_hash=right_hash,
             perceptual_distance=perceptual_distance,
-            trim_right_frames=1,
-            requires_review=False,
-            reason="exact duplicate boundary frame",
+            trim_right_frames=0,
+            requires_review=True,
+            reason="matching hashes require full-fidelity boundary confirmation",
         )
     if perceptual_distance <= 5:
         return BoundaryDecision(
@@ -105,14 +123,38 @@ def compare_boundary(left: Path, right: Path) -> BoundaryDecision:
     right_spec = probe_media(right)
     with tempfile.TemporaryDirectory(prefix="wan22-boundary-") as temporary:
         root = Path(temporary)
-        left_frame = _extract_boundary_frame(left_spec, left_spec.frame_count - 1, root / "left.gray")
-        right_frame = _extract_boundary_frame(right_spec, 0, root / "right.gray")
-        left_bytes = left_frame.read_bytes()
-        right_bytes = right_frame.read_bytes()
-    return compare_frame_hashes(
-        hashlib.sha256(left_bytes).hexdigest(),
-        hashlib.sha256(right_bytes).hexdigest(),
-        perceptual_distance=_mean_absolute_distance(left_bytes, right_bytes),
+        left_canonical = _extract_canonical_boundary_frame(
+            left_spec,
+            left_spec.frame_count - 1,
+            root / "left.yuv444p16le",
+        )
+        right_canonical = _extract_canonical_boundary_frame(
+            right_spec,
+            0,
+            root / "right.yuv444p16le",
+        )
+        left_thumbnail = _extract_thumbnail_boundary_frame(
+            left_spec,
+            left_spec.frame_count - 1,
+            root / "left.gray",
+        )
+        right_thumbnail = _extract_thumbnail_boundary_frame(
+            right_spec,
+            0,
+            root / "right.gray",
+        )
+        left_canonical_bytes = left_canonical.read_bytes()
+        right_canonical_bytes = right_canonical.read_bytes()
+        left_thumbnail_bytes = left_thumbnail.read_bytes()
+        right_thumbnail_bytes = right_thumbnail.read_bytes()
+    return _compare_full_fidelity_boundary(
+        left_hash=hashlib.sha256(left_canonical_bytes).hexdigest(),
+        right_hash=hashlib.sha256(right_canonical_bytes).hexdigest(),
+        left_dimensions=(left_spec.width, left_spec.height),
+        right_dimensions=(right_spec.width, right_spec.height),
+        perceptual_distance=_mean_absolute_distance(left_thumbnail_bytes, right_thumbnail_bytes),
+        thumbnail_left_hash=hashlib.sha256(left_thumbnail_bytes).hexdigest(),
+        thumbnail_right_hash=hashlib.sha256(right_thumbnail_bytes).hexdigest(),
     )
 
 
@@ -121,6 +163,23 @@ def write_boundary_decision(decision: BoundaryDecision, destination: Path) -> Pa
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("x", encoding="utf-8") as output:
         json.dump(asdict(decision), output, indent=2, sort_keys=True)
+        output.write("\n")
+    return destination
+
+
+def write_boundary_decisions(
+    decisions: tuple[BoundaryDecision, ...],
+    destination: Path,
+) -> Path:
+    """Persist the immutable decision set required by an assembly execution."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("x", encoding="utf-8") as output:
+        json.dump(
+            {"decisions": [asdict(decision) for decision in decisions]},
+            output,
+            indent=2,
+            sort_keys=True,
+        )
         output.write("\n")
     return destination
 
@@ -150,8 +209,13 @@ def validate_output_duration(
     return spec
 
 
-def validate_assembly_outputs(plan: AssemblyPlan) -> tuple[MediaSpec, ...]:
-    """Run the plan's final duration checks after its review and master outputs exist."""
+def validate_assembly_outputs(
+    plan: AssemblyPlan,
+    *,
+    expected_duration: Fraction,
+    output_fps: Fraction,
+) -> tuple[MediaSpec, ...]:
+    """Run final duration checks against the execution-time intermediate evidence."""
     validations = [
         operation for operation in plan.operations if operation.kind == "validate_duration"
     ]
@@ -159,16 +223,69 @@ def validate_assembly_outputs(plan: AssemblyPlan) -> tuple[MediaSpec, ...]:
         raise AssemblyError("assembly plan has no final duration validation operations")
     results: list[MediaSpec] = []
     for operation in validations:
-        if operation.expected_duration is None or operation.output_fps is None:
-            raise AssemblyError("duration validation operation is incomplete")
         results.append(
             validate_output_duration(
                 operation.output,
-                operation.expected_duration,
-                output_fps=operation.output_fps,
+                expected_duration,
+                output_fps=output_fps,
             )
         )
     return tuple(results)
+
+
+def execute_assembly_plan(
+    plan: AssemblyPlan,
+    *,
+    decision_log: Path,
+    ffmpeg: Path = Path("ffmpeg"),
+) -> AssemblyExecution:
+    """Execute an approved plan, then validate outputs from probed intermediates.
+
+    The decision log is exclusively created before FFmpeg starts. RIFE is deliberately
+    left commandless and becomes ready only after every native output has passed
+    post-output duration validation.
+    """
+    _ensure_decision_log_does_not_collide(plan, decision_log)
+    write_boundary_decisions(plan.boundary_decisions, decision_log)
+    rife_output: Path | None = None
+    for operation in plan.operations:
+        if operation.kind == "validate_duration":
+            continue
+        if operation.kind == "rife":
+            rife_output = operation.output
+            continue
+        if operation.kind == "write_concat_manifest":
+            _write_concat_manifest_file(operation.inputs, operation.output)
+            continue
+        if not operation.command:
+            raise AssemblyError(f"assembly operation has no executable command: {operation.kind}")
+        operation.output.parent.mkdir(parents=True, exist_ok=True)
+        run_ffmpeg(operation.command, ffmpeg=ffmpeg)
+
+    frame_count, expected_duration, output_fps = _probed_concat_timeline(plan)
+    validated_outputs = validate_assembly_outputs(
+        plan,
+        expected_duration=expected_duration,
+        output_fps=output_fps,
+    )
+    return AssemblyExecution(
+        expected_frame_count=frame_count,
+        expected_duration=expected_duration,
+        output_fps=output_fps,
+        validated_outputs=validated_outputs,
+        rife_ready=rife_output,
+    )
+
+
+def _ensure_decision_log_does_not_collide(plan: AssemblyPlan, decision_log: Path) -> None:
+    decision_location = decision_log.resolve()
+    operation_paths = [
+        path
+        for operation in plan.operations
+        for path in (*operation.inputs, operation.output)
+    ]
+    if any(path.resolve() == decision_location for path in operation_paths):
+        raise AssemblyError("assembly decision log must not collide with an input or output")
 
 
 def plan_assembly(
@@ -183,6 +300,10 @@ def plan_assembly(
         raise AssemblyError("assembly requires at least one accepted input")
     if output.audio_policy not in {"drop", "preserve"}:
         raise AssemblyError("audio policy must be drop or preserve")
+    if output.audio_policy == "preserve":
+        raise AssemblyError(
+            "audio preservation is not supported without end-to-end A/V timing validation"
+        )
     _ensure_new_targets(output, request_rife)
     if request_rife:
         if not qc_approved:
@@ -208,16 +329,10 @@ def plan_assembly(
         output,
         concat_manifest,
     )
-    expected_frame_count, expected_duration = _expected_output(
-        inputs,
-        trims,
-        output_fps=inputs[0].fps,
-        normalized=bool(normalization),
-    )
     native = concat_manifest.with_name(f"{concat_manifest.stem}-native.mkv")
     if native.exists():
         raise AssemblyError(f"assembly native output already exists: {native}")
-    manifest_operation = _write_concat_manifest(concat_inputs, concat_manifest)
+    manifest_operation = _concat_manifest_operation(concat_inputs, concat_manifest)
     concat = AssemblyOperation(
         kind="concat",
         inputs=concat_inputs,
@@ -255,11 +370,7 @@ def plan_assembly(
         output=output.edit_master_prores,
         command=("-i", str(native), "-c:v", "prores_ks", "-profile:v", "3", *_audio_args(output.audio_policy), str(output.edit_master_prores)),
     )
-    duration_checks = _duration_validation_operations(
-        (review, ffv1, prores),
-        expected_duration,
-        inputs[0].fps,
-    )
+    duration_checks = _duration_validation_operations((review, ffv1, prores))
     operations = [
         *normalization,
         *trims_operations,
@@ -283,14 +394,90 @@ def plan_assembly(
         normalize_first=bool(normalization),
         audio_policy=output.audio_policy,
         concat_manifest=concat_manifest,
-        expected_frame_count=expected_frame_count,
-        expected_duration=expected_duration,
+        expected_frame_count=None,
+        expected_duration=None,
         output_fps=inputs[0].fps,
+        boundary_decisions=tuple(boundary_decisions or ()),
         operations=tuple(operations),
     )
 
 
-def _extract_boundary_frame(spec: MediaSpec, index: int, destination: Path) -> Path:
+def _compare_full_fidelity_boundary(
+    *,
+    left_hash: str,
+    right_hash: str,
+    left_dimensions: tuple[int, int],
+    right_dimensions: tuple[int, int],
+    perceptual_distance: int,
+    thumbnail_left_hash: str,
+    thumbnail_right_hash: str,
+) -> BoundaryDecision:
+    if left_dimensions == right_dimensions and left_hash == right_hash:
+        return BoundaryDecision(
+            left_hash=left_hash,
+            right_hash=right_hash,
+            perceptual_distance=perceptual_distance,
+            trim_right_frames=1,
+            requires_review=False,
+            reason="exact duplicate boundary frame verified from full-fidelity canonical samples",
+            canonical_width=left_dimensions[0],
+            canonical_height=left_dimensions[1],
+            thumbnail_left_hash=thumbnail_left_hash,
+            thumbnail_right_hash=thumbnail_right_hash,
+            full_fidelity=True,
+        )
+    if perceptual_distance <= 5:
+        reason = "perceptually similar boundary frame requires review"
+        if left_dimensions != right_dimensions:
+            reason = "boundary dimensions differ and perceptual similarity requires review"
+        return BoundaryDecision(
+            left_hash=left_hash,
+            right_hash=right_hash,
+            perceptual_distance=perceptual_distance,
+            trim_right_frames=0,
+            requires_review=True,
+            reason=reason,
+            thumbnail_left_hash=thumbnail_left_hash,
+            thumbnail_right_hash=thumbnail_right_hash,
+        )
+    return BoundaryDecision(
+        left_hash=left_hash,
+        right_hash=right_hash,
+        perceptual_distance=perceptual_distance,
+        trim_right_frames=0,
+        requires_review=False,
+        reason="boundary frames are distinct",
+        thumbnail_left_hash=thumbnail_left_hash,
+        thumbnail_right_hash=thumbnail_right_hash,
+    )
+
+
+def _extract_canonical_boundary_frame(spec: MediaSpec, index: int, destination: Path) -> Path:
+    try:
+        run_ffmpeg(
+            [
+                "-i",
+                str(spec.path),
+                "-vf",
+                f"select=eq(n\\,{index})",
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "yuv444p16le",
+                "-f",
+                "rawvideo",
+                str(destination),
+            ]
+        )
+    except FfmpegError as error:
+        raise AssemblyError(f"could not inspect boundary frame: {spec.path}") from error
+    expected_bytes = spec.width * spec.height * 3 * 2
+    if not destination.is_file() or destination.stat().st_size != expected_bytes:
+        raise AssemblyError(f"FFmpeg did not extract boundary frame: {spec.path}")
+    return destination
+
+
+def _extract_thumbnail_boundary_frame(spec: MediaSpec, index: int, destination: Path) -> Path:
     try:
         run_ffmpeg(
             [
@@ -433,17 +620,24 @@ def _trim_operations(
     return tuple(concat_inputs), operations
 
 
-def _write_concat_manifest(inputs: tuple[Path, ...], destination: Path) -> AssemblyOperation:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("x", encoding="utf-8", newline="\n") as manifest:
-        for path in inputs:
-            manifest.write(_concat_manifest_line(path))
+def _concat_manifest_operation(
+    inputs: tuple[Path, ...],
+    destination: Path,
+) -> AssemblyOperation:
     return AssemblyOperation(
         kind="write_concat_manifest",
         inputs=inputs,
         output=destination,
         command=(),
     )
+
+
+def _write_concat_manifest_file(inputs: tuple[Path, ...], destination: Path) -> Path:
+    lines = tuple(_concat_manifest_line(path) for path in inputs)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("x", encoding="utf-8", newline="\n") as manifest:
+        manifest.writelines(lines)
+    return destination
 
 
 def _concat_manifest_line(path: Path) -> str:
@@ -470,9 +664,11 @@ def _verify_exact_duplicate_boundary(
 def _is_exact_duplicate(decision: BoundaryDecision) -> bool:
     return (
         decision.left_hash == decision.right_hash
-        and decision.perceptual_distance == 0
         and decision.trim_right_frames == 1
         and not decision.requires_review
+        and decision.full_fidelity
+        and decision.canonical_width is not None
+        and decision.canonical_height is not None
     )
 
 
@@ -482,39 +678,14 @@ def _same_exact_evidence(left: BoundaryDecision, right: BoundaryDecision) -> boo
         and left.left_hash == right.left_hash
         and left.right_hash == right.right_hash
         and left.perceptual_distance == right.perceptual_distance
+        and left.canonical_width == right.canonical_width
+        and left.canonical_height == right.canonical_height
+        and left.full_fidelity == right.full_fidelity
     )
-
-
-def _expected_output(
-    inputs: list[MediaSpec],
-    trims: tuple[int, ...],
-    *,
-    output_fps: Fraction,
-    normalized: bool,
-) -> tuple[int, Fraction]:
-    frame_counts = [
-        _normalized_frame_count(spec, output_fps) if normalized else spec.frame_count
-        for spec in inputs
-    ]
-    frame_count = sum(frame_counts) - sum(trims)
-    if frame_count <= 0:
-        raise AssemblyError("assembly output must contain at least one frame")
-    return frame_count, duration_seconds(frame_count, output_fps)
-
-
-def _normalized_frame_count(spec: MediaSpec, output_fps: Fraction) -> int:
-    target_intervals = Fraction(spec.frame_count - 1, 1) * output_fps / spec.fps
-    return 1 + _ceil_fraction(target_intervals)
-
-
-def _ceil_fraction(value: Fraction) -> int:
-    return -(-value.numerator // value.denominator)
 
 
 def _duration_validation_operations(
     outputs: tuple[AssemblyOperation, ...],
-    expected_duration: Fraction,
-    output_fps: Fraction,
 ) -> tuple[AssemblyOperation, ...]:
     return tuple(
         AssemblyOperation(
@@ -522,11 +693,26 @@ def _duration_validation_operations(
             inputs=(operation.output,),
             output=operation.output,
             command=(),
-            expected_duration=expected_duration,
-            output_fps=output_fps,
         )
         for operation in outputs
     )
+
+
+def _probed_concat_timeline(plan: AssemblyPlan) -> tuple[int, Fraction, Fraction]:
+    concat = next(
+        (operation for operation in plan.operations if operation.kind == "concat"),
+        None,
+    )
+    if concat is None or not concat.inputs:
+        raise AssemblyError("assembly plan has no concat inputs to validate")
+    inputs = tuple(probe_media(path) for path in concat.inputs)
+    output_fps = inputs[0].fps
+    if output_fps != plan.output_fps or any(spec.fps != output_fps for spec in inputs):
+        raise AssemblyError("probed concat inputs do not share the planned output FPS")
+    frame_count = sum(spec.frame_count for spec in inputs)
+    if frame_count <= 0:
+        raise AssemblyError("probed concat inputs contain no video frames")
+    return frame_count, duration_seconds(frame_count, output_fps), output_fps
 
 
 def _compatible(left: MediaSpec, right: MediaSpec, audio_policy: str) -> bool:
@@ -551,7 +737,11 @@ def _video_signature(spec: MediaSpec) -> tuple[object, ...]:
 
 
 def _audio_args(policy: str) -> tuple[str, ...]:
-    return ("-an",) if policy == "drop" else ("-map", "0:a?", "-c:a", "copy")
+    if policy != "drop":
+        raise AssemblyError(
+            "audio preservation is not supported without end-to-end A/V timing validation"
+        )
+    return ("-an",)
 
 
 def _color_args(spec: MediaSpec) -> tuple[str, ...]:

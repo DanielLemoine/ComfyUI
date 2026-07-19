@@ -157,19 +157,25 @@ class AssemblyPlanTests(unittest.TestCase):
             all(operation.output.suffix == ".mkv" for operation in plan.operations[:2])
         )
         self.assertEqual(
-            {operation.kind for operation in plan.operations[-3:]},
+            {
+                operation.kind
+                for operation in plan.operations
+                if operation.kind in {"review_mp4", "edit_master_ffv1", "edit_master_prores"}
+            },
             {"review_mp4", "edit_master_ffv1", "edit_master_prores"},
         )
 
-    def test_exact_duplicate_boundary_trims_right_input_before_concat(self) -> None:
-        left = self._media("left.mp4")
-        right = self._media("right.mp4")
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
+    def test_verified_exact_duplicate_boundary_trims_right_input_before_concat(self) -> None:
+        left = self._ffv1_media("left.mkv", "blue")
+        right = self._ffv1_media("right.mkv", "blue")
         targets = self._targets()
+        decision = compare_boundary(left.path, right.path)
 
         plan = plan_assembly(
             [left, right],
             targets,
-            boundary_decisions=[compare_frame_hashes("same", "same", perceptual_distance=0)],
+            boundary_decisions=[decision],
         )
 
         trim = next(operation for operation in plan.operations if operation.kind == "trim_boundary")
@@ -177,7 +183,19 @@ class AssemblyPlanTests(unittest.TestCase):
         self.assertEqual(trim.command[trim.command.index("-vf") + 1], "trim=start_frame=1,setpts=PTS-STARTPTS")
         self.assertIn(trim.output, concat.inputs)
         self.assertNotIn(right.path, concat.inputs)
-        self.assertEqual(plan.expected_duration, Fraction(161, 16))
+        self.assertEqual(plan.expected_duration, Fraction(31, 16))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
+    def test_forged_exact_trim_decision_blocks_automatic_assembly(self) -> None:
+        left = self._ffv1_media("left.mkv", "blue")
+        right = self._ffv1_media("right.mkv", "red")
+        targets = self._targets()
+        forged = compare_frame_hashes("forged", "forged", perceptual_distance=0)
+
+        with self.assertRaisesRegex(AssemblyError, "requires review"):
+            plan_assembly([left, right], targets, boundary_decisions=[forged])
+
+        self.assertFalse(targets.review_mp4.with_suffix(".concat.txt").exists())
 
     def test_review_required_boundary_blocks_automatic_assembly_without_trimming(self) -> None:
         left = self._media("left.mp4")
@@ -252,6 +270,33 @@ class AssemblyPlanTests(unittest.TestCase):
     @staticmethod
     def _distinct_boundary():
         return compare_frame_hashes("left", "right", perceptual_distance=9)
+
+    def _ffv1_media(self, name: str, color: str) -> MediaSpec:
+        path = self.root / name
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostdin",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:size=16x8:rate=16:duration=1",
+                "-frames:v",
+                "16",
+                "-c:v",
+                "ffv1",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return probe_media(path)
 
     def _media(
         self,

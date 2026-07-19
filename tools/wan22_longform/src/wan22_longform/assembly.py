@@ -40,6 +40,8 @@ class AssemblyOperation:
     inputs: tuple[Path, ...]
     output: Path
     command: tuple[str, ...]
+    expected_duration: Fraction | None = None
+    output_fps: Fraction | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class AssemblyPlan:
     normalize_first: bool
     audio_policy: Literal["drop", "preserve"]
     concat_manifest: Path
+    expected_frame_count: int
     expected_duration: Fraction
     output_fps: Fraction
     operations: tuple[AssemblyOperation, ...]
@@ -147,6 +150,27 @@ def validate_output_duration(
     return spec
 
 
+def validate_assembly_outputs(plan: AssemblyPlan) -> tuple[MediaSpec, ...]:
+    """Run the plan's final duration checks after its review and master outputs exist."""
+    validations = [
+        operation for operation in plan.operations if operation.kind == "validate_duration"
+    ]
+    if not validations:
+        raise AssemblyError("assembly plan has no final duration validation operations")
+    results: list[MediaSpec] = []
+    for operation in validations:
+        if operation.expected_duration is None or operation.output_fps is None:
+            raise AssemblyError("duration validation operation is incomplete")
+        results.append(
+            validate_output_duration(
+                operation.output,
+                operation.expected_duration,
+                output_fps=operation.output_fps,
+            )
+        )
+    return tuple(results)
+
+
 def plan_assembly(
     inputs: list[MediaSpec],
     output: AssemblyTargets,
@@ -183,6 +207,12 @@ def plan_assembly(
         trims,
         output,
         concat_manifest,
+    )
+    expected_frame_count, expected_duration = _expected_output(
+        inputs,
+        trims,
+        output_fps=inputs[0].fps,
+        normalized=bool(normalization),
     )
     native = concat_manifest.with_name(f"{concat_manifest.stem}-native.mkv")
     if native.exists():
@@ -225,7 +255,21 @@ def plan_assembly(
         output=output.edit_master_prores,
         command=("-i", str(native), "-c:v", "prores_ks", "-profile:v", "3", *_audio_args(output.audio_policy), str(output.edit_master_prores)),
     )
-    operations = [*normalization, *trims_operations, manifest_operation, concat, review, ffv1, prores]
+    duration_checks = _duration_validation_operations(
+        (review, ffv1, prores),
+        expected_duration,
+        inputs[0].fps,
+    )
+    operations = [
+        *normalization,
+        *trims_operations,
+        manifest_operation,
+        concat,
+        review,
+        ffv1,
+        prores,
+        *duration_checks,
+    ]
     if request_rife:
         operations.append(
             AssemblyOperation(
@@ -239,7 +283,8 @@ def plan_assembly(
         normalize_first=bool(normalization),
         audio_policy=output.audio_policy,
         concat_manifest=concat_manifest,
-        expected_duration=_expected_duration(inputs, trims),
+        expected_frame_count=expected_frame_count,
+        expected_duration=expected_duration,
         output_fps=inputs[0].fps,
         operations=tuple(operations),
     )
@@ -304,9 +349,9 @@ def _normalization_operations(
                     "-i",
                     str(spec.path),
                     "-vf",
-                    f"scale={reference.width}:{reference.height}",
-                    "-r",
-                    str(reference.fps),
+                    f"scale={reference.width}:{reference.height},fps={reference.fps}:round=down:eof_action=pass",
+                    "-fps_mode",
+                    "passthrough",
                     "-pix_fmt",
                     reference.pixel_format,
                     "-c:v",
@@ -333,9 +378,12 @@ def _trim_counts(
         if decision.requires_review:
             raise AssemblyError("boundary decision requires review before automatic assembly")
         if decision.trim_right_frames not in {0, 1}:
-            raise AssemblyError("boundary decisions may trim exactly one right-hand frame")
+            raise AssemblyError("boundary decision requires review before automatic assembly")
+        if decision.trim_right_frames == 0:
+            continue
         if decision.trim_right_frames >= inputs[index].frame_count:
             raise AssemblyError("boundary trim would remove the complete right-hand segment")
+        _verify_exact_duplicate_boundary(decision, inputs[index - 1], inputs[index])
         counts[index] = decision.trim_right_frames
     return tuple(counts)
 
@@ -372,8 +420,8 @@ def _trim_operations(
                     f"trim=start_frame={trim_frames},setpts=PTS-STARTPTS",
                     "-map",
                     "0:v:0",
-                    "-r",
-                    str(reference.fps),
+                    "-fps_mode",
+                    "passthrough",
                     "-c:v",
                     "ffv1",
                     *_color_args(reference),
@@ -406,12 +454,79 @@ def _concat_manifest_line(path: Path) -> str:
     return f"file '{escaped}'\n"
 
 
-def _expected_duration(inputs: list[MediaSpec], trims: tuple[int, ...]) -> Fraction:
-    total = sum(
-        (duration_seconds(spec.frame_count, spec.fps) for spec in inputs),
-        start=Fraction(),
+def _verify_exact_duplicate_boundary(
+    decision: BoundaryDecision,
+    left: MediaSpec,
+    right: MediaSpec,
+) -> None:
+    try:
+        actual = compare_boundary(left.path, right.path)
+    except (AssemblyError, FfmpegError) as error:
+        raise AssemblyError("boundary requires review because exact evidence could not be verified") from error
+    if not _is_exact_duplicate(actual) or not _same_exact_evidence(decision, actual):
+        raise AssemblyError("boundary requires review because exact duplicate evidence was not verified")
+
+
+def _is_exact_duplicate(decision: BoundaryDecision) -> bool:
+    return (
+        decision.left_hash == decision.right_hash
+        and decision.perceptual_distance == 0
+        and decision.trim_right_frames == 1
+        and not decision.requires_review
     )
-    return total - duration_seconds(sum(trims), inputs[0].fps) if any(trims) else total
+
+
+def _same_exact_evidence(left: BoundaryDecision, right: BoundaryDecision) -> bool:
+    return (
+        _is_exact_duplicate(left)
+        and left.left_hash == right.left_hash
+        and left.right_hash == right.right_hash
+        and left.perceptual_distance == right.perceptual_distance
+    )
+
+
+def _expected_output(
+    inputs: list[MediaSpec],
+    trims: tuple[int, ...],
+    *,
+    output_fps: Fraction,
+    normalized: bool,
+) -> tuple[int, Fraction]:
+    frame_counts = [
+        _normalized_frame_count(spec, output_fps) if normalized else spec.frame_count
+        for spec in inputs
+    ]
+    frame_count = sum(frame_counts) - sum(trims)
+    if frame_count <= 0:
+        raise AssemblyError("assembly output must contain at least one frame")
+    return frame_count, duration_seconds(frame_count, output_fps)
+
+
+def _normalized_frame_count(spec: MediaSpec, output_fps: Fraction) -> int:
+    target_intervals = Fraction(spec.frame_count - 1, 1) * output_fps / spec.fps
+    return 1 + _ceil_fraction(target_intervals)
+
+
+def _ceil_fraction(value: Fraction) -> int:
+    return -(-value.numerator // value.denominator)
+
+
+def _duration_validation_operations(
+    outputs: tuple[AssemblyOperation, ...],
+    expected_duration: Fraction,
+    output_fps: Fraction,
+) -> tuple[AssemblyOperation, ...]:
+    return tuple(
+        AssemblyOperation(
+            kind="validate_duration",
+            inputs=(operation.output,),
+            output=operation.output,
+            command=(),
+            expected_duration=expected_duration,
+            output_fps=output_fps,
+        )
+        for operation in outputs
+    )
 
 
 def _compatible(left: MediaSpec, right: MediaSpec, audio_policy: str) -> bool:

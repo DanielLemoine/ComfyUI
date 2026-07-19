@@ -252,6 +252,90 @@ class CollectPreflightTests(unittest.TestCase):
                 (result.artifact_dir / "preflight_report.md").read_text(encoding="utf-8"),
             )
 
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_recognizes_wan_i2v_blueprint_subgraph(self, run) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            blueprint_dir = temporary_path / "ComfyUI" / "blueprints"
+            blueprint_dir.mkdir(parents=True)
+            i2v_blueprint = blueprint_dir / "Image to Video (Wan 2.2).json"
+            i2v_blueprint.write_text(
+                json.dumps(
+                    {
+                        "nodes": [{"id": 1, "type": "uuid-subgraph-id"}],
+                        "definitions": {
+                            "subgraphs": [
+                                {"nodes": [{"id": 2, "type": "WanImageToVideo"}]}
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertEqual(result.native_i2v_template, i2v_blueprint.resolve())
+            self.assertIsNone(result.native_flf_template)
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any(
+                    "official native Wan FLF template could not be verified" in blocker
+                    for blocker in result.blockers
+                )
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_rejects_ltx_blueprint_subgraph(self, run) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            blueprint_dir = temporary_path / "ComfyUI" / "blueprints"
+            blueprint_dir.mkdir(parents=True)
+            ltx_blueprint = blueprint_dir / "First-Last-Frame to Video.json"
+            ltx_blueprint.write_text(
+                json.dumps(
+                    {
+                        "nodes": [{"id": 1, "type": "uuid-subgraph-id"}],
+                        "definitions": {
+                            "subgraphs": [
+                                {"nodes": [{"id": 2, "type": "LTXVConditioning"}]}
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertIsNone(result.native_i2v_template)
+            self.assertIsNone(result.native_flf_template)
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any(
+                    "official native Wan I2V template could not be verified" in blocker
+                    for blocker in result.blockers
+                )
+            )
+            self.assertTrue(
+                any(
+                    "official native Wan FLF template could not be verified" in blocker
+                    for blocker in result.blockers
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

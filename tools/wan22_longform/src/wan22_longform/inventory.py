@@ -305,6 +305,7 @@ def _custom_nodes(comfy_root: Path) -> dict[str, object]:
 
 def _official_templates(comfy_root: Path) -> tuple[Path | None, Path | None, list[Path]]:
     template_roots = [
+        comfy_root / "blueprints",
         comfy_root / "workflow_templates",
         comfy_root / "web" / "assets" / "workflow_templates",
     ]
@@ -345,19 +346,31 @@ def _template_node_types(value: object) -> set[str]:
     if not isinstance(value, dict):
         return set()
     workflow_nodes = value.get("nodes")
-    if isinstance(workflow_nodes, list):
-        return {
-            node_type
-            for node in workflow_nodes
-            if isinstance(node, dict)
-            and isinstance((node_type := node.get("type")), str)
-        }
+    definitions = value.get("definitions")
+    subgraphs = definitions.get("subgraphs") if isinstance(definitions, dict) else None
+    if isinstance(workflow_nodes, list) or isinstance(subgraphs, list):
+        node_types = _workflow_node_types(workflow_nodes)
+        if isinstance(subgraphs, list):
+            for subgraph in subgraphs:
+                if isinstance(subgraph, dict):
+                    node_types.update(_workflow_node_types(subgraph.get("nodes")))
+        return node_types
     return {
         node_type
         for node in value.values()
         if isinstance(node, dict)
         and isinstance(node.get("inputs"), dict)
         and isinstance((node_type := node.get("class_type")), str)
+    }
+
+
+def _workflow_node_types(nodes: object) -> set[str]:
+    if not isinstance(nodes, list):
+        return set()
+    return {
+        node_type
+        for node in nodes
+        if isinstance(node, dict) and isinstance((node_type := node.get("type")), str)
     }
 
 

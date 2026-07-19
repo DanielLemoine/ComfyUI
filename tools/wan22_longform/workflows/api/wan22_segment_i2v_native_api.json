@@ -1,0 +1,132 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {"title": "MODEL_HIGH"}
+  },
+  "2": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {"title": "MODEL_LOW"}
+  },
+  "3": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {"model": ["1", 0], "shift": 5.0},
+    "_meta": {"title": "MODEL_SAMPLING_HIGH"}
+  },
+  "4": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {"model": ["2", 0], "shift": 5.0},
+    "_meta": {"title": "MODEL_SAMPLING_LOW"}
+  },
+  "5": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "_meta": {"title": "TEXT_ENCODER"}
+  },
+  "6": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "wan_2.1_vae.safetensors"},
+    "_meta": {"title": "VAE"}
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"clip": ["5", 0], "text": ""},
+    "_meta": {"title": "POSITIVE_PROMPT"}
+  },
+  "8": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["5", 0],
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+    },
+    "_meta": {"title": "NEGATIVE_PROMPT"}
+  },
+  "9": {
+    "class_type": "LoadImage",
+    "inputs": {"image": ""},
+    "_meta": {"title": "SEGMENT_FIRST_IMAGE"}
+  },
+  "10": {
+    "class_type": "WanImageToVideo",
+    "inputs": {
+      "positive": ["7", 0],
+      "negative": ["8", 0],
+      "vae": ["6", 0],
+      "start_image": ["9", 0],
+      "width": 640,
+      "height": 640,
+      "length": 81,
+      "batch_size": 1
+    },
+    "_meta": {"title": "I2V_CONDITIONING"}
+  },
+  "11": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["3", 0],
+      "positive": ["10", 0],
+      "negative": ["10", 1],
+      "latent_image": ["10", 2],
+      "add_noise": "enable",
+      "noise_seed": 0,
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 2,
+      "return_with_leftover_noise": "enable"
+    },
+    "_meta": {"title": "SAMPLER_HIGH"}
+  },
+  "12": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["4", 0],
+      "positive": ["10", 0],
+      "negative": ["10", 1],
+      "latent_image": ["11", 0],
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 2,
+      "end_at_step": 4,
+      "return_with_leftover_noise": "disable"
+    },
+    "_meta": {"title": "SAMPLER_LOW"}
+  },
+  "13": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["12", 0], "vae": ["6", 0]},
+    "_meta": {"title": "DECODE"}
+  },
+  "14": {
+    "class_type": "CreateVideo",
+    "inputs": {"images": ["13", 0], "fps": 16.0},
+    "_meta": {"title": "CREATE_VIDEO"}
+  },
+  "15": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": ["14", 0],
+      "filename_prefix": "wan22_longform/segment",
+      "format": "auto",
+      "codec": "auto"
+    },
+    "_meta": {"title": "SAVE_VIDEO"}
+  }
+}

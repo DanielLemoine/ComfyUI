@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 from wan22_longform.assembly import (  # noqa: E402
     AssemblyError,
     AssemblyTargets,
+    BoundaryDecision,
     compare_boundary,
     compare_frame_hashes,
     plan_assembly,
@@ -168,6 +169,41 @@ class AssemblyPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(AssemblyError, "requires review"):
             plan_assembly([left, right], self._targets(), boundary_decisions=[decision])
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
+    def test_alpha_only_boundary_difference_never_auto_trims(self) -> None:
+        left = self._alpha_only_ffv1_media("left.mkv", alpha=0)
+        right = self._alpha_only_ffv1_media("right.mkv", alpha=255)
+
+        decision = compare_boundary(left.path, right.path)
+
+        self.assertEqual(left.pixel_format, "yuva420p")
+        self.assertEqual(right.pixel_format, "yuva420p")
+        self.assertEqual(decision.trim_right_frames, 0)
+        self.assertTrue(decision.requires_review)
+        self.assertFalse(decision.full_fidelity)
+        self.assertIn("alpha", decision.reason)
+        with self.assertRaisesRegex(AssemblyError, "requires review"):
+            plan_assembly([left, right], self._targets(), boundary_decisions=[decision])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
+    def test_alpha_boundary_rejects_forged_exact_evidence_during_reverification(self) -> None:
+        left = self._alpha_only_ffv1_media("left.mkv", alpha=0)
+        right = self._alpha_only_ffv1_media("right.mkv", alpha=255)
+        forged = BoundaryDecision(
+            left_hash="forged",
+            right_hash="forged",
+            perceptual_distance=0,
+            trim_right_frames=1,
+            requires_review=False,
+            reason="forged exact evidence",
+            canonical_width=16,
+            canonical_height=8,
+            full_fidelity=True,
+        )
+
+        with self.assertRaisesRegex(AssemblyError, "alpha-capable"):
+            plan_assembly([left, right], self._targets(), boundary_decisions=[forged])
+
     def test_incompatible_inputs_receive_normalization_before_concat(self) -> None:
         left = self._media("left.mp4", width=1280, fps=Fraction(16, 1))
         right = self._media("right.mp4", width=1024, fps=Fraction(24, 1))
@@ -293,6 +329,24 @@ class AssemblyPlanTests(unittest.TestCase):
 
         self.assertFalse(manifest.exists())
 
+    def test_requested_master_cannot_collide_with_derived_native_output(self) -> None:
+        left = self._media("left.mp4")
+        review = self.root / "review.mp4"
+        manifest = review.with_suffix(".concat.txt")
+        native = manifest.with_name(f"{manifest.stem}-native.mkv")
+        targets = AssemblyTargets(
+            review_mp4=review,
+            edit_master_ffv1=native,
+            edit_master_prores=self.root / "master.mov",
+        )
+
+        with self.assertRaisesRegex(AssemblyError, "output paths must be distinct"):
+            plan_assembly([left], targets)
+
+        self.assertFalse(manifest.exists())
+        self.assertFalse(native.exists())
+        self.assertFalse(review.exists())
+
     def test_rife_is_only_scheduled_after_approved_native_assembly(self) -> None:
         left = self._media("left.mp4")
         targets = self._targets(rife_review_mp4=self.root / "rife-review.mp4")
@@ -366,6 +420,46 @@ class AssemblyPlanTests(unittest.TestCase):
                 "ffv1",
                 "-pix_fmt",
                 "yuv420p",
+                "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return probe_media(path)
+
+    def _alpha_only_ffv1_media(self, name: str, *, alpha: int) -> MediaSpec:
+        width, height = 16, 8
+        raw = self.root / f"{name}.yuva"
+        y_plane = bytes([128]) * (width * height)
+        u_plane = bytes([128]) * (width * height // 4)
+        v_plane = bytes([128]) * (width * height // 4)
+        alpha_plane = bytes([alpha]) * (width * height)
+        raw.write_bytes((y_plane + u_plane + v_plane + alpha_plane) * 2)
+        path = self.root / name
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostdin",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "yuva420p",
+                "-video_size",
+                f"{width}x{height}",
+                "-framerate",
+                "16",
+                "-i",
+                str(raw),
+                "-frames:v",
+                "2",
+                "-c:v",
+                "ffv1",
+                "-pix_fmt",
+                "yuva420p",
                 "-an",
                 str(path),
             ],

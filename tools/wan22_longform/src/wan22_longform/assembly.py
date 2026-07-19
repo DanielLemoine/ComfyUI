@@ -121,6 +121,15 @@ def compare_boundary(left: Path, right: Path) -> BoundaryDecision:
     """Diagnose the final left frame against the opening right frame locally."""
     left_spec = probe_media(left)
     right_spec = probe_media(right)
+    if _media_has_alpha(left_spec) or _media_has_alpha(right_spec):
+        return BoundaryDecision(
+            left_hash="",
+            right_hash="",
+            perceptual_distance=0,
+            trim_right_frames=0,
+            requires_review=True,
+            reason="alpha-capable boundary media requires review in V1",
+        )
     with tempfile.TemporaryDirectory(prefix="wan22-boundary-") as temporary:
         root = Path(temporary)
         left_canonical = _extract_canonical_boundary_frame(
@@ -304,7 +313,6 @@ def plan_assembly(
         raise AssemblyError(
             "audio preservation is not supported without end-to-end A/V timing validation"
         )
-    _ensure_new_targets(output, request_rife)
     if request_rife:
         if not qc_approved:
             raise AssemblyError("RIFE may be scheduled only after approved QC")
@@ -314,8 +322,6 @@ def plan_assembly(
     trims = _trim_counts(inputs, boundary_decisions)
 
     concat_manifest = output.review_mp4.with_suffix(".concat.txt")
-    if concat_manifest.exists():
-        raise AssemblyError(f"assembly concat manifest already exists: {concat_manifest}")
     normalized_inputs, normalization = _normalization_operations(
         inputs,
         output,
@@ -330,8 +336,14 @@ def plan_assembly(
         concat_manifest,
     )
     native = concat_manifest.with_name(f"{concat_manifest.stem}-native.mkv")
-    if native.exists():
-        raise AssemblyError(f"assembly native output already exists: {native}")
+    _reserve_assembly_output_paths(
+        output,
+        request_rife,
+        concat_manifest,
+        native,
+        normalization,
+        trims_operations,
+    )
     manifest_operation = _concat_manifest_operation(concat_inputs, concat_manifest)
     concat = AssemblyOperation(
         kind="concat",
@@ -524,8 +536,6 @@ def _normalization_operations(
     operations: list[AssemblyOperation] = []
     for index, spec in enumerate(inputs, start=1):
         target = concat_manifest.with_name(f"{concat_manifest.stem}-normalized-{index:04d}.mkv")
-        if target.exists():
-            raise AssemblyError(f"normalization target already exists: {target}")
         normalized.append(target)
         operations.append(
             AssemblyOperation(
@@ -591,8 +601,6 @@ def _trim_operations(
         target = concat_manifest.with_name(
             f"{concat_manifest.stem}-trimmed-{index + 1:04d}.mkv"
         )
-        if target.exists():
-            raise AssemblyError(f"boundary trim target already exists: {target}")
         source = normalized_inputs[index]
         concat_inputs[index] = target
         operations.append(
@@ -653,6 +661,8 @@ def _verify_exact_duplicate_boundary(
     left: MediaSpec,
     right: MediaSpec,
 ) -> None:
+    if _media_has_alpha(left) or _media_has_alpha(right):
+        raise AssemblyError("boundary requires review because alpha-capable media cannot be auto-trimmed in V1")
     try:
         actual = compare_boundary(left.path, right.path)
     except (AssemblyError, FfmpegError) as error:
@@ -756,16 +766,57 @@ def _color_args(spec: MediaSpec) -> tuple[str, ...]:
     return tuple(arguments)
 
 
-def _ensure_new_targets(output: AssemblyTargets, request_rife: bool) -> None:
-    targets = [output.review_mp4, output.edit_master_ffv1, output.edit_master_prores]
+def _reserve_assembly_output_paths(
+    output: AssemblyTargets,
+    request_rife: bool,
+    concat_manifest: Path,
+    native: Path,
+    normalization: list[AssemblyOperation],
+    trims: list[AssemblyOperation],
+) -> None:
+    targets = [
+        output.review_mp4,
+        output.edit_master_ffv1,
+        output.edit_master_prores,
+        concat_manifest,
+        native,
+        *(operation.output for operation in normalization),
+        *(operation.output for operation in trims),
+    ]
     if request_rife and output.rife_review_mp4 is not None:
         targets.append(output.rife_review_mp4)
-    duplicate = next((path for path in targets if targets.count(path) > 1), None)
-    if duplicate is not None:
-        raise AssemblyError(f"assembly targets must be distinct: {duplicate}")
+    seen: set[Path] = set()
+    for path in targets:
+        resolved = path.resolve()
+        if resolved in seen:
+            raise AssemblyError(f"assembly output paths must be distinct: {path}")
+        seen.add(resolved)
     existing = next((path for path in targets if path.exists()), None)
     if existing is not None:
-        raise AssemblyError(f"assembly target already exists: {existing}")
+        if existing.resolve() == native.resolve():
+            raise AssemblyError(f"assembly native output already exists: {existing}")
+        if existing.resolve() == concat_manifest.resolve():
+            raise AssemblyError(f"assembly concat manifest already exists: {existing}")
+        raise AssemblyError(f"assembly output already exists: {existing}")
+
+
+def _media_has_alpha(spec: MediaSpec) -> bool:
+    pixel_format = spec.pixel_format.lower()
+    return pixel_format == "pal8" or pixel_format.startswith(
+        (
+            "a2",
+            "abgr",
+            "argb",
+            "ayuv",
+            "bgra",
+            "gbrap",
+            "rgba",
+            "rgbaf",
+            "vuya",
+            "ya",
+            "yuva",
+        )
+    ) or "alpha" in pixel_format
 
 
 def _validate_inputs(inputs: list[MediaSpec]) -> None:

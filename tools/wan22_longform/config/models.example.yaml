@@ -8,7 +8,7 @@
     "identity": {"mode": "none"},
     "vbvr": {"enabled": false},
     "motion": {"enabled": false},
-    "corrective": {"enabled": false},
+    "corrective": {"enabled": false, "weight": 0.0},
     "permissiveness": {
       "mystic": {"enabled": false},
       "wan_general": {"enabled": false}

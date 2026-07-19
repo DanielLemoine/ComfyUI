@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
+
+import yaml
 
 
 PERMISSIVENESS_MODES = frozenset({"none", "mystic", "wan_general"})
@@ -123,6 +124,7 @@ class Preset:
     permissiveness_mode: str
     permissiveness_low: float
     motion_high: float
+    corrective_low: float
     identity_high: float
     identity_low: float
 
@@ -154,7 +156,9 @@ class ModelFiles:
         )
 
     def contains(self, name: str | None) -> bool:
-        return name is not None and name in self.names
+        return name is not None and any(
+            discovered.casefold() == name.casefold() for discovered in self.names
+        )
 
 
 def load_project(path: Path) -> ProjectConfig:
@@ -172,6 +176,7 @@ def load_presets(path: Path) -> PresetCatalog:
         "permissiveness_mode",
         "permissiveness_low",
         "motion_high",
+        "corrective_low",
         "identity_high",
         "identity_low",
     )
@@ -186,6 +191,7 @@ def load_presets(path: Path) -> PresetCatalog:
             permissiveness_mode=_string(raw_preset["permissiveness_mode"], name),
             permissiveness_low=_number(raw_preset["permissiveness_low"], name),
             motion_high=_number(raw_preset["motion_high"], name),
+            corrective_low=_number(raw_preset["corrective_low"], name),
             identity_high=_number(raw_preset["identity_high"], name),
             identity_low=_number(raw_preset["identity_low"], name),
         )
@@ -235,7 +241,7 @@ def resolve_preset(project: ProjectConfig, presets: PresetCatalog) -> ResolvedRe
         identity=identity,
         vbvr=_slot(loras.get("vbvr"), "high", preset.vbvr_high),
         motion=_slot(loras.get("motion"), "high", preset.motion_high),
-        corrective=_slot(loras.get("corrective"), "low", 1.0),
+        corrective=_slot(loras.get("corrective"), "low", preset.corrective_low),
         dangerous_override=_bool(source.get("dangerous_override", False), "dangerous_override"),
         denylist=presets.denylist,
         preset=preset.name,
@@ -243,8 +249,12 @@ def resolve_preset(project: ProjectConfig, presets: PresetCatalog) -> ResolvedRe
 
 
 def validate_lora_policy(config: ResolvedRenderConfig, files: ModelFiles) -> None:
-    if config.models.high == config.models.low:
+    if config.models.high.casefold() == config.models.low.casefold():
         raise ConfigError("high and low model files must differ")
+    if not files.contains(config.models.high):
+        raise ConfigError(f"configured high model is missing: {config.models.high}")
+    if not files.contains(config.models.low):
+        raise ConfigError(f"configured low model is missing: {config.models.low}")
     if config.vbvr.is_enabled and config.vbvr.branch != "high":
         raise ConfigError("VBVR must be high-noise only")
     if config.motion.is_enabled and config.motion.branch != "high":
@@ -254,6 +264,13 @@ def validate_lora_policy(config: ResolvedRenderConfig, files: ModelFiles) -> Non
     permissiveness = config.permissiveness
     if permissiveness.mode not in PERMISSIVENESS_MODES:
         raise ConfigError("unknown permissiveness mode")
+    if permissiveness.mystic.is_enabled and permissiveness.mystic.branch != "low":
+        raise ConfigError("mystic must be low-noise only")
+    if (
+        permissiveness.wan_general.is_enabled
+        and permissiveness.wan_general.branch != "low"
+    ):
+        raise ConfigError("wan_general must be low-noise only")
     if permissiveness.mystic.is_enabled and permissiveness.wan_general.is_enabled:
         raise ConfigError("mystic and wan_general are mutually exclusive")
     if permissiveness.mode == "mystic" and permissiveness.wan_general.is_enabled:
@@ -294,15 +311,15 @@ def _slot(value: Any, branch: str, strength: float) -> LoraSlot:
     return LoraSlot(
         file=_optional_string(source.get("file"), "LoRA file"),
         branch=branch,
-        strength=strength,
+        strength=_number(source.get("weight", strength), "LoRA weight"),
         enabled=_bool(source.get("enabled", True), "LoRA enabled"),
     )
 
 
 def _read_mapping(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
         raise ConfigError(f"invalid YAML configuration: {path}") from error
     if not isinstance(value, dict):
         raise ConfigError("configuration root must be a mapping")

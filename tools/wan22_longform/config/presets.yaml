@@ -5,6 +5,7 @@
       "permissiveness_mode": "none",
       "permissiveness_low": 0.0,
       "motion_high": 0.0,
+      "corrective_low": 0.0,
       "identity_high": 0.90,
       "identity_low": 0.90
     },
@@ -13,6 +14,7 @@
       "permissiveness_mode": "none",
       "permissiveness_low": 0.0,
       "motion_high": 0.0,
+      "corrective_low": 0.0,
       "identity_high": 0.90,
       "identity_low": 0.90
     },
@@ -21,6 +23,7 @@
       "permissiveness_mode": "mystic",
       "permissiveness_low": 0.25,
       "motion_high": 0.0,
+      "corrective_low": 0.0,
       "identity_high": 0.90,
       "identity_low": 0.90
     },
@@ -29,6 +32,7 @@
       "permissiveness_mode": "mystic",
       "permissiveness_low": 0.25,
       "motion_high": 0.25,
+      "corrective_low": 0.0,
       "identity_high": 0.90,
       "identity_low": 0.90
     },
@@ -37,6 +41,7 @@
       "permissiveness_mode": "wan_general",
       "permissiveness_low": 0.20,
       "motion_high": 0.0,
+      "corrective_low": 0.0,
       "identity_high": 0.90,
       "identity_low": 0.90
     }

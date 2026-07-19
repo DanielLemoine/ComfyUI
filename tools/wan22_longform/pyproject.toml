@@ -7,7 +7,7 @@ name = "wan22-longform"
 version = "0.1.0"
 description = "Local-only Wan2.2 long-form preflight tooling"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["PyYAML>=6.0"]
 
 [project.scripts]
 wan22-longform = "wan22_longform.cli:main"

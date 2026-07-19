@@ -53,6 +53,8 @@ class LoraPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.model_files = ModelFiles.from_names(
             {
+                "wan-high.safetensors",
+                "wan-low.safetensors",
                 "id.safetensors",
                 "id-high.safetensors",
                 "id-low.safetensors",
@@ -118,6 +120,27 @@ class LoraPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "high and low model files must differ"):
             validate_lora_policy(config, self.model_files)
 
+    def test_high_and_low_models_are_distinct_case_insensitively(self) -> None:
+        config = resolved_config(
+            models=Models(high="WAN-HIGH.safetensors", low="wan-high.safetensors")
+        )
+        with self.assertRaisesRegex(ConfigError, "high and low model files must differ"):
+            validate_lora_policy(config, self.model_files)
+
+    def test_configured_models_must_exist_in_discovery(self) -> None:
+        config = resolved_config(
+            models=Models(high="missing-high.safetensors", low="wan-low.safetensors")
+        )
+        with self.assertRaisesRegex(ConfigError, "configured high model is missing"):
+            validate_lora_policy(config, self.model_files)
+
+    def test_discovery_matches_model_names_case_insensitively(self) -> None:
+        config = resolved_config(
+            models=Models(high="WAN-HIGH.SAFETENSORS", low="wan-low.safetensors")
+        )
+
+        validate_lora_policy(config, self.model_files)
+
     def test_vbvr_and_motion_cannot_be_routed_to_low_noise(self) -> None:
         for name in ("vbvr", "motion"):
             with self.subTest(name=name):
@@ -133,6 +156,18 @@ class LoraPolicyTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ConfigError, "must be low-noise only"):
             validate_lora_policy(config, self.model_files)
+
+    def test_permissiveness_adapters_cannot_be_routed_to_high_noise(self) -> None:
+        for mode, slot_name in (("mystic", "mystic"), ("wan_general", "wan_general")):
+            with self.subTest(mode=mode):
+                config = resolved_config(
+                    permissiveness=Permissiveness(
+                        mode=mode,
+                        **{slot_name: LoraSlot(file="id.safetensors", branch="high")},
+                    )
+                )
+                with self.assertRaisesRegex(ConfigError, "must be low-noise only"):
+                    validate_lora_policy(config, self.model_files)
 
 
 if __name__ == "__main__":

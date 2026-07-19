@@ -274,7 +274,9 @@ class CollectPreflightTests(unittest.TestCase):
             )
 
     @patch("wan22_longform.inventory.subprocess.run")
-    def test_collect_preflight_rejects_misleading_template_filename(self, run) -> None:
+    def test_collect_preflight_rejects_unregistered_flf_in_workflow_templates(
+        self, run
+    ) -> None:
         run.return_value = CompletedProcess([], 0, "fixture output", "")
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -302,13 +304,58 @@ class CollectPreflightTests(unittest.TestCase):
             )
 
             self.assertEqual(result.native_i2v_template, valid_i2v.resolve())
-            self.assertEqual(result.native_flf_template, valid_flf.resolve())
-            self.assertEqual(result.status, "READY")
-            self.assertEqual(result.blockers, ())
+            self.assertIsNone(result.native_flf_template)
+            self.assertEqual(result.status, "BLOCKED")
             self.assertIn(
-                "- READY: all required native schemas and templates were verified.",
+                "official native Wan FLF template could not be verified",
                 (result.artifact_dir / "preflight_report.md").read_text(encoding="utf-8"),
             )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_rejects_same_node_flf_from_standard_template_roots(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        standard_roots = (
+            Path("blueprints"),
+            Path("workflow_templates"),
+            Path("web") / "assets" / "workflow_templates",
+        )
+        for relative_root in standard_roots:
+            with self.subTest(relative_root=relative_root):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    temporary_path = Path(temporary_directory)
+                    template_dir = temporary_path / "ComfyUI" / relative_root
+                    template_dir.mkdir(parents=True)
+                    i2v_template = template_dir / "wan_i2v_native.json"
+                    i2v_template.write_text(
+                        json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+                        encoding="utf-8",
+                    )
+                    fake_flf = template_dir / "unregistered_same_node_flf.json"
+                    fake_flf.write_text(
+                        json.dumps(
+                            {"nodes": [{"type": "WanFirstLastFrameToVideo"}]}
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    result = collect_preflight(
+                        comfy_root=temporary_path / "ComfyUI",
+                        comfy_url=None,
+                        artifact_dir=temporary_path / "artifacts" / "preflight",
+                        object_info=self._object_info_fixture(),
+                    )
+
+                    self.assertEqual(result.native_i2v_template, i2v_template.resolve())
+                    self.assertIsNone(result.native_flf_template)
+                    self.assertEqual(result.status, "BLOCKED")
+                    self.assertTrue(
+                        any(
+                            "registered canonical Wan FLF package asset" in blocker
+                            for blocker in result.blockers
+                        )
+                    )
 
     @patch("wan22_longform.inventory.subprocess.run")
     def test_collect_preflight_recognizes_wan_i2v_blueprint_subgraph(self, run) -> None:
@@ -419,6 +466,45 @@ class CollectPreflightTests(unittest.TestCase):
             self.assertEqual(result.status, "BLOCKED")
             self.assertTrue(
                 any("SHA-256" in blocker for blocker in result.blockers)
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_blocks_registered_flf_with_unpinned_manifest_hash(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = self._package_template_dir(temporary_path)
+            template_dir.mkdir(parents=True)
+            (template_dir / "video_wan2_2_14B_i2v.json").write_text(
+                json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+                encoding="utf-8",
+            )
+            flf_template = template_dir / "video_wan2_2_14B_flf2v.json"
+            flf_template.write_text(
+                json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
+                encoding="utf-8",
+            )
+            self._write_registered_flf_manifest(
+                template_dir,
+                hashlib.sha256(flf_template.read_bytes()).hexdigest(),
+            )
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertIsNone(result.native_flf_template)
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any(
+                    "manifest SHA-256" in blocker and "pinned official hash" in blocker
+                    for blocker in result.blockers
+                )
             )
 
     @patch("wan22_longform.inventory.subprocess.run")

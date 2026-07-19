@@ -378,57 +378,41 @@ def _official_templates(
 
 
 def _find_native_flf_template(templates: list[Path]) -> tuple[Path | None, str]:
-    """Find an official FLF graph without accepting arbitrary package JSON.
+    """Find only the cryptographically verified official FLF graph.
 
-    ComfyUI's built-in template roots remain valid discovery locations.  The
-    separately installed workflow-template JSON package is stricter: its Wan
-    FLF template must be the canonical asset registered in the sibling core
-    manifest and its local bytes must match the pinned upstream SHA-256.
+    Unlike I2V discovery, FLF cannot fall back to a same-node JSON from a
+    blueprint or workflow directory. Its source must be the canonical asset in
+    the installed workflow-template package, registered by the sibling core
+    manifest, and match the pinned upstream SHA-256 locally.
     """
-    matches = [
+    package_candidates = [
         path
         for path in templates
-        if _template_has_native_node(path, "WanFirstLastFrameToVideo")
-    ]
-    package_failures: list[str] = []
-    for path in matches:
         if (
             _package_template_root(path) is not None
             and path.name == _CANONICAL_FLF_TEMPLATE_FILENAME
-        ):
-            verified, detail = _verify_registered_package_flf_template(path)
-            if verified:
-                return path, detail
-            package_failures.append(detail)
-
-    standard_matches = [
-        path for path in matches if _package_template_root(path) is None
+        )
     ]
-    preferred_standard = next(
-        (
-            path
-            for path in standard_matches
-            if path.name.casefold() == _CANONICAL_FLF_TEMPLATE_FILENAME.casefold()
-        ),
-        None,
-    )
-    if preferred_standard is not None:
+    if not package_candidates:
         return (
-            preferred_standard,
-            "verified by native-node topology in a built-in ComfyUI template directory",
+            None,
+            "registered canonical Wan FLF package asset "
+            f"{_CANONICAL_FLF_TEMPLATE_FILENAME} was not found; topology-only "
+            "FLF JSON in blueprints, workflow_templates, or web assets is not trusted",
         )
-    if standard_matches:
-        return (
-            standard_matches[0],
-            "verified by native-node topology in a built-in ComfyUI template directory",
+    package_failures: list[str] = []
+    for path in package_candidates:
+        verified, detail = _verify_registered_package_flf_template(path)
+        if not verified:
+            package_failures.append(detail)
+            continue
+        if _template_has_native_node(path, "WanFirstLastFrameToVideo"):
+            return path, detail
+        package_failures.append(
+            "the registered canonical Wan FLF package asset is missing its "
+            "WanFirstLastFrameToVideo node"
         )
-    if package_failures:
-        return None, "; ".join(package_failures)
-    return (
-        None,
-        "no valid WanFirstLastFrameToVideo graph was found in an official ComfyUI "
-        "template directory",
-    )
+    return None, "; ".join(package_failures)
 
 
 def _package_template_root(template_path: Path) -> Path | None:
@@ -587,7 +571,7 @@ def _template_inventory_markdown(
     flf_verification: str,
     blockers: tuple[str, ...],
 ) -> str:
-    lines = ["# Official Template Inventory", "", "## Official template files"]
+    lines = ["# Template Discovery Inventory", "", "## Candidate template files"]
     lines.extend(f"- `{path}`" for path in templates)
     if not templates:
         lines.append("- unavailable: no official template directory was found")
@@ -599,7 +583,8 @@ def _template_inventory_markdown(
             f"- Native FLF: `{native_flf_template}`" if native_flf_template else "- Native FLF: unavailable",
             f"- Native FLF verification: {flf_verification}",
             "",
-            "Community workflow graphs were not substituted for unavailable official templates.",
+            "FLF accepts only the registered, hash-verified canonical package asset; "
+            "community or local workflow graphs are not substitutes.",
             "",
             "## Preflight gate",
             "",

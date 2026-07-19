@@ -42,9 +42,11 @@ def find_unique_node(graph: ApiGraph, title: str, class_type: str) -> NodeRef:
 
 
 def build_api_graph(
-    base_graph: ApiGraph, render: ResolvedRenderConfig, available_files: ModelFiles
+    base_graph: ApiGraph,
+    render: ResolvedRenderConfig,
+    available_files: ModelFiles | None = None,
 ) -> ApiGraph:
-    """Build from a clean base with enabled LoRAs checked against available files."""
+    """Build from a clean base, requiring inventory only for enabled LoRAs."""
     graph = deepcopy(base_graph)
     if any(node.get("class_type") == "LoraLoaderModelOnly" for node in graph.values()):
         raise WorkflowError("base graph must be clean and contain no optional LoRA nodes")
@@ -64,6 +66,11 @@ def build_api_graph(
 
     for sampling_title, lora_title, slot in _ordered_lora_slots(render):
         if slot.is_enabled:
+            if available_files is None:
+                raise WorkflowError(
+                    f"enabled optional LoRA {lora_title} requires an available-file "
+                    "inventory"
+                )
             _insert_model_only_lora(
                 graph, sampling_title, lora_title, slot, available_files
             )

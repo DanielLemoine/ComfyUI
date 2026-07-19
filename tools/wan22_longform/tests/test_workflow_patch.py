@@ -85,7 +85,7 @@ class WorkflowPatchTests(unittest.TestCase):
     def test_disabled_loras_are_absent_from_executable_graph(self) -> None:
         base = load_fixture("native_segment_api.json")
 
-        graph = build_api_graph(base, base_render_config(), available_files())
+        graph = build_api_graph(base, base_render_config())
 
         self.assertFalse(
             any(node["class_type"] == "LoraLoaderModelOnly" for node in graph.values())
@@ -208,7 +208,17 @@ class WorkflowPatchTests(unittest.TestCase):
                 load_fixture("native_segment_api.json"), render, available_files()
             )
 
-    def test_enabled_lora_missing_from_available_inventory_is_rejected(self) -> None:
+    def test_enabled_lora_requires_an_available_inventory(self) -> None:
+        base = load_fixture("native_segment_api.json")
+        render = base_render_config(
+            vbvr=LoraSlot("vbvr.safetensors", "high", 0.25)
+        )
+
+        with self.assertRaisesRegex(WorkflowError, "requires an available-file inventory"):
+            build_api_graph(base, render)
+        self.assertNotIn("LORA_VBVR_HIGH", titles(base))
+
+    def test_enabled_lora_missing_from_supplied_available_inventory_is_rejected(self) -> None:
         base = load_fixture("native_segment_api.json")
         render = base_render_config(
             vbvr=LoraSlot("definitely-missing.safetensors", "high", 0.25)

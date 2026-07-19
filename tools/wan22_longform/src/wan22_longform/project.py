@@ -169,11 +169,14 @@ def transition_attempt(
         "timestamp": _utc_timestamp(timestamp),
         "to": target,
     }
-    decision_path = decision_dir / f"{decision_number:04d}-{target}.json"
+    decision_path = decision_dir / f"{decision_number:04d}.json"
     try:
         _write_json(decision_path, payload)
     except FileExistsError as error:
-        raise ProjectStateError("attempt decision chain changed during transition") from error
+        current = load_attempt(attempt.path)
+        raise ProjectStateError(
+            f"attempt decision claim lost; persisted state is {current.state}"
+        ) from error
     return replace(persisted, state=target)
 
 
@@ -288,8 +291,8 @@ def _decision_paths(attempt_path: Path) -> tuple[Path, ...]:
 
 
 def _decision_number(path: Path) -> int:
-    prefix, separator, _ = path.stem.partition("-")
-    if not separator or not prefix.isdigit():
+    prefix = path.stem.partition("-")[0]
+    if not prefix.isdigit():
         raise ProjectStateError("attempt decision filename is invalid")
     return int(prefix)
 

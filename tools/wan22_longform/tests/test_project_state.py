@@ -4,9 +4,11 @@ import hashlib
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -14,6 +16,7 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from wan22_longform.config import ProjectConfig, load_project  # noqa: E402
 from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
+import wan22_longform.project as project_module  # noqa: E402
 from wan22_longform.project import (  # noqa: E402
     AttemptState,
     ProjectStateError,
@@ -130,6 +133,44 @@ class ProjectStateTests(unittest.TestCase):
             transition_attempt(attempt, AttemptState.RENDERING, "again", now=self.now)
 
         self.assertEqual(sorted(path.name for path in decision_dir.glob("*.json")), before)
+
+    def test_concurrent_divergent_outcomes_claim_one_numeric_decision(self) -> None:
+        review = self._review_attempt()
+        barrier = threading.Barrier(2)
+        results: list[tuple[str, object]] = []
+        original_write_json = project_module._write_json
+
+        def synchronized_write(path: Path, payload: object) -> None:
+            if path.parent.name == "decisions":
+                barrier.wait(timeout=5)
+            original_write_json(path, payload)
+
+        def contend(target: AttemptState, note: str) -> None:
+            try:
+                results.append(("success", transition_attempt(review, target, note, now=self.now)))
+            except ProjectStateError as error:
+                results.append(("error", error))
+
+        with patch("wan22_longform.project._write_json", synchronized_write):
+            contenders = [
+                threading.Thread(target=contend, args=(AttemptState.ACCEPTED, "approved")),
+                threading.Thread(target=contend, args=(AttemptState.REJECTED, "rejected")),
+            ]
+            for contender in contenders:
+                contender.start()
+            for contender in contenders:
+                contender.join(timeout=5)
+
+        self.assertFalse(any(contender.is_alive() for contender in contenders))
+        self.assertEqual([kind for kind, _ in results].count("success"), 1)
+        self.assertEqual([kind for kind, _ in results].count("error"), 1)
+        conflict = next(value for kind, value in results if kind == "error")
+        self.assertIn("persisted state", str(conflict))
+        decision_paths = sorted((review.path / "decisions").glob("*.json"))
+        self.assertEqual(len(decision_paths), 4)
+        self.assertEqual(decision_paths[-1].name, "0004.json")
+        successful_attempt = next(value for kind, value in results if kind == "success")
+        self.assertEqual(load_attempt(review.path).state, successful_attempt.state)
 
     def test_operator_outcomes_require_a_non_empty_note(self) -> None:
         for state, note in (

@@ -119,6 +119,8 @@ def _object_info(
             payload = json.load(response)
     except OSError as error:
         return {}, f"unavailable: unable to read local object info from {endpoint}: {error}"
+    except json.JSONDecodeError as error:
+        return {}, f"unavailable: local object info from {endpoint} was not valid JSON: {error}"
     if not isinstance(payload, dict):
         return {}, f"unavailable: local object info from {endpoint} was not a JSON object"
     return payload, f"collected from {endpoint}"
@@ -152,10 +154,15 @@ def _preflight_blockers(
         )
     else:
         for schema in required_schemas:
-            if not isinstance(object_info.get(schema), dict):
+            if schema not in object_info:
                 blockers.append(
                     f"required object-info schema {schema} is unavailable; "
                     "install or enable the matching native ComfyUI node"
+                )
+            elif not _has_required_input_schema(object_info[schema]):
+                blockers.append(
+                    f"required object-info schema {schema} lacks a non-empty "
+                    "input.required mapping; collect the complete native node schema"
                 )
     if native_i2v_template is None:
         blockers.append(
@@ -170,6 +177,16 @@ def _preflight_blockers(
             "official ComfyUI template directory"
         )
     return tuple(blockers)
+
+
+def _has_required_input_schema(schema: object) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    input_spec = schema.get("input")
+    if not isinstance(input_spec, dict):
+        return False
+    required_inputs = input_spec.get("required")
+    return isinstance(required_inputs, dict) and bool(required_inputs)
 
 
 def _environment(comfy_root: Path, comfy_url: str | None) -> dict[str, object]:

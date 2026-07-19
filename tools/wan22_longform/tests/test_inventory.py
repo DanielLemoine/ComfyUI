@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from subprocess import CompletedProcess
@@ -15,6 +16,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from wan22_longform.errors import PreflightError
+from wan22_longform import inventory
 from wan22_longform.inventory import collect_preflight
 
 
@@ -34,6 +36,62 @@ class CollectPreflightTests(unittest.TestCase):
             (PROJECT_DIR / "tests" / "fixtures" / "object_info.json").read_text(
                 encoding="utf-8"
             )
+        )
+
+    @staticmethod
+    def _package_template_dir(temporary_path: Path) -> Path:
+        return (
+            temporary_path
+            / "ComfyUI"
+            / "venv"
+            / "Lib"
+            / "site-packages"
+            / "comfyui_workflow_templates_json"
+            / "templates"
+        )
+
+    @staticmethod
+    def _write_registered_flf_manifest(
+        template_dir: Path, asset_hash: str
+    ) -> None:
+        manifest_path = (
+            template_dir.parent.parent
+            / "comfyui_workflow_templates_core"
+            / "manifest.json"
+        )
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "manifest_version": 1,
+                    "templates": [
+                        {
+                            "id": "video_wan2_2_14B_flf2v",
+                            "bundle": "media-video",
+                            "assets": [
+                                {
+                                    "filename": "video_wan2_2_14B_flf2v.json",
+                                    "sha256": asset_hash,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_canonical_flf_template_identity_is_pinned(self) -> None:
+        self.assertEqual(
+            inventory._CANONICAL_FLF_TEMPLATE_ID, "video_wan2_2_14B_flf2v"
+        )
+        self.assertEqual(
+            inventory._CANONICAL_FLF_TEMPLATE_FILENAME,
+            "video_wan2_2_14B_flf2v.json",
+        )
+        self.assertEqual(
+            inventory._CANONICAL_FLF_TEMPLATE_SHA256,
+            "9fb579e07caff9081c14a4c0e3b983e210aa7d976f83f1c2758d2ad6ed949fdf",
         )
 
     @patch("wan22_longform.inventory.subprocess.run")
@@ -292,19 +350,11 @@ class CollectPreflightTests(unittest.TestCase):
             )
 
     @patch("wan22_longform.inventory.subprocess.run")
-    def test_collect_preflight_recognizes_official_wan_template_package(self, run) -> None:
+    def test_collect_preflight_blocks_unregistered_package_flf_template(self, run) -> None:
         run.return_value = CompletedProcess([], 0, "fixture output", "")
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
-            template_dir = (
-                temporary_path
-                / "ComfyUI"
-                / "venv"
-                / "Lib"
-                / "site-packages"
-                / "comfyui_workflow_templates_json"
-                / "templates"
-            )
+            template_dir = self._package_template_dir(temporary_path)
             template_dir.mkdir(parents=True)
             i2v_template = template_dir / "video_wan2_2_14B_i2v.json"
             flf_template = template_dir / "video_wan2_2_14B_flf2v.json"
@@ -325,6 +375,86 @@ class CollectPreflightTests(unittest.TestCase):
             )
 
             self.assertEqual(result.native_i2v_template, i2v_template.resolve())
+            self.assertIsNone(result.native_flf_template)
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any("registered ComfyUI manifest entry" in blocker for blocker in result.blockers)
+            )
+            self.assertIn(
+                "registered ComfyUI manifest entry",
+                (result.artifact_dir / "preflight_report.md").read_text(encoding="utf-8"),
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_blocks_tampered_registered_package_flf_template(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = self._package_template_dir(temporary_path)
+            template_dir.mkdir(parents=True)
+            (template_dir / "video_wan2_2_14B_i2v.json").write_text(
+                json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+                encoding="utf-8",
+            )
+            flf_template = template_dir / "video_wan2_2_14B_flf2v.json"
+            flf_template.write_text(
+                json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
+                encoding="utf-8",
+            )
+            self._write_registered_flf_manifest(
+                template_dir,
+                "9fb579e07caff9081c14a4c0e3b983e210aa7d976f83f1c2758d2ad6ed949fdf",
+            )
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertIsNone(result.native_flf_template)
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any("SHA-256" in blocker for blocker in result.blockers)
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_recognizes_verified_registered_wan_template_package(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = self._package_template_dir(temporary_path)
+            template_dir.mkdir(parents=True)
+            i2v_template = template_dir / "video_wan2_2_14B_i2v.json"
+            i2v_template.write_text(
+                json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+                encoding="utf-8",
+            )
+            flf_template = template_dir / "video_wan2_2_14B_flf2v.json"
+            flf_template.write_text(
+                json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
+                encoding="utf-8",
+            )
+            expected_hash = hashlib.sha256(flf_template.read_bytes()).hexdigest()
+            self._write_registered_flf_manifest(template_dir, expected_hash)
+
+            with patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256",
+                expected_hash,
+            ):
+                result = collect_preflight(
+                    comfy_root=temporary_path / "ComfyUI",
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                )
+
+            self.assertEqual(result.native_i2v_template, i2v_template.resolve())
             self.assertEqual(result.native_flf_template, flf_template.resolve())
             self.assertEqual(result.status, "READY")
             self.assertEqual(result.blockers, ())
@@ -334,15 +464,7 @@ class CollectPreflightTests(unittest.TestCase):
         run.return_value = CompletedProcess([], 0, "fixture output", "")
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
-            template_dir = (
-                temporary_path
-                / "ComfyUI"
-                / "venv"
-                / "Lib"
-                / "site-packages"
-                / "comfyui_workflow_templates_json"
-                / "templates"
-            )
+            template_dir = self._package_template_dir(temporary_path)
             template_dir.mkdir(parents=True)
             (template_dir / "gsl_starter_1_2.json").write_text(
                 json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
@@ -353,13 +475,19 @@ class CollectPreflightTests(unittest.TestCase):
                 json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
                 encoding="utf-8",
             )
+            expected_hash = hashlib.sha256(canonical_flf.read_bytes()).hexdigest()
+            self._write_registered_flf_manifest(template_dir, expected_hash)
 
-            result = collect_preflight(
-                comfy_root=temporary_path / "ComfyUI",
-                comfy_url=None,
-                artifact_dir=temporary_path / "artifacts" / "preflight",
-                object_info=self._object_info_fixture(),
-            )
+            with patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256",
+                expected_hash,
+            ):
+                result = collect_preflight(
+                    comfy_root=temporary_path / "ComfyUI",
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                )
 
             self.assertEqual(result.native_flf_template, canonical_flf.resolve())
 

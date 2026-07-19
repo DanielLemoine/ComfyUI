@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import platform
@@ -12,6 +13,13 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from .errors import PreflightError
+
+
+_CANONICAL_FLF_TEMPLATE_ID = "video_wan2_2_14B_flf2v"
+_CANONICAL_FLF_TEMPLATE_FILENAME = f"{_CANONICAL_FLF_TEMPLATE_ID}.json"
+_CANONICAL_FLF_TEMPLATE_SHA256 = (
+    "9fb579e07caff9081c14a4c0e3b983e210aa7d976f83f1c2758d2ad6ed949fdf"
+)
 
 
 @dataclass(frozen=True)
@@ -54,10 +62,18 @@ def collect_preflight(
     object_info_data, object_info_status = _object_info(comfy_url, object_info)
     model_inventory = _model_inventory(comfy_root)
     custom_nodes = _custom_nodes(comfy_root)
-    native_i2v_template, native_flf_template, templates = _official_templates(comfy_root)
+    (
+        native_i2v_template,
+        native_flf_template,
+        templates,
+        flf_verification,
+    ) = _official_templates(comfy_root)
     active_workflow_dir = _active_workflow_dir(comfy_root)
     blockers = _preflight_blockers(
-        object_info_data, native_i2v_template, native_flf_template
+        object_info_data,
+        native_i2v_template,
+        native_flf_template,
+        flf_verification,
     )
     status = "BLOCKED" if blockers else "READY"
 
@@ -68,7 +84,11 @@ def collect_preflight(
     _write_json(object_info_path, object_info_data)
     (artifact_dir / "official_template_inventory.md").write_text(
         _template_inventory_markdown(
-            templates, native_i2v_template, native_flf_template, blockers
+            templates,
+            native_i2v_template,
+            native_flf_template,
+            flf_verification,
+            blockers,
         ),
         encoding="utf-8",
         newline="\n",
@@ -80,6 +100,7 @@ def collect_preflight(
             active_workflow_dir=active_workflow_dir,
             native_i2v_template=native_i2v_template,
             native_flf_template=native_flf_template,
+            flf_verification=flf_verification,
             model_root_count=len(model_inventory["roots"]),
             custom_node_count=len(custom_nodes["nodes"]),
             status=status,
@@ -144,6 +165,7 @@ def _preflight_blockers(
     object_info: dict[str, object],
     native_i2v_template: Path | None,
     native_flf_template: Path | None,
+    flf_verification: str,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     required_schemas = ("WanImageToVideo", "WanFirstLastFrameToVideo")
@@ -172,9 +194,8 @@ def _preflight_blockers(
         )
     if native_flf_template is None:
         blockers.append(
-            "official native Wan FLF template could not be verified; provide a valid "
-            "JSON template containing a WanFirstLastFrameToVideo node under an "
-            "official ComfyUI template directory"
+            "official native Wan FLF template could not be verified; "
+            f"{flf_verification}"
         )
     return tuple(blockers)
 
@@ -303,7 +324,9 @@ def _custom_nodes(comfy_root: Path) -> dict[str, object]:
     return {"root": str(custom_nodes_dir.resolve()), "nodes": nodes}
 
 
-def _official_templates(comfy_root: Path) -> tuple[Path | None, Path | None, list[Path]]:
+def _official_templates(
+    comfy_root: Path,
+) -> tuple[Path | None, Path | None, list[Path], str]:
     template_roots = [
         comfy_root / "blueprints",
         comfy_root / "workflow_templates",
@@ -350,12 +373,150 @@ def _official_templates(comfy_root: Path) -> tuple[Path | None, Path | None, lis
         key=str,
     )
     i2v = _find_native_template(templates, "WanImageToVideo")
-    flf = _find_native_template(
-        templates,
-        "WanFirstLastFrameToVideo",
-        preferred_filename="video_wan2_2_14b_flf2v.json",
+    flf, flf_verification = _find_native_flf_template(templates)
+    return i2v, flf, templates, flf_verification
+
+
+def _find_native_flf_template(templates: list[Path]) -> tuple[Path | None, str]:
+    """Find an official FLF graph without accepting arbitrary package JSON.
+
+    ComfyUI's built-in template roots remain valid discovery locations.  The
+    separately installed workflow-template JSON package is stricter: its Wan
+    FLF template must be the canonical asset registered in the sibling core
+    manifest and its local bytes must match the pinned upstream SHA-256.
+    """
+    matches = [
+        path
+        for path in templates
+        if _template_has_native_node(path, "WanFirstLastFrameToVideo")
+    ]
+    package_failures: list[str] = []
+    for path in matches:
+        if (
+            _package_template_root(path) is not None
+            and path.name == _CANONICAL_FLF_TEMPLATE_FILENAME
+        ):
+            verified, detail = _verify_registered_package_flf_template(path)
+            if verified:
+                return path, detail
+            package_failures.append(detail)
+
+    standard_matches = [
+        path for path in matches if _package_template_root(path) is None
+    ]
+    preferred_standard = next(
+        (
+            path
+            for path in standard_matches
+            if path.name.casefold() == _CANONICAL_FLF_TEMPLATE_FILENAME.casefold()
+        ),
+        None,
     )
-    return i2v, flf, templates
+    if preferred_standard is not None:
+        return (
+            preferred_standard,
+            "verified by native-node topology in a built-in ComfyUI template directory",
+        )
+    if standard_matches:
+        return (
+            standard_matches[0],
+            "verified by native-node topology in a built-in ComfyUI template directory",
+        )
+    if package_failures:
+        return None, "; ".join(package_failures)
+    return (
+        None,
+        "no valid WanFirstLastFrameToVideo graph was found in an official ComfyUI "
+        "template directory",
+    )
+
+
+def _package_template_root(template_path: Path) -> Path | None:
+    for ancestor in template_path.parents:
+        if (
+            ancestor.name == "templates"
+            and ancestor.parent.name == "comfyui_workflow_templates_json"
+        ):
+            return ancestor
+    return None
+
+
+def _verify_registered_package_flf_template(template_path: Path) -> tuple[bool, str]:
+    package_root = _package_template_root(template_path)
+    if package_root is None:
+        return False, "the FLF template is not inside the ComfyUI workflow-template package"
+    manifest_path = (
+        package_root.parent.parent
+        / "comfyui_workflow_templates_core"
+        / "manifest.json"
+    )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return (
+            False,
+            "the package FLF JSON has no readable registered ComfyUI manifest entry "
+            f"at {manifest_path}: {error}",
+        )
+    manifest_hash = _registered_flf_manifest_hash(manifest)
+    if manifest_hash is None:
+        return (
+            False,
+            "the package FLF JSON has no registered ComfyUI manifest entry for "
+            f"{_CANONICAL_FLF_TEMPLATE_ID}/{_CANONICAL_FLF_TEMPLATE_FILENAME}",
+        )
+    if manifest_hash.casefold() != _CANONICAL_FLF_TEMPLATE_SHA256:
+        return (
+            False,
+            "the registered ComfyUI manifest SHA-256 for "
+            f"{_CANONICAL_FLF_TEMPLATE_FILENAME} does not match the pinned official hash",
+        )
+    try:
+        local_hash = _sha256_file(template_path)
+    except OSError as error:
+        return False, f"could not calculate the package FLF SHA-256: {error}"
+    if local_hash.casefold() != _CANONICAL_FLF_TEMPLATE_SHA256:
+        return (
+            False,
+            "the package FLF JSON SHA-256 does not match its registered and pinned "
+            "official hash",
+        )
+    return (
+        True,
+        "registered ComfyUI manifest entry at "
+        f"{manifest_path} and pinned SHA-256 were verified locally",
+    )
+
+
+def _registered_flf_manifest_hash(manifest: object) -> str | None:
+    if not isinstance(manifest, dict):
+        return None
+    templates = manifest.get("templates")
+    if not isinstance(templates, list):
+        return None
+    for entry in templates:
+        if not isinstance(entry, dict) or entry.get("id") != _CANONICAL_FLF_TEMPLATE_ID:
+            continue
+        assets = entry.get("assets")
+        if not isinstance(assets, list):
+            return None
+        for asset in assets:
+            if (
+                isinstance(asset, dict)
+                and asset.get("filename") == _CANONICAL_FLF_TEMPLATE_FILENAME
+                and isinstance(asset.get("sha256"), str)
+            ):
+                return asset["sha256"]
+        return None
+    return None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _find_native_template(
@@ -423,6 +584,7 @@ def _template_inventory_markdown(
     templates: list[Path],
     native_i2v_template: Path | None,
     native_flf_template: Path | None,
+    flf_verification: str,
     blockers: tuple[str, ...],
 ) -> str:
     lines = ["# Official Template Inventory", "", "## Official template files"]
@@ -435,6 +597,7 @@ def _template_inventory_markdown(
             "## Required native Wan templates",
             f"- Native I2V: `{native_i2v_template}`" if native_i2v_template else "- Native I2V: unavailable",
             f"- Native FLF: `{native_flf_template}`" if native_flf_template else "- Native FLF: unavailable",
+            f"- Native FLF verification: {flf_verification}",
             "",
             "Community workflow graphs were not substituted for unavailable official templates.",
             "",
@@ -457,6 +620,7 @@ def _preflight_report(
     active_workflow_dir: Path | None,
     native_i2v_template: Path | None,
     native_flf_template: Path | None,
+    flf_verification: str,
     model_root_count: int,
     custom_node_count: int,
     status: str,
@@ -484,6 +648,7 @@ def _preflight_report(
         "## Template gate",
         f"- Native Wan I2V template: `{native_i2v_template}`" if native_i2v_template else "- Native Wan I2V template: unavailable",
         f"- Native Wan FLF template: `{native_flf_template}`" if native_flf_template else "- Native Wan FLF template: unavailable",
+        f"- Native Wan FLF verification: {flf_verification}",
         "- No community graph was substituted for an unavailable official template.",
         "",
         ]

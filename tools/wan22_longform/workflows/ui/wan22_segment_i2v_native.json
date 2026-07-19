@@ -662,7 +662,7 @@
               }
             },
             "widgets_values": [
-              5.000000000000001
+              5.0
             ],
             "title": "MODEL_SAMPLING_LOW"
           },
@@ -837,7 +837,7 @@
               }
             },
             "widgets_values": [
-              5.000000000000001
+              5.0
             ],
             "title": "MODEL_SAMPLING_HIGH"
           },
@@ -1119,12 +1119,12 @@
               "enable",
               0,
               "randomize",
-              4,
-              1,
+              20,
+              3.5,
               "euler",
               "simple",
               0,
-              2,
+              10,
               "enable"
             ],
             "title": "SAMPLER_HIGH"
@@ -1274,12 +1274,12 @@
               "disable",
               0,
               "fixed",
-              4,
-              1,
+              20,
+              3.5,
               "euler",
               "simple",
-              2,
-              4,
+              10,
+              20,
               "disable"
             ],
             "title": "SAMPLER_LOW"
@@ -1696,7 +1696,7 @@
           "workflowRendererVersion": "LG"
         },
         "category": "Video generation and editing/Image to video",
-        "description": "Clean native Wan2.2 two-expert I2V topology captured from the official ComfyUI blueprint; bundled speed adapters removed."
+        "description": "Clean native Wan2.2 two-expert I2V topology captured from the official ComfyUI blueprint; normal 20-step quality settings with bundled speed adapters removed."
       }
     ]
   },

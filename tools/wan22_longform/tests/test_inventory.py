@@ -292,6 +292,106 @@ class CollectPreflightTests(unittest.TestCase):
             )
 
     @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_recognizes_official_wan_template_package(self, run) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = (
+                temporary_path
+                / "ComfyUI"
+                / "venv"
+                / "Lib"
+                / "site-packages"
+                / "comfyui_workflow_templates_json"
+                / "templates"
+            )
+            template_dir.mkdir(parents=True)
+            i2v_template = template_dir / "video_wan2_2_14B_i2v.json"
+            flf_template = template_dir / "video_wan2_2_14B_flf2v.json"
+            i2v_template.write_text(
+                json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+                encoding="utf-8",
+            )
+            flf_template.write_text(
+                json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
+                encoding="utf-8",
+            )
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertEqual(result.native_i2v_template, i2v_template.resolve())
+            self.assertEqual(result.native_flf_template, flf_template.resolve())
+            self.assertEqual(result.status, "READY")
+            self.assertEqual(result.blockers, ())
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_prefers_the_canonical_wan_flf_template(self, run) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = (
+                temporary_path
+                / "ComfyUI"
+                / "venv"
+                / "Lib"
+                / "site-packages"
+                / "comfyui_workflow_templates_json"
+                / "templates"
+            )
+            template_dir.mkdir(parents=True)
+            (template_dir / "gsl_starter_1_2.json").write_text(
+                json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
+                encoding="utf-8",
+            )
+            canonical_flf = template_dir / "video_wan2_2_14B_flf2v.json"
+            canonical_flf.write_text(
+                json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
+                encoding="utf-8",
+            )
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertEqual(result.native_flf_template, canonical_flf.resolve())
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_does_not_treat_user_workflows_as_official_templates(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            user_workflow_dir = (
+                temporary_path / "ComfyUI" / "user" / "default" / "workflows"
+            )
+            user_workflow_dir.mkdir(parents=True)
+            (user_workflow_dir / "wan_flf2v.json").write_text(
+                json.dumps(
+                    {"nodes": [{"type": "WanFirstLastFrameToVideo"}]}
+                ),
+                encoding="utf-8",
+            )
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertIsNone(result.native_flf_template)
+            self.assertEqual(result.status, "BLOCKED")
+
+    @patch("wan22_longform.inventory.subprocess.run")
     def test_collect_preflight_rejects_ltx_blueprint_subgraph(self, run) -> None:
         run.return_value = CompletedProcess([], 0, "fixture output", "")
         with tempfile.TemporaryDirectory() as temporary_directory:

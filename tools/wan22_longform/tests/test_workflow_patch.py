@@ -263,7 +263,7 @@ class WorkflowPatchTests(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowError, "unavailable output -1"):
             validate_graph_against_object_info(graph, load_native_schema())
 
-    def test_persisted_i2v_graphs_are_clean_and_flf_is_documented_not_built(self) -> None:
+    def test_persisted_i2v_and_flf_graphs_are_clean_and_executable(self) -> None:
         ui_path = PROJECT_DIR / "workflows" / "ui" / "wan22_segment_i2v_native.json"
         api_path = PROJECT_DIR / "workflows" / "api" / "wan22_segment_i2v_native_api.json"
         bridge_ui = PROJECT_DIR / "workflows" / "ui" / "wan22_bridge_flf2v_native.json"
@@ -273,20 +273,196 @@ class WorkflowPatchTests(unittest.TestCase):
         self.assertTrue(ui_path.is_file())
         self.assertEqual(json.loads(api_path.read_text(encoding="utf-8")), load_fixture("native_segment_api.json"))
         self.assertNotIn("lightx2v", ui_path.read_text(encoding="utf-8").casefold())
-        self.assertFalse(bridge_ui.exists())
-        self.assertFalse(bridge_api.exists())
-        self.assertFalse(bridge_fixture.exists())
+        self.assertTrue(bridge_ui.is_file())
+        self.assertEqual(
+            json.loads(bridge_api.read_text(encoding="utf-8")),
+            load_fixture("native_bridge_api.json"),
+        )
+        self.assertNotIn("lightx2v", bridge_ui.read_text(encoding="utf-8").casefold())
+        bridge_classes = {
+            node["class_type"] for node in load_fixture("native_bridge_api.json").values()
+        }
+        self.assertNotIn("Note", bridge_classes)
+        self.assertNotIn("MarkdownNote", bridge_classes)
         for note_path in (
             bridge_ui.with_suffix(".NOT_BUILT.md"),
             bridge_api.with_suffix(".NOT_BUILT.md"),
             bridge_fixture.with_suffix(".NOT_BUILT.md"),
         ):
-            note = note_path.read_text(encoding="utf-8")
-            self.assertIn("WanFirstLastFrameToVideo", note)
-            self.assertIn("BRIDGE_FIRST_IMAGE", note)
-            self.assertIn("BRIDGE_LAST_IMAGE", note)
-            self.assertIn("BRIDGE_START", note)
-            self.assertIn("BRIDGE_END", note)
+            self.assertFalse(note_path.exists())
+
+    def test_quality_graphs_use_their_verified_normal_template_baselines(self) -> None:
+        for fixture_name, high_sampler, low_sampler, shift, cfg in (
+            ("native_segment_api.json", "SAMPLER_HIGH", "SAMPLER_LOW", 5.0, 3.5),
+            (
+                "native_bridge_api.json",
+                "BRIDGE_SAMPLER_HIGH",
+                "BRIDGE_SAMPLER_LOW",
+                8.0,
+                4.0,
+            ),
+        ):
+            with self.subTest(fixture=fixture_name):
+                graph = load_fixture(fixture_name)
+                self.assertEqual(
+                    find_unique_node(graph, "MODEL_SAMPLING_HIGH", "ModelSamplingSD3").node[
+                        "inputs"
+                    ]["shift"],
+                    shift,
+                )
+                self.assertEqual(
+                    find_unique_node(graph, "MODEL_SAMPLING_LOW", "ModelSamplingSD3").node[
+                        "inputs"
+                    ]["shift"],
+                    shift,
+                )
+                self.assertEqual(
+                    find_unique_node(graph, high_sampler, "KSamplerAdvanced").node["inputs"],
+                    {
+                        "model": ["3", 0],
+                        "positive": ["10" if fixture_name == "native_segment_api.json" else "11", 0],
+                        "negative": ["10" if fixture_name == "native_segment_api.json" else "11", 1],
+                        "latent_image": ["10" if fixture_name == "native_segment_api.json" else "11", 2],
+                        "add_noise": "enable",
+                        "noise_seed": 0,
+                        "steps": 20,
+                        "cfg": cfg,
+                        "sampler_name": "euler",
+                        "scheduler": "simple",
+                        "start_at_step": 0,
+                        "end_at_step": 10,
+                        "return_with_leftover_noise": "enable",
+                    },
+                )
+                low_inputs = find_unique_node(
+                    graph, low_sampler, "KSamplerAdvanced"
+                ).node["inputs"]
+                self.assertEqual(low_inputs["add_noise"], "disable")
+                self.assertEqual(low_inputs["steps"], 20)
+                self.assertEqual(low_inputs["cfg"], cfg)
+                self.assertEqual(low_inputs["start_at_step"], 10)
+                self.assertEqual(low_inputs["end_at_step"], 20)
+                self.assertEqual(low_inputs["return_with_leftover_noise"], "disable")
+
+    def test_template_specific_quality_profiles_are_enforced(self) -> None:
+        i2v = load_fixture("native_segment_api.json")
+        find_unique_node(i2v, "MODEL_SAMPLING_HIGH", "ModelSamplingSD3").node[
+            "inputs"
+        ]["shift"] = 8.0
+        with self.assertRaisesRegex(WorkflowError, "model sampling high shift must be 5.0"):
+            validate_two_stage_graph(i2v)
+
+        bridge = load_fixture("native_bridge_api.json")
+        find_unique_node(bridge, "BRIDGE_SAMPLER_HIGH", "KSamplerAdvanced").node[
+            "inputs"
+        ]["cfg"] = 3.5
+        with self.assertRaisesRegex(WorkflowError, "bridge sampler high cfg must be 4.0"):
+            validate_two_stage_graph(bridge)
+
+    def test_bridge_routes_both_canonical_endpoints_into_flf_conditioning(self) -> None:
+        graph = load_fixture("native_bridge_api.json")
+        conditioning = find_unique_node(
+            graph, "FLF_CONDITIONING", "WanFirstLastFrameToVideo"
+        ).node
+
+        self.assertEqual(
+            conditioning["inputs"]["start_image"],
+            [find_unique_node(graph, "BRIDGE_FIRST_IMAGE", "LoadImage").node_id, 0],
+        )
+        self.assertEqual(
+            conditioning["inputs"]["end_image"],
+            [find_unique_node(graph, "BRIDGE_LAST_IMAGE", "LoadImage").node_id, 0],
+        )
+        patch_map = (PROJECT_DIR / "workflows" / "PATCH_MAP.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("BRIDGE_START", patch_map)
+        self.assertIn("BRIDGE_END", patch_map)
+        self.assertIn("52a53af170145cfd579e6e6f6334ce25e9b8cf10", patch_map)
+        self.assertIn(
+            "9fb579e07caff9081c14a4c0e3b983e210aa7d976f83f1c2758d2ad6ed949fdf",
+            patch_map,
+        )
+
+    def test_clean_bridge_fixture_matches_installed_schema_and_native_topology(self) -> None:
+        graph = load_fixture("native_bridge_api.json")
+
+        validate_graph_against_object_info(graph, load_native_schema())
+        validate_two_stage_graph(graph)
+        self.assertNotIn("lightx2v", json.dumps(graph).casefold())
+        self.assertNotIn("loraloadermodelonly", json.dumps(graph).casefold())
+
+    def test_bridge_ui_subgraph_preserves_both_exposed_endpoint_slots(self) -> None:
+        ui = json.loads(
+            (
+                PROJECT_DIR / "workflows" / "ui" / "wan22_bridge_flf2v_native.json"
+            ).read_text(encoding="utf-8")
+        )
+        subgraph = ui["definitions"]["subgraphs"][0]
+        links = {link["id"]: link for link in subgraph["links"]}
+
+        for slot, input_name in enumerate(("BRIDGE_FIRST_IMAGE", "BRIDGE_LAST_IMAGE")):
+            graph_input = next(
+                entry for entry in subgraph["inputs"] if entry["name"] == input_name
+            )
+            self.assertEqual(len(graph_input["linkIds"]), 1)
+            link = links[graph_input["linkIds"][0]]
+            self.assertEqual(link["origin_id"], -10)
+            self.assertEqual(link["origin_slot"], slot)
+            self.assertEqual(link["target_id"], 11)
+            self.assertEqual(link["target_slot"], 5 + slot)
+
+        self.assertLessEqual(
+            {node["type"] for node in subgraph["nodes"]},
+            set(load_native_schema()),
+        )
+
+    def test_bridge_rejects_invalid_endpoint_routes(self) -> None:
+        graph = load_fixture("native_bridge_api.json")
+        conditioning = find_unique_node(
+            graph, "FLF_CONDITIONING", "WanFirstLastFrameToVideo"
+        ).node
+        conditioning["inputs"]["end_image"] = conditioning["inputs"]["start_image"]
+
+        with self.assertRaisesRegex(WorkflowError, "BRIDGE_LAST_IMAGE"):
+            validate_two_stage_graph(graph)
+
+    def test_bridge_supports_the_same_dynamic_lora_chain_policy(self) -> None:
+        graph = build_api_graph(
+            load_fixture("native_bridge_api.json"),
+            base_render_config(
+                vbvr=LoraSlot("vbvr.safetensors", "high", 0.25),
+                motion=LoraSlot("motion.safetensors", "high", 0.30),
+                permissiveness=Permissiveness(
+                    mode="mystic",
+                    mystic=LoraSlot("mystic.safetensors", "low", 0.20),
+                ),
+                corrective=LoraSlot("corrective.safetensors", "low", 0.15),
+                identity=IdentityLora(
+                    mode="split",
+                    high_file="identity-high.safetensors",
+                    low_file="identity-low.safetensors",
+                    high_strength=0.9,
+                    low_strength=0.8,
+                ),
+            ),
+            available_files(),
+        )
+
+        self.assertEqual(
+            self._model_chain_titles(graph, "MODEL_SAMPLING_HIGH"),
+            ["MODEL_HIGH", "LORA_VBVR_HIGH", "LORA_MOTION_HIGH", "LORA_IDENTITY_HIGH"],
+        )
+        self.assertEqual(
+            self._model_chain_titles(graph, "MODEL_SAMPLING_LOW"),
+            [
+                "MODEL_LOW",
+                "LORA_PERMISSIVENESS_LOW",
+                "LORA_CORRECTIVE_LOW",
+                "LORA_IDENTITY_LOW",
+            ],
+        )
+        validate_two_stage_graph(graph)
 
     def test_clean_ui_subgraph_external_links_match_compacted_input_slots(self) -> None:
         ui = json.loads(

@@ -308,7 +308,37 @@ def _official_templates(comfy_root: Path) -> tuple[Path | None, Path | None, lis
         comfy_root / "blueprints",
         comfy_root / "workflow_templates",
         comfy_root / "web" / "assets" / "workflow_templates",
+        comfy_root
+        / "venv"
+        / "Lib"
+        / "site-packages"
+        / "comfyui_workflow_templates_json"
+        / "templates",
+        comfy_root
+        / ".venv"
+        / "Lib"
+        / "site-packages"
+        / "comfyui_workflow_templates_json"
+        / "templates",
+        comfy_root
+        / "python_embeded"
+        / "Lib"
+        / "site-packages"
+        / "comfyui_workflow_templates_json"
+        / "templates",
+        comfy_root
+        / "python_embedded"
+        / "Lib"
+        / "site-packages"
+        / "comfyui_workflow_templates_json"
+        / "templates",
     ]
+    for environment in (comfy_root / "venv", comfy_root / ".venv"):
+        template_roots.extend(
+            environment.glob(
+                "lib/python*/site-packages/comfyui_workflow_templates_json/templates"
+            )
+        )
     resolved_roots = [root.resolve() for root in template_roots if root.is_dir()]
     templates = sorted(
         {
@@ -319,19 +349,29 @@ def _official_templates(comfy_root: Path) -> tuple[Path | None, Path | None, lis
         },
         key=str,
     )
-    i2v = next(
-        (path for path in templates if _template_has_native_node(path, "WanImageToVideo")),
-        None,
-    )
-    flf = next(
-        (
-            path
-            for path in templates
-            if _template_has_native_node(path, "WanFirstLastFrameToVideo")
-        ),
-        None,
+    i2v = _find_native_template(templates, "WanImageToVideo")
+    flf = _find_native_template(
+        templates,
+        "WanFirstLastFrameToVideo",
+        preferred_filename="video_wan2_2_14b_flf2v.json",
     )
     return i2v, flf, templates
+
+
+def _find_native_template(
+    templates: list[Path], expected_node: str, preferred_filename: str | None = None
+) -> Path | None:
+    matches = [
+        path for path in templates if _template_has_native_node(path, expected_node)
+    ]
+    if preferred_filename is not None:
+        preferred = next(
+            (path for path in matches if path.name.casefold() == preferred_filename),
+            None,
+        )
+        if preferred is not None:
+            return preferred
+    return next(iter(matches), None)
 
 
 def _template_has_native_node(template_path: Path, expected_node: str) -> bool:

@@ -93,22 +93,21 @@ def validate_two_stage_graph(graph: ApiGraph) -> None:
         graph, "MODEL_SAMPLING_HIGH", "ModelSamplingSD3"
     )
     sampling_low = find_unique_node(graph, "MODEL_SAMPLING_LOW", "ModelSamplingSD3")
-    sampler_high = find_unique_node(graph, "SAMPLER_HIGH", "KSamplerAdvanced")
-    sampler_low = find_unique_node(graph, "SAMPLER_LOW", "KSamplerAdvanced")
-    i2v = find_unique_node(graph, "I2V_CONDITIONING", "WanImageToVideo")
+    conditioning, sampler_high, sampler_low = _conditioner_and_samplers(graph)
 
-    _require_inputs(sampling_high, {"shift": 5.0})
-    _require_inputs(sampling_low, {"shift": 5.0})
+    shift, cfg = _quality_profile(conditioning)
+    _require_inputs(sampling_high, {"shift": shift})
+    _require_inputs(sampling_low, {"shift": shift})
     _require_inputs(
         sampler_high,
         {
             "add_noise": "enable",
-            "steps": 4,
-            "cfg": 1.0,
+            "steps": 20,
+            "cfg": cfg,
             "sampler_name": "euler",
             "scheduler": "simple",
             "start_at_step": 0,
-            "end_at_step": 2,
+            "end_at_step": 10,
             "return_with_leftover_noise": "enable",
         },
     )
@@ -116,19 +115,19 @@ def validate_two_stage_graph(graph: ApiGraph) -> None:
         sampler_low,
         {
             "add_noise": "disable",
-            "steps": 4,
-            "cfg": 1.0,
+            "steps": 20,
+            "cfg": cfg,
             "sampler_name": "euler",
             "scheduler": "simple",
-            "start_at_step": 2,
-            "end_at_step": 4,
+            "start_at_step": 10,
+            "end_at_step": 20,
             "return_with_leftover_noise": "disable",
         },
     )
 
     _require_link(sampler_high, "model", sampling_high, 0)
     _require_link(sampler_low, "model", sampling_low, 0)
-    _require_link(sampler_high, "latent_image", i2v, 2)
+    _require_link(sampler_high, "latent_image", conditioning, 2)
     if sampler_low.node.get("inputs", {}).get("latent_image") != [
         sampler_high.node_id,
         0,
@@ -180,6 +179,61 @@ def validate_two_stage_graph(graph: ApiGraph) -> None:
             raise WorkflowError(
                 f"optional LoRA {node.node_id} requires a configured filename"
             )
+
+
+def _conditioner_and_samplers(
+    graph: ApiGraph,
+) -> tuple[NodeRef, NodeRef, NodeRef]:
+    i2v_titles = {
+        "conditioning": "I2V_CONDITIONING",
+        "high_sampler": "SAMPLER_HIGH",
+        "low_sampler": "SAMPLER_LOW",
+    }
+    flf_titles = {
+        "conditioning": "FLF_CONDITIONING",
+        "high_sampler": "BRIDGE_SAMPLER_HIGH",
+        "low_sampler": "BRIDGE_SAMPLER_LOW",
+    }
+    has_i2v = _has_titled_node(graph, i2v_titles["conditioning"])
+    has_flf = _has_titled_node(graph, flf_titles["conditioning"])
+    if has_i2v == has_flf:
+        raise WorkflowError(
+            "graph must contain exactly one native I2V_CONDITIONING or FLF_CONDITIONING"
+        )
+    if has_i2v:
+        conditioning = find_unique_node(
+            graph, i2v_titles["conditioning"], "WanImageToVideo"
+        )
+        first_image = find_unique_node(graph, "SEGMENT_FIRST_IMAGE", "LoadImage")
+        _require_link(conditioning, "start_image", first_image, 0)
+        return (
+            conditioning,
+            find_unique_node(graph, i2v_titles["high_sampler"], "KSamplerAdvanced"),
+            find_unique_node(graph, i2v_titles["low_sampler"], "KSamplerAdvanced"),
+        )
+
+    conditioning = find_unique_node(
+        graph, flf_titles["conditioning"], "WanFirstLastFrameToVideo"
+    )
+    first_image = find_unique_node(graph, "BRIDGE_FIRST_IMAGE", "LoadImage")
+    last_image = find_unique_node(graph, "BRIDGE_LAST_IMAGE", "LoadImage")
+    _require_link(conditioning, "start_image", first_image, 0)
+    _require_link(conditioning, "end_image", last_image, 0)
+    return (
+        conditioning,
+        find_unique_node(graph, flf_titles["high_sampler"], "KSamplerAdvanced"),
+        find_unique_node(graph, flf_titles["low_sampler"], "KSamplerAdvanced"),
+    )
+
+
+def _quality_profile(conditioning: NodeRef) -> tuple[float, float]:
+    if conditioning.node.get("class_type") == "WanImageToVideo":
+        return 5.0, 3.5
+    return 8.0, 4.0
+
+
+def _has_titled_node(graph: ApiGraph, title: str) -> bool:
+    return any(node.get("_meta", {}).get("title") == title for node in graph.values())
 
 
 def validate_graph_against_object_info(

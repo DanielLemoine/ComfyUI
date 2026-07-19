@@ -77,6 +77,26 @@
     },
     "output": ["CONDITIONING", "CONDITIONING", "LATENT"]
   },
+  "WanFirstLastFrameToVideo": {
+    "input": {
+      "required": {
+        "positive": ["CONDITIONING"],
+        "negative": ["CONDITIONING"],
+        "vae": ["VAE"],
+        "width": ["INT"],
+        "height": ["INT"],
+        "length": ["INT"],
+        "batch_size": ["INT"]
+      },
+      "optional": {
+        "clip_vision_start_image": ["CLIP_VISION_OUTPUT"],
+        "clip_vision_end_image": ["CLIP_VISION_OUTPUT"],
+        "start_image": ["IMAGE"],
+        "end_image": ["IMAGE"]
+      }
+    },
+    "output": ["CONDITIONING", "CONDITIONING", "LATENT"]
+  },
   "KSamplerAdvanced": {
     "input": {
       "required": {

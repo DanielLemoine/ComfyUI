@@ -15,8 +15,27 @@ The clean base contains no `LoraLoaderModelOnly` nodes. `build_api_graph(base_gr
 
 Disabled or zero-strength adapters are omitted rather than represented with placeholder filenames.
 
-## Bridge FLF titles — blocked
+## Quality baseline
 
-No native Wan FLF graph was emitted because no verified official template contains `WanFirstLastFrameToVideo`.
+Both quality graphs use the verified normal 20-step two-stage topology: high sampling uses Euler/simple, steps 0–10, and leftover noise enabled; low sampling adds no fresh noise and uses steps 10–20 with leftover noise disabled. The I2V baseline remains faithful to its installed official normal branch (`ModelSamplingSD3` shift `5`, CFG `3.5`); the official FLF baseline uses shift `8`, CFG `4`. The 4-step LightX2V lane remains preview-only and is not present in either quality graph.
 
-When an official native graph becomes available, its canonical input titles are `BRIDGE_FIRST_IMAGE` and `BRIDGE_LAST_IMAGE`. `BRIDGE_START` and `BRIDGE_END` are documentation aliases only; executable graphs must use the canonical titles.
+## Bridge FLF API titles
+
+- Models and sampling wrappers: `MODEL_HIGH`, `MODEL_LOW`, `MODEL_SAMPLING_HIGH`, `MODEL_SAMPLING_LOW`
+- Canonical endpoint image loaders: `BRIDGE_FIRST_IMAGE`, `BRIDGE_LAST_IMAGE`
+- Native conditioning: `FLF_CONDITIONING` (`WanFirstLastFrameToVideo`)
+- Two-stage samplers: `BRIDGE_SAMPLER_HIGH`, `BRIDGE_SAMPLER_LOW`
+- Output stages: `BRIDGE_DECODE`, `BRIDGE_CREATE_VIDEO`, `BRIDGE_SAVE_VIDEO`
+
+`BRIDGE_START` and `BRIDGE_END` are documentation aliases only. Executable graphs and runner patching use `BRIDGE_FIRST_IMAGE` and `BRIDGE_LAST_IMAGE` exclusively.
+
+The bridge base remains free of `LoraLoaderModelOnly` nodes. `build_api_graph(base_graph, render, available_files)` applies the same dynamic high/low LoRA ordering and inventory checks as the segment graph.
+
+## Official FLF provenance
+
+- Source: `https://raw.githubusercontent.com/Comfy-Org/workflow_templates/52a53af170145cfd579e6e6f6334ce25e9b8cf10/templates/video_wan2_2_14B_flf2v.json`
+- Upstream pin: `Comfy-Org/workflow_templates@52a53af170145cfd579e6e6f6334ce25e9b8cf10`
+- Verified SHA-256: `9fb579e07caff9081c14a4c0e3b983e210aa7d976f83f1c2758d2ad6ed949fdf`
+- Installed source: `D:\AI\ComfyUI\venv\Lib\site-packages\comfyui_workflow_templates_json\templates\video_wan2_2_14B_flf2v.json`
+
+The UI bridge is a native LiteGraph subgraph adapted from that official template’s normal branch. Its API counterpart contains only executable core nodes; frontend-only notes are not included in the API graph.

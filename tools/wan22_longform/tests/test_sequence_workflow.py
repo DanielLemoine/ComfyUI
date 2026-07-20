@@ -174,6 +174,29 @@ class SequenceWorkflowTests(unittest.TestCase):
                 count_switch["id"],
             )
 
+    def test_each_segment_has_independent_positive_and_negative_prompt_boxes(self) -> None:
+        native = json.loads(NATIVE_WORKFLOW.read_text(encoding="utf-8"))
+        workflow = build_sequence_workflow(native)
+        nodes = workflow["nodes"]
+        links = {link[0]: link for link in workflow["links"]}
+        by_title = {node["title"]: node for node in nodes}
+
+        prompt_boxes = [
+            node for node in nodes if node["type"] == "PrimitiveStringMultiline"
+        ]
+        self.assertEqual(len(prompt_boxes), 12)
+        self.assertIn("PROMPT_NEGATIVE", {
+            item["name"] for item in workflow["definitions"]["subgraphs"][0]["inputs"]
+        })
+
+        for index in range(1, 7):
+            positive = by_title[f"PROMPT_POSITIVE_{index:02}"]
+            negative = by_title[f"PROMPT_NEGATIVE_{index:02}"]
+            segment = by_title[f"SEGMENT_{index:02}"]
+            self.assertIn(f"Segment {index}", positive["widgets_values"][0])
+            self.assertEqual(links[segment["inputs"][1]["link"]][1], positive["id"])
+            self.assertEqual(links[segment["inputs"][10]["link"]][1], negative["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

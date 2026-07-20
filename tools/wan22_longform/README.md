@@ -66,7 +66,9 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
   click **Run**. Its default is 640x640 and 81 frames; the MP4 is saved below
   `D:\AI\outputs\wan22_longform\bridge_`.
 - **`wan22_six_segment_sequence_native`**: this is the long-form manual
-  canvas. `ENABLE_SEGMENT_nn` decides whether that numbered section appears in
+  canvas. Each section has its own top-level `PROMPT_POSITIVE_nn` and
+  `PROMPT_NEGATIVE_nn` text boxes; edit those, not the shared nodes visible
+  after entering a segment subgraph. `ENABLE_SEGMENT_nn` decides whether that numbered section appears in
   the final sequence. `USE_EXISTING_SEGMENT_nn` means use an already rendered
   MP4 instead of generating that section again: upload/select that MP4 in its
   matching `CACHED_SEGMENT_nn` Video Helper Suite node. Leave it false to

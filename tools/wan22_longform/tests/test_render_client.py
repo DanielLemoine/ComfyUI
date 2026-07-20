@@ -24,7 +24,12 @@ from wan22_longform.comfy_client import (  # noqa: E402
 )
 from wan22_longform.config import ProjectConfig  # noqa: E402
 from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
-from wan22_longform.project import AttemptState, create_attempt, transition_attempt  # noqa: E402
+from wan22_longform.project import (  # noqa: E402
+    Attempt,
+    AttemptState,
+    create_attempt,
+    transition_attempt,
+)
 from wan22_longform.qc import initialize_qc, read_qc  # noqa: E402
 from wan22_longform import render as render_module  # noqa: E402
 from wan22_longform.render import (  # noqa: E402
@@ -335,6 +340,37 @@ class RenderSegmentTests(unittest.TestCase):
         self.manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
         self.project = ProjectConfig(path=self.manifest, source=source)
 
+    def _accepted_upstream(self, *, suffix: str = "") -> tuple[Attempt, Path, Path]:
+        head = self.root / f"accepted-head{suffix}.png"
+        tail = self.root / f"accepted-tail{suffix}.png"
+        head.write_bytes(f"head{suffix}".encode())
+        tail.write_bytes(f"tail{suffix}".encode())
+        upstream = create_attempt(self.project, "S010", "S010_C001")
+        for state in (
+            AttemptState.RENDERING,
+            AttemptState.RENDERED,
+            AttemptState.NEEDS_REVIEW,
+        ):
+            upstream = transition_attempt(upstream, state, "fixture")
+        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
+        sheet = upstream.path / "sheet.png"
+        sheet.write_bytes(b"sheet")
+        initialize_qc(
+            upstream,
+            video=self.video,
+            head_frames=[head],
+            tail_frames=[tail],
+            contact_sheet=sheet,
+            automatic_continuation_authorized=False,
+        )
+        upstream = transition_attempt(
+            upstream,
+            AttemptState.ACCEPTED,
+            "accepted fixture",
+            selected_continuation_frame=tail,
+        )
+        return upstream, head, tail
+
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
@@ -538,6 +574,146 @@ class RenderSegmentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "project lineage"):
             resume_attempt(other_project, planned, FakeRenderClient(self.video))
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_rehashes_all_planned_snapshot_evidence_before_upload(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.return_value = [self.opening]
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(
+            destination
+        )
+        mutations = {
+            "source manifest": lambda attempt: next(
+                attempt.path.glob("source-manifest.*")
+            ).write_bytes(
+                next(attempt.path.glob("source-manifest.*")).read_bytes() + b"\n"
+            ),
+            "workflow": lambda attempt: (attempt.path / "workflow-api.json").write_bytes(
+                (attempt.path / "workflow-api.json").read_bytes() + b"\n"
+            ),
+            "request": lambda attempt: (attempt.path / "request.json").write_text(
+                json.dumps({"tampered": True}), encoding="utf-8"
+            ),
+            "provenance": lambda attempt: (attempt.path / "provenance.json").write_bytes(
+                (attempt.path / "provenance.json").read_bytes() + b"\n"
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                planned = create_attempt(
+                    self.project,
+                    "S040",
+                    "S040_C001",
+                    selected_inputs={
+                        "opening_frame": {
+                            "path": str(self.opening),
+                            "sha256": hashlib.sha256(
+                                self.opening.read_bytes()
+                            ).hexdigest(),
+                            "source": "project_fallback",
+                        }
+                    },
+                )
+                mutate(planned)
+                client = FakeRenderClient(self.video)
+
+                with self.assertRaisesRegex(RenderError, "planned attempt"):
+                    resume_attempt(self.project, planned, client)
+
+                self.assertEqual(client.uploaded, [])
+                self.assertEqual(client.submitted, [])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_revalidates_upstream_accepted_evidence_before_upload(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.return_value = [self.opening]
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(
+            destination
+        )
+        mutations = {
+            "provenance": lambda upstream: (
+                upstream.path / "provenance.json"
+            ).write_bytes(
+                (upstream.path / "provenance.json").read_bytes() + b"\n"
+            ),
+            "lineage": lambda upstream: (
+                upstream.path / "attempt.json"
+            ).write_text(
+                json.dumps(
+                    {
+                        **json.loads(
+                            (upstream.path / "attempt.json").read_text(encoding="utf-8")
+                        ),
+                        "lineage": {
+                            "project_id": "tampered-project",
+                            "source_manifest_sha256": "0" * 64,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            ),
+        }
+        for index, (label, mutate) in enumerate(mutations.items()):
+            with self.subTest(label=label):
+                upstream, _head, tail = self._accepted_upstream(suffix=f"-{index}")
+                planned = create_attempt(
+                    self.project,
+                    "S040",
+                    "S040_C001",
+                    selected_inputs={
+                        "opening_frame": {
+                            "path": str(tail),
+                            "sha256": hashlib.sha256(tail.read_bytes()).hexdigest(),
+                            "source": "accepted_tail",
+                            "upstream_attempt": str(upstream.path),
+                            "candidate_kind": "tail",
+                        }
+                    },
+                )
+                mutate(upstream)
+                client = FakeRenderClient(self.video)
+
+                with self.assertRaisesRegex(RenderError, "accepted"):
+                    resume_attempt(self.project, planned, client)
+
+                self.assertEqual(client.uploaded, [])
+                self.assertEqual(client.submitted, [])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_revalidates_exact_upstream_candidate_kind_before_upload(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.return_value = [self.opening]
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(
+            destination
+        )
+        upstream, head, _tail = self._accepted_upstream(suffix="-kind")
+        planned = create_attempt(
+            self.project,
+            "S040",
+            "S040_C001",
+            selected_inputs={
+                "opening_frame": {
+                    "path": str(head),
+                    "sha256": hashlib.sha256(head.read_bytes()).hexdigest(),
+                    "source": "accepted_qc_candidate",
+                    "upstream_attempt": str(upstream.path),
+                    "candidate_kind": "tail",
+                }
+            },
+        )
+        client = FakeRenderClient(self.video)
+
+        with self.assertRaisesRegex(RenderError, "accepted"):
+            resume_attempt(self.project, planned, client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
 
     def test_continuation_rejects_changed_accepted_attempt_evidence(self) -> None:
         upstream = create_attempt(self.project, "S010", "S010_C001")

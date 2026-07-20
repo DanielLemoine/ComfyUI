@@ -92,6 +92,59 @@ class CollectPreflightTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _ready_fixture(
+        self, temporary_path: Path, *, runtime: bool = True
+    ) -> tuple[Path, ProjectConfig, str, str]:
+        comfy_root = temporary_path / "ComfyUI"
+        template_dir = self._package_template_dir(temporary_path)
+        template_dir.mkdir(parents=True)
+        i2v_template = template_dir / "video_wan2_2_14B_i2v.json"
+        i2v_template.write_text(
+            json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+            encoding="utf-8",
+        )
+        flf_template = template_dir / "video_wan2_2_14B_flf2v.json"
+        flf_template.write_text(
+            json.dumps({"nodes": [{"type": "WanFirstLastFrameToVideo"}]}),
+            encoding="utf-8",
+        )
+        i2v_hash = hashlib.sha256(i2v_template.read_bytes()).hexdigest()
+        flf_hash = hashlib.sha256(flf_template.read_bytes()).hexdigest()
+        self._write_registered_manifest(
+            template_dir,
+            {
+                "video_wan2_2_14B_i2v": i2v_hash,
+                "video_wan2_2_14B_flf2v": flf_hash,
+            },
+        )
+        model_names = {
+            "high": "high.safetensors",
+            "low": "low.safetensors",
+            "vae": "vae.safetensors",
+            "text_encoder": "text.safetensors",
+        }
+        model_kinds = {
+            "high": "diffusion_models",
+            "low": "diffusion_models",
+            "vae": "vae",
+            "text_encoder": "text_encoders",
+        }
+        for role, name in model_names.items():
+            model_dir = comfy_root / "models" / model_kinds[role]
+            model_dir.mkdir(parents=True, exist_ok=True)
+            (model_dir / name).write_bytes(name.encode("utf-8"))
+        if runtime:
+            interpreter = comfy_root / "venv" / "Scripts" / "python.exe"
+            interpreter.parent.mkdir(parents=True, exist_ok=True)
+            interpreter.write_bytes(b"fixture interpreter")
+        project_path = temporary_path / "project.yaml"
+        project_path.write_text("project_id: preflight-fixture\n", encoding="utf-8")
+        project = ProjectConfig(
+            path=project_path,
+            source={"project_id": "preflight-fixture", "models": model_names},
+        )
+        return comfy_root, project, i2v_hash, flf_hash
+
     def test_canonical_flf_template_identity_is_pinned(self) -> None:
         self.assertEqual(
             inventory._CANONICAL_FLF_TEMPLATE_ID, "video_wan2_2_14B_flf2v"
@@ -422,6 +475,44 @@ class CollectPreflightTests(unittest.TestCase):
             )
 
     @patch("wan22_longform.inventory.subprocess.run")
+    def test_package_shaped_blueprint_tree_cannot_qualify_as_registered(self, run) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = (
+                temporary_path
+                / "ComfyUI"
+                / "blueprints"
+                / "comfyui_workflow_templates_json"
+                / "templates"
+            )
+            template_dir.mkdir(parents=True)
+            i2v_template = template_dir / "video_wan2_2_14B_i2v.json"
+            i2v_template.write_text(
+                json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+                encoding="utf-8",
+            )
+            i2v_hash = hashlib.sha256(i2v_template.read_bytes()).hexdigest()
+            self._write_registered_manifest(
+                template_dir, {"video_wan2_2_14B_i2v": i2v_hash}
+            )
+
+            with patch(
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256", i2v_hash
+            ):
+                result = collect_preflight(
+                    comfy_root=temporary_path / "ComfyUI",
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                )
+
+            self.assertIsNone(result.native_i2v_template)
+            self.assertTrue(
+                any("registered canonical Wan I2V" in blocker for blocker in result.blockers)
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
     def test_collect_preflight_records_runtime_revisions_and_filters_non_nodes(self, run) -> None:
         run.return_value = CompletedProcess([], 1, "", "unavailable fixture")
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -508,6 +599,163 @@ class CollectPreflightTests(unittest.TestCase):
         self.assertTrue(
             any("model vae is absent" in blocker for blocker in blockers)
         )
+
+    def test_preflight_rejects_models_found_only_in_wrong_root_kinds(self) -> None:
+        project = ProjectConfig(
+            path=Path("project.yaml"),
+            source={
+                "models": {
+                    "high": "high.safetensors",
+                    "low": "low.safetensors",
+                    "vae": "vae.safetensors",
+                    "text_encoder": "text.safetensors",
+                }
+            },
+        )
+        blockers = inventory._model_role_blockers(
+            {
+                "roots": [
+                    {
+                        "kind": "vae",
+                        "files": [
+                            "high.safetensors",
+                            "low.safetensors",
+                            "vae.safetensors",
+                            "text.safetensors",
+                        ],
+                    }
+                ]
+            },
+            project,
+        )
+
+        self.assertTrue(any("model high is absent" in blocker for blocker in blockers))
+        self.assertTrue(any("model low is absent" in blocker for blocker in blockers))
+        self.assertFalse(any("model vae is absent" in blocker for blocker in blockers))
+        self.assertTrue(
+            any("model text_encoder is absent" in blocker for blocker in blockers)
+        )
+
+    def test_model_inventory_includes_default_roots_and_configured_extras(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            comfy_root = Path(temporary_directory) / "ComfyUI"
+            default_root = comfy_root / "models" / "vae"
+            default_root.mkdir(parents=True)
+            extra_root = Path(temporary_directory) / "extra-diffusion"
+            extra_root.mkdir()
+            (comfy_root / "extra_model_paths.yaml").write_text(
+                "\n".join(
+                    (
+                        "fixture:",
+                        f"  base_path: {extra_root.parent}",
+                        f"  diffusion_models: {extra_root.name}",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            roots = inventory._configured_model_roots(comfy_root)
+
+            self.assertIn(("vae", default_root.resolve()), roots)
+            self.assertIn(("diffusion_models", extra_root.resolve()), roots)
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_preflight_blocks_without_a_trustworthy_comfy_runtime(self, run) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            comfy_root, project, i2v_hash, flf_hash = self._ready_fixture(
+                temporary_path, runtime=False
+            )
+
+            with patch(
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256", i2v_hash
+            ), patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256", flf_hash
+            ):
+                result = collect_preflight(
+                    comfy_root=comfy_root,
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                    project=project,
+                )
+
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any("runtime interpreter" in blocker for blocker in result.blockers)
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_runtime_queries_use_the_comfy_environment_not_the_helper_interpreter(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            comfy_root, project, i2v_hash, flf_hash = self._ready_fixture(temporary_path)
+            runtime = comfy_root / "venv" / "Scripts" / "python.exe"
+            helper = temporary_path / "helper" / "python.exe"
+
+            with patch("sys.executable", str(helper)), patch(
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256", i2v_hash
+            ), patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256", flf_hash
+            ):
+                result = collect_preflight(
+                    comfy_root=comfy_root,
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                    project=project,
+                )
+
+            environment = json.loads(
+                (result.artifact_dir / "environment.json").read_text(encoding="utf-8")
+            )
+            python_commands = [
+                call.args[0]
+                for call in run.call_args_list
+                if "-c" in call.args[0]
+            ]
+            self.assertTrue(python_commands)
+            self.assertTrue(
+                all(Path(command[0]) == runtime.resolve() for command in python_commands)
+            )
+            self.assertEqual(
+                Path(environment["python"]["executable"]), runtime.resolve()
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_unavailable_custom_node_revision_blocks_ready(self, run) -> None:
+        def command_result(command, **_kwargs):
+            if "custom_nodes" in " ".join(str(part) for part in command):
+                return CompletedProcess(command, 1, "", "not a git repository")
+            return CompletedProcess(command, 0, "fixture output", "")
+
+        run.side_effect = command_result
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            comfy_root, project, i2v_hash, flf_hash = self._ready_fixture(temporary_path)
+            (comfy_root / "custom_nodes" / "fixture-node").mkdir(parents=True)
+
+            with patch(
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256", i2v_hash
+            ), patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256", flf_hash
+            ):
+                result = collect_preflight(
+                    comfy_root=comfy_root,
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                    project=project,
+                )
+
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any("custom node fixture-node revision" in blocker for blocker in result.blockers)
+            )
 
     @patch("wan22_longform.inventory.subprocess.run")
     def test_collect_preflight_rejects_an_i2v_package_asset_missing_its_manifest_entry(
@@ -709,16 +957,31 @@ class CollectPreflightTests(unittest.TestCase):
                     "video_wan2_2_14B_flf2v": expected_hash,
                 },
             )
-            model_dir = temporary_path / "ComfyUI" / "models" / "fixtures"
-            model_dir.mkdir(parents=True)
             model_names = {
                 "high": "high.safetensors",
                 "low": "low.safetensors",
                 "vae": "vae.safetensors",
                 "text_encoder": "text.safetensors",
             }
-            for name in model_names.values():
+            model_kinds = {
+                "high": "diffusion_models",
+                "low": "diffusion_models",
+                "vae": "vae",
+                "text_encoder": "text_encoders",
+            }
+            for role, name in model_names.items():
+                model_dir = temporary_path / "ComfyUI" / "models" / model_kinds[role]
+                model_dir.mkdir(parents=True, exist_ok=True)
                 (model_dir / name).write_bytes(name.encode("utf-8"))
+            interpreter = (
+                temporary_path
+                / "ComfyUI"
+                / "venv"
+                / "Scripts"
+                / "python.exe"
+            )
+            interpreter.parent.mkdir(parents=True, exist_ok=True)
+            interpreter.write_bytes(b"fixture interpreter")
             project_path = temporary_path / "project.yaml"
             project_path.write_text("project_id: preflight-fixture\n", encoding="utf-8")
             project = ProjectConfig(

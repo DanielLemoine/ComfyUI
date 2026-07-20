@@ -28,7 +28,7 @@ Install the model files before rendering:
 - `text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors`
 - `vae/wan_2.1_vae.safetensors`
 
-Run preflight again after any ComfyUI, frontend, PyTorch/CUDA, custom-node, model, or template change. READY requires the supplied project's exact high/low/VAE/text-encoder filenames in the discovered local inventory, native schemas, and the registered canonical I2V and FLF package assets with their pinned manifest/local SHA-256s. Without `--project`, model-role proof is unavailable and preflight remains BLOCKED. Workflow discovery enumerates local profile candidates when it cannot prove which profile is active; it never assumes `user/default`.
+Run preflight again after any ComfyUI, frontend, PyTorch/CUDA, custom-node, model, or template change. READY requires a trustworthy interpreter under `comfy_root`, available ComfyUI/runtime and custom-node revision evidence, the supplied project's exact high/low/VAE/text-encoder filenames in role-correct roots, native schemas, and the registered canonical I2V and FLF package assets with their pinned manifest/local SHA-256s. Inventory combines configured extra model paths with default ComfyUI model roots; high/low must come from diffusion-model or UNET roots, VAE from VAE roots, and text encoders from text/CLIP roots. Without `--project`, model-role proof is unavailable and preflight remains BLOCKED. Workflow discovery enumerates local profile candidates when it cannot prove which profile is active; it never assumes `user/default`.
 
 ## UI workflows
 
@@ -90,7 +90,7 @@ python -m wan22_longform.cli render-segment .\project.yaml S010 S010_C002
 python -m wan22_longform.cli reject .\attempts\... --note "camera jump at frame 8"
 python -m wan22_longform.cli retry .\attempts\... --note "retry with lower motion control"
 
-# Resume only existing immutable planned render attempts; it never rerenders accepted work or runs FFmpeg assembly automatically.
+# Resume only existing immutable planned render attempts. Before upload or submission it re-hashes the sealed provenance, source manifest, workflow, request, and selected inputs, then revalidates any accepted upstream attempt and exact QC candidate path/hash/kind against the current project. It never rerenders accepted work or runs FFmpeg assembly automatically.
 python -m wan22_longform.cli resume .\project.yaml --timeout 1800
 python -m wan22_longform.cli status .\project.yaml
 

@@ -123,3 +123,56 @@ OK (skipped=1)
 ## Residual Concerns
 
 None within the requested static/unit-test scope. A live ComfyUI/GPU validation was intentionally excluded by the task constraints.
+
+## Fix Report: Whole-Branch Re-Review
+
+Date: 2026-07-19
+
+### Findings addressed
+
+- **C1 — trusted template root:** Registered I2V/FLF candidates must now be direct children of an exact, separately enumerated `comfyui_workflow_templates_json/templates` root under a known ComfyUI embedded/virtual environment. Package-shaped ancestry under `blueprints`, `workflow_templates`, or web assets cannot qualify, even when it contains matching bytes and a fabricated sibling manifest.
+- **C2 — immutable resume evidence:** New attempts seal `provenance.json` in `attempt.json`. Before any render upload or submission, the runner re-hashes the planned source-manifest snapshot, workflow snapshot, request snapshot, provenance seal/lineage, project inputs, and selected inputs. Stored `accepted_tail` and `accepted_qc_candidate` inputs reload the recorded upstream attempt, require current-project accepted-evidence verification, and must reproduce the exact candidate path, SHA-256, and kind.
+- **I1 — fail-closed READY evidence:** Runtime queries use only a known embedded or virtual-environment interpreter below `comfy_root`; they never fall back to the helper process interpreter. READY now requires the runtime interpreter plus available ComfyUI revision, frontend, PyTorch, CUDA, and enumerated custom-node revision evidence. Model inventory combines configured extras and default roots, and model-role proof is root-kind aware: high/low use diffusion-model or UNET roots, VAE uses VAE roots, and text uses text/CLIP roots.
+
+Reviewed-boundary behavior was not changed: reviewed joins still require `requires_review=true` and `trim_right_frames=0`.
+
+### TDD RED
+
+Command:
+
+```powershell
+C:\Program Files\Python311\python.exe -m unittest tools.wan22_longform.tests.test_inventory tools.wan22_longform.tests.test_cli_assembly_records tools.wan22_longform.tests.test_project_state tools.wan22_longform.tests.test_render_client
+```
+
+Observed before follow-up production edits:
+
+```text
+Ran 93 tests in 12.525s
+FAILED (failures=13)
+```
+
+The failures covered the package-shaped blueprint spoof, configured-extra/default-root omission, wrong-root role acceptance, missing runtime/custom-node READY blockers, helper-interpreter leakage, four planned snapshot/provenance mutations, two upstream accepted-evidence mutations, and an incorrect accepted QC candidate kind.
+
+### GREEN verification
+
+Focused:
+
+```text
+Ran 93 tests in 12.482s
+OK
+```
+
+Full:
+
+```text
+Ran 207 tests in 20.203s
+OK (skipped=1)
+```
+
+Static validation:
+
+- `C:\Program Files\Python311\python.exe -m compileall -q tools\wan22_longform\src`
+- `C:\Program Files\Python311\python.exe -m ruff check tools/wan22_longform/src tools/wan22_longform/tests`
+- `git diff --check`
+
+All follow-up work remained local and static/unit-test only. No GPU, ComfyUI runtime, network service, or untracked runtime artifact was used or modified.

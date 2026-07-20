@@ -169,19 +169,6 @@ def create_attempt(
         created_at=created_at,
         parent_attempt=parent_attempt,
     )
-    _write_json(
-        attempt_path / "attempt.json",
-        {
-            "attempt_id": attempt.attempt_id,
-            "created_at": _utc_timestamp(created_at),
-            "parent_attempt": str(parent_attempt) if parent_attempt else None,
-            "lineage": lineage,
-            "retry_of": str(parent_attempt) if parent_attempt else None,
-            "segment_id": segment_id,
-            "shot_id": shot_id,
-            "state": attempt.state,
-        },
-    )
     provenance = {
         "inputs": {name: sha256_file(path) for name, path in _input_paths(project).items()},
         "request": sha256_file(request_snapshot),
@@ -191,7 +178,22 @@ def create_attempt(
     }
     if selected_inputs is not None:
         provenance["selected_inputs"] = _selected_inputs_payload(selected_inputs)
-    _write_json(attempt_path / "provenance.json", provenance)
+    provenance_path = attempt_path / "provenance.json"
+    _write_json(provenance_path, provenance)
+    _write_json(
+        attempt_path / "attempt.json",
+        {
+            "attempt_id": attempt.attempt_id,
+            "created_at": _utc_timestamp(created_at),
+            "parent_attempt": str(parent_attempt) if parent_attempt else None,
+            "lineage": lineage,
+            "provenance_sha256": sha256_file(provenance_path),
+            "retry_of": str(parent_attempt) if parent_attempt else None,
+            "segment_id": segment_id,
+            "shot_id": shot_id,
+            "state": attempt.state,
+        },
+    )
     return attempt
 
 
@@ -366,6 +368,84 @@ def verify_attempt_lineage(project: ProjectConfig, attempt: Attempt) -> dict[str
             "attempt project lineage does not match the current project manifest"
         )
     return actual
+
+
+def verify_planned_attempt_evidence(
+    project: ProjectConfig, attempt: Attempt
+) -> dict[str, Any]:
+    """Rehash one planned attempt's complete immutable submission evidence."""
+    persisted = load_attempt(attempt.path)
+    if persisted.state is not AttemptState.PLANNED:
+        raise ProjectStateError("attempt is not planned")
+    lineage = verify_attempt_lineage(project, persisted)
+    attempt_record = _read_json(persisted.path / "attempt.json")
+    expected_provenance_hash = attempt_record.get("provenance_sha256")
+    if not _is_sha256(expected_provenance_hash):
+        raise ProjectStateError(
+            "legacy planned attempt has no sealed provenance evidence"
+        )
+    provenance_path = persisted.path / "provenance.json"
+    if (
+        not provenance_path.is_file()
+        or sha256_file(provenance_path) != expected_provenance_hash.casefold()
+    ):
+        raise ProjectStateError("planned attempt provenance hash changed")
+    provenance = _read_json(provenance_path)
+    if _lineage_payload(provenance.get("lineage"), "attempt provenance") != lineage:
+        raise ProjectStateError("planned attempt provenance project lineage changed")
+
+    snapshots = tuple(persisted.path.glob("source-manifest.*"))
+    if len(snapshots) != 1:
+        raise ProjectStateError(
+            "planned attempt has no unambiguous source manifest snapshot"
+        )
+    artifacts = {
+        "source_manifest": snapshots[0],
+        "workflow": persisted.path / "workflow-api.json",
+        "request": persisted.path / "request.json",
+    }
+    verified: dict[str, dict[str, str]] = {}
+    for name, path in artifacts.items():
+        expected_hash = provenance.get(name)
+        if not _is_sha256(expected_hash):
+            raise ProjectStateError(
+                f"planned attempt provenance {name} hash is invalid"
+            )
+        if not path.is_file() or sha256_file(path) != expected_hash.casefold():
+            raise ProjectStateError(f"planned attempt {name} hash changed")
+        verified[name] = {
+            "path": str(path.resolve()),
+            "sha256": expected_hash.casefold(),
+        }
+    if verified["source_manifest"]["sha256"] != lineage["source_manifest_sha256"]:
+        raise ProjectStateError("planned attempt source manifest lineage changed")
+
+    recorded_inputs = provenance.get("inputs")
+    if not isinstance(recorded_inputs, Mapping):
+        raise ProjectStateError("planned attempt input provenance is invalid")
+    current_inputs: dict[str, str] = {}
+    for name, path in _input_paths(project).items():
+        if not path.is_file():
+            raise ProjectStateError(f"planned attempt input does not exist: {path}")
+        current_inputs[name] = sha256_file(path)
+    if _json_ready(recorded_inputs) != current_inputs:
+        raise ProjectStateError("planned attempt project input provenance changed")
+
+    selected = provenance.get("selected_inputs", {})
+    if not isinstance(selected, Mapping):
+        raise ProjectStateError("planned attempt selected input provenance is invalid")
+    selected_evidence = {
+        name: selected_input(persisted, name).details for name in selected
+    }
+    return {
+        "artifacts": verified,
+        "lineage": lineage,
+        "provenance": {
+            "path": str(provenance_path.resolve()),
+            "sha256": expected_provenance_hash.casefold(),
+        },
+        "selected_inputs": selected_evidence,
+    }
 
 
 def accepted_attempt_evidence(

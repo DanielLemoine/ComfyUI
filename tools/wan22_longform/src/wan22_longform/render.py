@@ -31,7 +31,7 @@ from .project import (
     selected_input,
     selected_tail_frame,
     transition_attempt,
-    verify_attempt_lineage,
+    verify_planned_attempt_evidence,
 )
 from .qc import initialize_qc
 from .workflow import (
@@ -129,7 +129,7 @@ def render_segment(
             project,
             shot_id,
             segment_id,
-            opening=_stored_input_selection(attempt, "opening_frame"),
+            opening=_stored_input_selection(project, attempt, "opening_frame"),
         )
     base_graph = _read_graph(attempt.path / "workflow-api.json")
     resolved, available_files = _resolved_submission_config(project)
@@ -253,15 +253,19 @@ def render_bridge(
             },
         )
     else:
+        attempt = _new_or_planned_attempt(
+            bridge_project, attempt.shot_id, bridge_id, attempt
+        )
         bridge = _bridge_request(
             project,
             bridge_id,
-            first_image=_stored_input_selection(attempt, "first_image"),
-            last_image=_stored_input_selection(attempt, "last_image"),
+            first_image=_stored_input_selection(project, attempt, "first_image"),
+            last_image=_stored_input_selection(project, attempt, "last_image"),
         )
-        attempt = _new_or_planned_attempt(
-            bridge_project, bridge.shot_id, bridge.bridge_id, attempt
-        )
+        if attempt.shot_id != bridge.shot_id:
+            raise RenderError(
+                "planned bridge attempt shot does not match the configured bridge"
+            )
     base_graph = _read_graph(attempt.path / "workflow-api.json")
     resolved, available_files = _resolved_submission_config(bridge_project)
     graph = build_api_graph(base_graph, resolved, available_files)
@@ -406,13 +410,19 @@ def _new_or_planned_attempt(
     *,
     selected_inputs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Attempt:
-    if supplied is None:
-        return create_attempt(project, shot_id, segment_id, selected_inputs=selected_inputs)
-    persisted = load_attempt(supplied.path)
+    persisted = (
+        create_attempt(
+            project, shot_id, segment_id, selected_inputs=selected_inputs
+        )
+        if supplied is None
+        else load_attempt(supplied.path)
+    )
     try:
-        verify_attempt_lineage(project, persisted)
+        verify_planned_attempt_evidence(project, persisted)
     except ProjectStateError as error:
-        raise RenderError(f"planned attempt project lineage is invalid: {error}") from error
+        raise RenderError(f"planned attempt evidence is invalid: {error}") from error
+    if supplied is None:
+        return persisted
     if persisted.shot_id != shot_id or persisted.segment_id != segment_id:
         raise RenderError("planned attempt identity does not match the requested render")
     if persisted.state is not AttemptState.PLANNED:
@@ -954,7 +964,9 @@ def _project_attempts(project: ProjectConfig) -> tuple[Attempt, ...]:
     return tuple(sorted(attempts, key=lambda attempt: str(attempt.path)))
 
 
-def _stored_input_selection(attempt: Attempt, name: str) -> InputSelection:
+def _stored_input_selection(
+    project: ProjectConfig, attempt: Attempt, name: str
+) -> InputSelection:
     try:
         stored = selected_input(attempt, name)
     except ProjectStateError as error:
@@ -967,7 +979,41 @@ def _stored_input_selection(attempt: Attempt, name: str) -> InputSelection:
     candidate_kind = stored.details.get("candidate_kind")
     if candidate_kind is not None and not isinstance(candidate_kind, str):
         raise RenderError(f"planned attempt {name} provenance has invalid candidate kind")
-    return InputSelection(stored.path, stored.sha256, source, upstream, candidate_kind)
+    selection = InputSelection(
+        stored.path, stored.sha256, source, upstream, candidate_kind
+    )
+    if source not in {"accepted_tail", "accepted_qc_candidate"}:
+        return selection
+    if upstream is None:
+        raise RenderError(
+            f"planned attempt {name} accepted provenance has no upstream attempt"
+        )
+    try:
+        upstream_attempt = load_attempt(upstream)
+        accepted_attempt_evidence(project, upstream_attempt)
+        if source == "accepted_tail":
+            if candidate_kind != "tail":
+                raise ProjectStateError(
+                    "accepted tail provenance must name candidate kind tail"
+                )
+            candidate = selected_tail_frame(upstream_attempt)
+        else:
+            if candidate_kind not in {"head", "tail"}:
+                raise ProjectStateError(
+                    "accepted QC provenance must name candidate kind head or tail"
+                )
+            candidate = accepted_qc_candidate(
+                upstream_attempt, stored.path, candidate_kind
+            )
+    except ProjectStateError as error:
+        raise RenderError(
+            f"planned attempt {name} accepted provenance is invalid: {error}"
+        ) from error
+    if candidate.path.resolve() != stored.path.resolve() or candidate.sha256 != stored.sha256:
+        raise RenderError(
+            f"planned attempt {name} accepted candidate path or hash changed"
+        )
+    return selection
 
 
 def _local_input_selection(

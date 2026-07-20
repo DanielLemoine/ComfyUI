@@ -5,7 +5,6 @@ import ipaddress
 import json
 import platform
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -70,6 +69,7 @@ def collect_preflight(
     object_info_data, object_info_status = _object_info(comfy_url, object_info)
     model_inventory = _model_inventory(comfy_root, project)
     custom_nodes = _custom_nodes(comfy_root)
+    environment = _environment(comfy_root, comfy_url)
     (
         native_i2v_template,
         native_flf_template,
@@ -86,11 +86,13 @@ def collect_preflight(
         flf_verification,
         model_inventory,
         project,
+        environment=environment,
+        custom_nodes=custom_nodes,
     )
     status = "BLOCKED" if blockers else "READY"
 
     object_info_path = artifact_dir / "object_info.json"
-    _write_json(artifact_dir / "environment.json", _environment(comfy_root, comfy_url))
+    _write_json(artifact_dir / "environment.json", environment)
     _write_json(artifact_dir / "model_inventory.json", model_inventory)
     _write_json(artifact_dir / "custom_nodes.json", custom_nodes)
     _write_json(object_info_path, object_info_data)
@@ -185,6 +187,9 @@ def _preflight_blockers(
     flf_verification: str,
     model_inventory: dict[str, object],
     project: ProjectConfig | None,
+    *,
+    environment: dict[str, object] | None = None,
+    custom_nodes: dict[str, object] | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     required_schemas = ("WanImageToVideo", "WanFirstLastFrameToVideo")
@@ -216,6 +221,7 @@ def _preflight_blockers(
             f"{flf_verification}"
         )
     blockers.extend(_model_role_blockers(model_inventory, project))
+    blockers.extend(_runtime_revision_blockers(environment, custom_nodes))
     return tuple(blockers)
 
 
@@ -230,22 +236,32 @@ def _has_required_input_schema(schema: object) -> bool:
 
 
 def _environment(comfy_root: Path, comfy_url: str | None) -> dict[str, object]:
+    runtime = _runtime_interpreter(comfy_root)
+    runtime_evidence = (
+        {"available": True, "detail": str(runtime)}
+        if runtime is not None
+        else {
+            "available": False,
+            "detail": "no interpreter was found in a known ComfyUI environment",
+        }
+    )
     return {
         "comfyui_revision": _command_output(
             ["git", "-C", str(comfy_root), "rev-parse", "HEAD"]
         ),
         "comfy_root": str(comfy_root),
         "comfy_url": comfy_url,
-        "cuda_version": _command_output(
-            [sys.executable, "-c", "import torch; print(torch.version.cuda or 'unavailable')"]
+        "cuda_version": _runtime_command(
+            runtime,
+            ["-c", "import torch; print(torch.version.cuda or 'unavailable')"],
         ),
         "ffmpeg": _command_output(["ffmpeg", "-version"]),
-        "frontend_version": _command_output(
+        "frontend_version": _runtime_command(
+            runtime,
             [
-                sys.executable,
                 "-c",
                 "from importlib.metadata import version; print(version('comfyui-frontend-package'))",
-            ]
+            ],
         ),
         "gpu": _command_output(
             [
@@ -255,15 +271,47 @@ def _environment(comfy_root: Path, comfy_url: str | None) -> dict[str, object]:
             ]
         ),
         "platform": platform.platform(),
-        "pytorch_version": _command_output(
-            [sys.executable, "-c", "import torch; print(torch.__version__)"]
+        "pytorch_version": _runtime_command(
+            runtime, ["-c", "import torch; print(torch.__version__)"]
         ),
         "python": {
-            "executable": sys.executable,
-            "implementation": platform.python_implementation(),
-            "version": platform.python_version(),
+            "executable": str(runtime) if runtime is not None else None,
+            "implementation": _runtime_command(
+                runtime,
+                ["-c", "import platform; print(platform.python_implementation())"],
+            ),
+            "version": _runtime_command(
+                runtime, ["-c", "import platform; print(platform.python_version())"]
+            ),
         },
+        "runtime_interpreter": runtime_evidence,
     }
+
+
+def _runtime_interpreter(comfy_root: Path) -> Path | None:
+    candidates = (
+        comfy_root / "python_embeded" / "python.exe",
+        comfy_root / "python_embedded" / "python.exe",
+        comfy_root / "venv" / "Scripts" / "python.exe",
+        comfy_root / ".venv" / "Scripts" / "python.exe",
+        comfy_root / "venv" / "bin" / "python",
+        comfy_root / ".venv" / "bin" / "python",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            resolved = candidate.resolve()
+            if resolved.is_relative_to(comfy_root):
+                return resolved
+    return None
+
+
+def _runtime_command(runtime: Path | None, arguments: list[str]) -> dict[str, object]:
+    if runtime is None:
+        return {
+            "available": False,
+            "detail": "no trustworthy ComfyUI runtime interpreter is available",
+        }
+    return _command_output([str(runtime), *arguments])
 
 
 def _command_output(command: list[str]) -> dict[str, object]:
@@ -329,18 +377,30 @@ def _model_role_blockers(
         return tuple(f"project model role {role} is unavailable" for role in missing_roles)
     roots = model_inventory.get("roots")
     root_entries = roots if isinstance(roots, list) else []
-    discovered = {
-        Path(name).name.casefold()
-        for root in root_entries
-        if isinstance(root, dict)
-        for name in root.get("files", [])
-        if isinstance(root.get("files"), list) and isinstance(name, str)
+    allowed_kinds = {
+        "high": {"diffusion_models", "unet"},
+        "low": {"diffusion_models", "unet"},
+        "vae": {"vae"},
+        "text_encoder": {"clip", "text_encoders"},
     }
-    return tuple(
-        f"configured project model {role} is absent from local model inventory: {name}"
-        for role, name in required.items()
-        if name.casefold() not in discovered
-    )
+    blockers = []
+    for role, name in required.items():
+        discovered = {
+            Path(candidate).name.casefold()
+            for root in root_entries
+            if isinstance(root, dict)
+            and isinstance(root.get("kind"), str)
+            and root["kind"].casefold() in allowed_kinds[role]
+            and isinstance(root.get("files"), list)
+            for candidate in root["files"]
+            if isinstance(candidate, str)
+        }
+        if name.casefold() not in discovered:
+            blockers.append(
+                f"configured project model {role} is absent from a role-correct "
+                f"local model root: {name}"
+            )
+    return tuple(blockers)
 
 
 def _configured_model_roots(comfy_root: Path) -> list[tuple[str, Path]]:
@@ -350,8 +410,43 @@ def _configured_model_roots(comfy_root: Path) -> list[tuple[str, Path]]:
         for child in (comfy_root / "models").iterdir()
         if child.is_dir()
     ] if (comfy_root / "models").is_dir() else []
-    candidates = configured or defaults
+    candidates = [*configured, *defaults]
     return sorted({(kind, path.resolve()) for kind, path in candidates}, key=lambda item: (item[0], str(item[1])))
+
+
+def _runtime_revision_blockers(
+    environment: dict[str, object] | None,
+    custom_nodes: dict[str, object] | None,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    evidence = environment or {}
+    runtime = evidence.get("runtime_interpreter")
+    if not isinstance(runtime, dict) or runtime.get("available") is not True:
+        blockers.append(
+            "ComfyUI runtime interpreter evidence is unavailable; identify a local "
+            "embedded or virtual-environment interpreter under comfy_root"
+        )
+    for key in (
+        "comfyui_revision",
+        "frontend_version",
+        "pytorch_version",
+        "cuda_version",
+    ):
+        value = evidence.get(key)
+        if not isinstance(value, dict) or value.get("available") is not True:
+            blockers.append(f"ComfyUI runtime evidence {key} is unavailable")
+    nodes_value = (custom_nodes or {}).get("nodes")
+    nodes = nodes_value if isinstance(nodes_value, list) else []
+    for node in nodes:
+        if not isinstance(node, dict):
+            blockers.append("custom node inventory contains invalid revision evidence")
+            continue
+        revision = node.get("revision")
+        if not isinstance(revision, dict) or revision.get("available") is not True:
+            blockers.append(
+                f"custom node {node.get('name', '<unknown>')} revision is unavailable"
+            )
+    return tuple(blockers)
 
 
 def _parse_extra_model_paths(path: Path) -> list[tuple[str, Path]]:
@@ -415,41 +510,13 @@ def _custom_nodes(comfy_root: Path) -> dict[str, object]:
 def _official_templates(
     comfy_root: Path,
 ) -> tuple[Path | None, Path | None, list[Path], str, str]:
+    registered_roots = _registered_template_roots(comfy_root)
     template_roots = [
         comfy_root / "blueprints",
         comfy_root / "workflow_templates",
         comfy_root / "web" / "assets" / "workflow_templates",
-        comfy_root
-        / "venv"
-        / "Lib"
-        / "site-packages"
-        / "comfyui_workflow_templates_json"
-        / "templates",
-        comfy_root
-        / ".venv"
-        / "Lib"
-        / "site-packages"
-        / "comfyui_workflow_templates_json"
-        / "templates",
-        comfy_root
-        / "python_embeded"
-        / "Lib"
-        / "site-packages"
-        / "comfyui_workflow_templates_json"
-        / "templates",
-        comfy_root
-        / "python_embedded"
-        / "Lib"
-        / "site-packages"
-        / "comfyui_workflow_templates_json"
-        / "templates",
+        *registered_roots,
     ]
-    for environment in (comfy_root / "venv", comfy_root / ".venv"):
-        template_roots.extend(
-            environment.glob(
-                "lib/python*/site-packages/comfyui_workflow_templates_json/templates"
-            )
-        )
     resolved_roots = [root.resolve() for root in template_roots if root.is_dir()]
     templates = sorted(
         {
@@ -460,14 +527,40 @@ def _official_templates(
         },
         key=str,
     )
-    i2v, i2v_verification = _find_native_i2v_template(templates)
-    flf, flf_verification = _find_native_flf_template(templates)
+    i2v, i2v_verification = _find_native_i2v_template(
+        templates, registered_roots
+    )
+    flf, flf_verification = _find_native_flf_template(
+        templates, registered_roots
+    )
     return i2v, flf, templates, i2v_verification, flf_verification
 
 
-def _find_native_i2v_template(templates: list[Path]) -> tuple[Path | None, str]:
+def _registered_template_roots(comfy_root: Path) -> list[Path]:
+    roots = [
+        comfy_root
+        / environment
+        / "Lib"
+        / "site-packages"
+        / "comfyui_workflow_templates_json"
+        / "templates"
+        for environment in ("venv", ".venv", "python_embeded", "python_embedded")
+    ]
+    for environment in (comfy_root / "venv", comfy_root / ".venv"):
+        roots.extend(
+            environment.glob(
+                "lib/python*/site-packages/comfyui_workflow_templates_json/templates"
+            )
+        )
+    return sorted({root.resolve() for root in roots if root.is_dir()}, key=str)
+
+
+def _find_native_i2v_template(
+    templates: list[Path], registered_roots: list[Path]
+) -> tuple[Path | None, str]:
     return _find_registered_native_template(
         templates,
+        registered_roots=registered_roots,
         template_id=_CANONICAL_I2V_TEMPLATE_ID,
         filename=_CANONICAL_I2V_TEMPLATE_FILENAME,
         pinned_sha256=_CANONICAL_I2V_TEMPLATE_SHA256,
@@ -476,9 +569,12 @@ def _find_native_i2v_template(templates: list[Path]) -> tuple[Path | None, str]:
     )
 
 
-def _find_native_flf_template(templates: list[Path]) -> tuple[Path | None, str]:
+def _find_native_flf_template(
+    templates: list[Path], registered_roots: list[Path]
+) -> tuple[Path | None, str]:
     return _find_registered_native_template(
         templates,
+        registered_roots=registered_roots,
         template_id=_CANONICAL_FLF_TEMPLATE_ID,
         filename=_CANONICAL_FLF_TEMPLATE_FILENAME,
         pinned_sha256=_CANONICAL_FLF_TEMPLATE_SHA256,
@@ -490,6 +586,7 @@ def _find_native_flf_template(templates: list[Path]) -> tuple[Path | None, str]:
 def _find_registered_native_template(
     templates: list[Path],
     *,
+    registered_roots: list[Path],
     template_id: str,
     filename: str,
     pinned_sha256: str,
@@ -500,7 +597,7 @@ def _find_registered_native_template(
         path
         for path in templates
         if (
-            _package_template_root(path) is not None
+            path.parent.resolve() in registered_roots
             and path.name == filename
         )
     ]
@@ -515,6 +612,7 @@ def _find_registered_native_template(
     for path in package_candidates:
         verified, detail = _verify_registered_package_template(
             path,
+            registered_root=path.parent.resolve(),
             template_id=template_id,
             filename=filename,
             pinned_sha256=pinned_sha256,
@@ -532,29 +630,22 @@ def _find_registered_native_template(
     return None, "; ".join(package_failures)
 
 
-def _package_template_root(template_path: Path) -> Path | None:
-    for ancestor in template_path.parents:
-        if (
-            ancestor.name == "templates"
-            and ancestor.parent.name == "comfyui_workflow_templates_json"
-        ):
-            return ancestor
-    return None
-
-
 def _verify_registered_package_template(
     template_path: Path,
     *,
+    registered_root: Path,
     template_id: str,
     filename: str,
     pinned_sha256: str,
     label: str,
 ) -> tuple[bool, str]:
-    package_root = _package_template_root(template_path)
-    if package_root is None:
-        return False, f"the {label} template is not inside the ComfyUI workflow-template package"
+    if template_path.parent.resolve() != registered_root:
+        return (
+            False,
+            f"the {label} template parent is not the trusted registered package root",
+        )
     manifest_path = (
-        package_root.parent.parent
+        registered_root.parent.parent
         / "comfyui_workflow_templates_core"
         / "manifest.json"
     )

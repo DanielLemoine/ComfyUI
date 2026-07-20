@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 - 2026-07-19
+
+- Documented reviewed no-trim boundary assembly: every request creates a new immutable record, preserves both reviewed frames, and cannot authorize trimming.
+- Corrected contact-sheet stacking offsets so a six-frame inspection sheet uses all five configured columns.
+
 ## 0.1.4 - 2026-07-19
 
 - Kept direct, intentional-cut, and external-control transitions as adjacent segment policies rather than fabricated bridge attempts or assembly media; only story FLF2V bridges are rendered media.

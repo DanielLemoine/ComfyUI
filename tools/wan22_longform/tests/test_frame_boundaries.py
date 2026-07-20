@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,54 @@ class FrameBoundaryTests(unittest.TestCase):
             self.assertEqual([path.name for path in tail], ["frame-000005.png", "frame-000006.png", "frame-000007.png"])
             self.assertTrue(all(path.stat().st_size > 0 for path in [*head, *tail]))
             self.assertGreater(contact_sheet.stat().st_size, 0)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
+    def test_contact_sheet_allocates_five_columns_for_six_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            frames: list[Path] = []
+            for index, color in enumerate(("red", "green", "blue", "yellow", "cyan", "magenta")):
+                frame = root / f"frame-{index}.png"
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        f"color=c={color}:size=64x48:rate=1",
+                        "-frames:v",
+                        "1",
+                        str(frame),
+                    ],
+                    check=True,
+                )
+                frames.append(frame)
+
+            contact_sheet = create_contact_sheet(frames, root / "contact-sheet.png")
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "json",
+                    str(contact_sheet),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            stream = json.loads(probe.stdout)["streams"][0]
+
+            self.assertEqual(stream["width"], 64 * 5)
+            self.assertEqual(stream["height"], 48 * 2)
 
 
 if __name__ == "__main__":

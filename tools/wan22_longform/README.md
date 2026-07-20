@@ -102,6 +102,14 @@ python -m wan22_longform.cli assemble-project .\project.yaml --qc-approved --req
   --rife-review-mp4 .\review\rife-review.mp4
 ```
 
+For a reviewed direct boundary that must retain both endpoint frames, create a new immutable project assembly record with:
+
+```powershell
+python -m wan22_longform.cli assemble-project project.yaml --qc-approved --approve-no-trim-boundary 1 "Reviewed at 200%; preserve both frames."
+```
+
+This approval preserves both frames; it cannot authorize trimming. Only a full-fidelity, reverified exact duplicate can trim a frame automatically.
+
 `render-shot` deliberately refuses any dependent continuation before submitting anything. Review and accept the upstream tail, then submit the dependent segment with `render-segment`. It never chooses a frame or silently creates a bridge. Submit `render-bridge` only after explicitly recording the accepted QC endpoint paths in the manifest.
 
 The `--timeout` default is 1800 seconds because a cold two-UNET Wan load can take longer than a short HTTP timeout on smart-offload hardware. The CLI still permits only loopback ComfyUI URLs.

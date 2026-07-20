@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 import math
 import subprocess
@@ -70,7 +71,8 @@ def create_contact_sheet(frames: list[Path], destination: Path) -> Path:
     columns = min(5, len(frames))
     rows = math.ceil(len(frames) / columns)
     layout = "|".join(
-        f"{_multiple(column, 'w0')}_{_multiple(row, 'h0')}"
+        f"{_stack_offset(range(row * columns, row * columns + column), 'w')}_"
+        f"{_stack_offset((previous_row * columns for previous_row in range(row)), 'h')}"
         for row in range(rows)
         for column in range(columns)
         if row * columns + column < len(frames)
@@ -122,12 +124,9 @@ def probe_frame_count(video: Path) -> int:
     return frame_count
 
 
-def _multiple(value: int, unit: str) -> str:
-    if value == 0:
-        return "0"
-    if value == 1:
-        return unit
-    return f"{value}*{unit}"
+def _stack_offset(indices: Iterable[int], axis: str) -> str:
+    values = [f"{axis}{index}" for index in indices]
+    return "+".join(values) if values else "0"
 
 
 def _run(command: list[str], operation: str) -> subprocess.CompletedProcess[str]:

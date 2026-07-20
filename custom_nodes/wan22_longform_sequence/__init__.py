@@ -43,7 +43,30 @@ class Wan22ConditionalSaveVideo:
         return (video,)
 
 
-NODE_CLASS_MAPPINGS = {"Wan22ConditionalSaveVideo": Wan22ConditionalSaveVideo}
+class Wan22TailFramesFromBatch:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "tail_frames": ("INT", {"default": 8, "min": 1, "max": 64}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("tail_frames",)
+    FUNCTION = "select_tail"
+    CATEGORY = "Wan22 Longform/sequence"
+
+    def select_tail(self, images, tail_frames):
+        return (images[-tail_frames:],)
+
+
+NODE_CLASS_MAPPINGS = {
+    "Wan22ConditionalSaveVideo": Wan22ConditionalSaveVideo,
+    "Wan22TailFramesFromBatch": Wan22TailFramesFromBatch,
+}
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Wan22ConditionalSaveVideo": "Wan22 Conditional Save Video"
+    "Wan22ConditionalSaveVideo": "Wan22 Conditional Save Video",
+    "Wan22TailFramesFromBatch": "Wan22 Tail Frames from Batch",
 }

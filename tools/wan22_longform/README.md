@@ -72,8 +72,9 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
   matching `CACHED_SEGMENT_nn` Video Helper Suite node. Leave it false to
   generate from the segment's own prompt. Segment 1 always starts with
   `SEED_IMAGE`. For segments 2–6, keep `USE_PREVIOUS_TAIL_nn` true to continue
-  from the accumulated preceding section, or set it false and paste a saved MP4
-  path into `RESUME_VIDEO_nn` to start a new continuation point. Each freshly
+  from the exact final frames selected by `CONTINUATION_TAIL_nn` (default: 8),
+  or set it false and paste a saved MP4 path into `RESUME_VIDEO_nn` to start a
+  new continuation point. Each freshly
   generated enabled section is saved below `D:\AI\outputs\wan22_longform\segments\`;
   `SAVE_FINAL_VIDEO` writes the direct assembled sequence. For example, to
   preserve clips 1–3 and rerender only 4–5, enable 1–5, set `USE_EXISTING_SEGMENT_01`

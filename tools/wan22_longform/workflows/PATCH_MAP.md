@@ -63,8 +63,9 @@ times without modifying its normal 20-step high-to-low topology. Each section
 has `ENABLE_SEGMENT_nn` and `USE_EXISTING_SEGMENT_nn`: disabled sections do not
 enter the final assembly, while existing sections load their selected MP4 via
 `CACHED_SEGMENT_nn` instead of requesting a Wan render. Segments 2–6 also have
-`USE_PREVIOUS_TAIL_nn` to select the accumulated prior tail or the final frame
-from `RESUME_VIDEO_nn`. Every `ComfySwitchNode` supplies both branches, so its
+`USE_PREVIOUS_TAIL_nn` to select the final `CONTINUATION_TAIL_nn` frames of the
+accumulated prior sequence (default: 8) or the final frame from `RESUME_VIDEO_nn`.
+Every `ComfySwitchNode` supplies both branches, so its
 lazy branch selection protects disabled Wan and resume-video work. Fresh enabled
 sections pass through `Wan22ConditionalSaveVideo`; cached sections are not
 rewritten. `ASSEMBLE_ENABLED_SEGMENTS` and `SAVE_FINAL_VIDEO` make one direct

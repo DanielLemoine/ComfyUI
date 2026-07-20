@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO_DIR))
 
 from wan22_longform.sequence_workflow import build_sequence_workflow  # noqa: E402
 from custom_nodes.wan22_longform_sequence import Wan22ConditionalSaveVideo  # noqa: E402
+import custom_nodes.wan22_longform_sequence as sequence_nodes  # noqa: E402
 
 
 NATIVE_WORKFLOW = PROJECT_DIR / "workflows" / "ui" / "wan22_segment_i2v_native.json"
@@ -40,6 +41,13 @@ class SequenceWorkflowTests(unittest.TestCase):
 
         self.assertEqual(result, (video,))
         self.assertFalse(video.saved)
+
+    def test_tail_frame_node_returns_only_requested_final_frames(self) -> None:
+        self.assertTrue(hasattr(sequence_nodes, "Wan22TailFramesFromBatch"))
+        tail_node = getattr(sequence_nodes, "Wan22TailFramesFromBatch", None)
+        if tail_node is not None:
+            result = tail_node().select_tail(("one", "two", "three", "four"), 2)
+            self.assertEqual(result, (("three", "four"),))
 
     def test_sequence_has_six_lazy_segments_and_one_final_video(self) -> None:
         native = json.loads(NATIVE_WORKFLOW.read_text(encoding="utf-8"))
@@ -126,6 +134,29 @@ class SequenceWorkflowTests(unittest.TestCase):
                     overlaps.append((left["title"], right["title"]))
 
         self.assertEqual(overlaps, [])
+
+    def test_each_continuation_uses_the_requested_final_frames_only(self) -> None:
+        native = json.loads(NATIVE_WORKFLOW.read_text(encoding="utf-8"))
+        workflow = build_sequence_workflow(native)
+        nodes = workflow["nodes"]
+        links = {link[0]: link for link in workflow["links"]}
+        by_title = {node["title"]: node for node in nodes}
+        tail_nodes = [
+            node for node in nodes if node["type"] == "Wan22TailFramesFromBatch"
+        ]
+
+        self.assertEqual(len(tail_nodes), 5)
+        for index in range(2, 7):
+            tail = by_title[f"CONTINUATION_TAIL_{index:02} (last N frames)"]
+            source = by_title[
+                f"START_SOURCE_{index:02}: previous tail (true) / resume video (false)"
+            ]
+            self.assertEqual(tail["widgets_values"], [8])
+            self.assertIsNotNone(tail["inputs"][0]["link"])
+            self.assertEqual(
+                links[source["inputs"][1]["link"]][1],
+                tail["id"],
+            )
 
 
 if __name__ == "__main__":

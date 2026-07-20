@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from .comfy_client import HistoryOutput, HistoryResult
+from .atomic import write_text
 from .config import (
     ACCEPTED_SELECTED_HEAD,
     ACCEPTED_SELECTED_TAIL,
     ModelFiles,
     ProjectConfig,
+    canonical_duration_seconds,
+    canonical_frame_count,
     load_project,
     load_presets,
     resolve_preset,
@@ -20,6 +26,7 @@ from .config import (
     validate_lora_policy,
 )
 from .frames import create_contact_sheet, extract_candidate_frames
+from .ffmpeg import FfmpegError, probe_media
 from .hashing import sha256_file
 from .metadata import RenderMetadata, write_metadata
 from .project import (
@@ -38,7 +45,7 @@ from .project import (
     verify_rendered_attempt_evidence,
     verify_submission_attempt_evidence,
 )
-from .qc import initialize_qc
+from .qc import QcError, initialize_qc, read_qc
 from .workflow import (
     ApiGraph,
     NodeRef,
@@ -152,6 +159,7 @@ def render_segment(
             input_provenance={"opening_frame": segment.opening.provenance()},
             extra_details={},
             rendered_note="local render complete",
+            expected_frames=segment.frames,
         )
     _reject_unknown_submit_outcome(attempt)
     base_graph = _read_graph(attempt.path / "workflow-api.json")
@@ -191,6 +199,7 @@ def render_segment(
         input_provenance={"opening_frame": segment.opening.provenance()},
         extra_details={},
         rendered_note="local render complete",
+        expected_frames=segment.frames,
     )
 
 
@@ -244,6 +253,7 @@ def render_bridge(
             },
             extra_details={"bridge_id": bridge.bridge_id},
             rendered_note="local bridge render complete",
+            expected_frames=bridge.frames,
         )
     _reject_unknown_submit_outcome(attempt)
     base_graph = _read_graph(attempt.path / "workflow-api.json")
@@ -290,6 +300,7 @@ def render_bridge(
         },
         extra_details={"bridge_id": bridge.bridge_id},
         rendered_note="local bridge render complete",
+        expected_frames=bridge.frames,
     )
 
 
@@ -425,6 +436,7 @@ def _complete_render(
     input_provenance: Mapping[str, Mapping[str, Any]],
     extra_details: Mapping[str, Any],
     rendered_note: str,
+    expected_frames: int,
 ) -> Attempt:
     """Poll a recorded prompt ID and write the terminal local evidence once."""
     try:
@@ -443,7 +455,8 @@ def _complete_render(
         return _finish_rendered_attempt(project, persisted, kind=kind)
     if persisted.state is not AttemptState.RENDERING:
         raise RenderError(f"queued attempt has invalid state: {persisted.state}")
-    if (persisted.path / "render-metadata.json").is_file():
+    metadata_path = persisted.path / "render-metadata.json"
+    if metadata_path.is_file() and not _is_unsealed_json(metadata_path):
         try:
             verify_rendered_attempt_evidence(project, persisted, require_qc=False)
         except ProjectStateError as error:
@@ -463,24 +476,15 @@ def _complete_render(
     history_output = _video_output(history)
     output_suffix = Path(history_output.filename).suffix.casefold()
     video = persisted.path / "outputs" / f"{kind}{output_suffix}"
-    if not video.is_file() or video.stat().st_size == 0:
-        if history_output.local_path is not None:
-            video.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(history_output.local_path, video)
-        else:
-            client.fetch_output(history_output, video)
+    _fetch_output_atomically(client, history_output, video)
     if not video.is_file() or video.stat().st_size == 0:
         raise RenderError("Local ComfyUI history output did not produce a video")
+    timing = _validate_rendered_clip_timing(
+        project, persisted, video, expected_frames=expected_frames
+    )
     candidate_count = _candidate_count(project)
-    candidates_root = persisted.path / "candidate-frames"
-    head_frames = extract_candidate_frames(
-        video, candidate_count, "head", candidates_root / "head"
-    )
-    tail_frames = extract_candidate_frames(
-        video, candidate_count, "tail", candidates_root / "tail"
-    )
-    contact_sheet = create_contact_sheet(
-        [*head_frames, *tail_frames], persisted.path / "contact-sheet.png"
+    head_frames, tail_frames, contact_sheet = _stage_candidate_outputs(
+        video, persisted, candidate_count
     )
     outputs: dict[str, Path] = {
         kind: video,
@@ -503,11 +507,13 @@ def _complete_render(
                     "subfolder": history_output.subfolder,
                     "type": history_output.type,
                 },
+                "media_timing": timing,
                 "input_provenance": input_provenance,
                 "prompt_id": prompt_id,
                 "submission_request": submitted["submission"]["submission_request"],
             },
         ),
+        replace_invalid=metadata_path.is_file(),
     )
     rendered = transition_attempt(persisted, AttemptState.RENDERED, rendered_note)
     return _finish_rendered_attempt(project, rendered, kind=kind)
@@ -525,7 +531,8 @@ def _finish_rendered_attempt(
     except ProjectStateError as error:
         raise RenderError(f"rendered attempt evidence is invalid: {error}") from error
     qc_path = persisted.path / "qc.yaml"
-    if not qc_path.is_file():
+    replace_invalid_qc = qc_path.is_file() and _is_unsealed_qc(qc_path)
+    if not qc_path.is_file() or replace_invalid_qc:
         video, head_frames, tail_frames, contact_sheet = _metadata_qc_outputs(
             project, persisted, kind=kind
         )
@@ -536,12 +543,186 @@ def _finish_rendered_attempt(
             tail_frames=tail_frames,
             contact_sheet=contact_sheet,
             automatic_continuation_authorized=_automatic_continuation(project),
+            replace_invalid=replace_invalid_qc,
         )
     try:
         verify_rendered_attempt_evidence(project, persisted, require_qc=True)
     except ProjectStateError as error:
         raise RenderError(f"rendered QC evidence is invalid: {error}") from error
     return transition_attempt(persisted, AttemptState.NEEDS_REVIEW, None)
+
+
+def _fetch_output_atomically(
+    client: RenderClient, output: HistoryOutput, destination: Path
+) -> Path:
+    """Never allow a partially fetched history output to occupy the final path."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_name(
+        f".{destination.name}.{secrets.token_hex(8)}.part"
+    )
+    try:
+        fetched = client.fetch_output(output, staging)
+        if Path(fetched).resolve() != staging.resolve():
+            raise RenderError("render client did not return the requested staged output path")
+        if not staging.is_file() or staging.stat().st_size == 0:
+            raise RenderError("render client produced an empty staged output")
+        os.replace(staging, destination)
+    finally:
+        if staging.exists():
+            staging.unlink()
+    return destination
+
+
+def _stage_candidate_outputs(
+    video: Path, attempt: Attempt, candidate_count: int
+) -> tuple[list[Path], list[Path], Path]:
+    """Publish candidate frames and their sheet as one recoverable output set."""
+    staging_root = attempt.path / f".candidate-stage-{secrets.token_hex(8)}"
+    staged_candidates = staging_root / "candidate-frames"
+    staged_sheet = staging_root / "contact-sheet.png"
+    final_candidates = attempt.path / "candidate-frames"
+    final_sheet = attempt.path / "contact-sheet.png"
+    try:
+        staging_root.mkdir(parents=True, exist_ok=False)
+        head = extract_candidate_frames(
+            video, candidate_count, "head", staged_candidates / "head"
+        )
+        tail = extract_candidate_frames(
+            video, candidate_count, "tail", staged_candidates / "tail"
+        )
+        sheet = create_contact_sheet([*head, *tail], staged_sheet)
+        _validate_staged_candidate_set(
+            staged_candidates, staged_sheet, head, tail, sheet, candidate_count
+        )
+        head_relative = [path.relative_to(staged_candidates) for path in head]
+        tail_relative = [path.relative_to(staged_candidates) for path in tail]
+        _remove_partial_candidate_outputs(final_candidates, final_sheet, attempt.path)
+        os.replace(staged_candidates, final_candidates)
+        os.replace(staged_sheet, final_sheet)
+        return (
+            [final_candidates / relative for relative in head_relative],
+            [final_candidates / relative for relative in tail_relative],
+            final_sheet,
+        )
+    finally:
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+
+
+def _validate_staged_candidate_set(
+    staged_candidates: Path,
+    staged_sheet: Path,
+    head: list[Path],
+    tail: list[Path],
+    sheet: Path,
+    candidate_count: int,
+) -> None:
+    if len(head) != candidate_count or len(tail) != candidate_count:
+        raise RenderError("candidate extraction did not produce the requested frame count")
+    for path in (*head, *tail):
+        if not path.is_file() or path.stat().st_size == 0 or not path.is_relative_to(staged_candidates):
+            raise RenderError("candidate extraction produced an invalid staged frame")
+    if sheet.resolve() != staged_sheet.resolve() or not sheet.is_file() or sheet.stat().st_size == 0:
+        raise RenderError("contact sheet was not published at its staged destination")
+
+
+def _remove_partial_candidate_outputs(
+    candidates: Path, sheet: Path, attempt_root: Path
+) -> None:
+    root = attempt_root.resolve()
+    for path in (candidates, sheet):
+        if not path.resolve().is_relative_to(root):
+            raise RenderError("candidate recovery target escaped its attempt directory")
+    if candidates.exists():
+        if not candidates.is_dir():
+            raise RenderError("candidate recovery target is not a directory")
+        shutil.rmtree(candidates)
+    if sheet.exists():
+        if not sheet.is_file():
+            raise RenderError("contact sheet recovery target is not a file")
+        sheet.unlink()
+
+
+def _is_unsealed_json(path: Path) -> bool:
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return True
+    return False
+
+
+def _is_unsealed_qc(path: Path) -> bool:
+    try:
+        read_qc(path)
+    except QcError:
+        return True
+    return False
+
+
+def _validate_rendered_clip_timing(
+    project: ProjectConfig,
+    attempt: Attempt,
+    video: Path,
+    *,
+    expected_frames: int,
+) -> dict[str, object]:
+    render = _mapping(project.source.get("render"), "render")
+    expected_fps_value = _positive_number(
+        render.get("generation_fps"), "render.generation_fps"
+    )
+    expected_fps = Fraction(str(expected_fps_value))
+    configured = _read_graph(attempt.path / "configured-workflow-api.json")
+    create_video = _unique_target(
+        configured, ("CREATE_VIDEO", "BRIDGE_CREATE_VIDEO"), "CreateVideo"
+    )
+    configured_fps = _positive_number(
+        create_video.node.get("inputs", {}).get("fps"), "configured CreateVideo fps"
+    )
+    if Fraction(str(configured_fps)) != expected_fps:
+        raise RenderError(
+            "configured CreateVideo fps does not match render.generation_fps"
+        )
+    conditioning = _unique_target(
+        configured,
+        ("I2V_CONDITIONING", "FLF_CONDITIONING"),
+        "WanImageToVideo" if "I2V_CONDITIONING" in {
+            node.get("_meta", {}).get("title") for node in configured.values()
+        } else "WanFirstLastFrameToVideo",
+    )
+    configured_frames = conditioning.node.get("inputs", {}).get("length")
+    if configured_frames != expected_frames:
+        raise RenderError("configured native length does not match the requested frame count")
+    canonical_duration = canonical_duration_seconds(expected_frames, expected_fps_value)
+    if canonical_frame_count(canonical_duration, expected_fps_value) != expected_frames:
+        raise RenderError("configured native length does not satisfy the canonical duration/FPS formula")
+    try:
+        media = probe_media(video)
+    except FfmpegError as error:
+        raise RenderError(f"could not verify rendered clip timing: {error}") from error
+    actual_duration = Fraction(media.frame_count, 1) / media.fps
+    expected_duration = Fraction(expected_frames, 1) / expected_fps
+    if media.fps != expected_fps:
+        raise RenderError(
+            f"rendered clip FPS {media.fps} does not match configured {expected_fps}"
+        )
+    if abs(actual_duration - expected_duration) > Fraction(1, 1) / expected_fps:
+        raise RenderError(
+            "rendered clip duration differs from the configured frame/FPS contract by "
+            "more than one frame"
+        )
+    return {
+        "actual": {
+            "duration_seconds": str(actual_duration),
+            "frame_count": media.frame_count,
+            "fps": str(media.fps),
+        },
+        "canonical_duration_seconds": str(Fraction(str(canonical_duration))),
+        "expected": {
+            "duration_seconds": str(expected_duration),
+            "frame_count": expected_frames,
+            "fps": str(expected_fps),
+        },
+    }
 
 
 def _metadata_qc_outputs(
@@ -617,15 +798,21 @@ def _resolved_submission_config(project: ProjectConfig):
 def _validate_submission_graph(project: ProjectConfig, graph: ApiGraph) -> None:
     validate_two_stage_graph(graph)
     object_info = project.source.get("object_info")
-    if object_info is not None:
-        object_info_path = _local_path(project, object_info)
-        try:
-            schema = json.loads(object_info_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise RenderError(f"invalid local object_info snapshot: {object_info_path}") from error
-        if not isinstance(schema, Mapping):
-            raise RenderError("local object_info snapshot must be a JSON object")
-        validate_graph_against_object_info(graph, schema)
+    expected_hash = project.source.get("object_info_sha256")
+    if object_info is None or not isinstance(expected_hash, str):
+        raise RenderError(
+            "render requires a hash-bound local object_info snapshot from preflight"
+        )
+    object_info_path = _local_path(project, object_info)
+    if not object_info_path.is_file() or sha256_file(object_info_path) != expected_hash:
+        raise RenderError("local object_info snapshot is missing or its hash changed")
+    try:
+        schema = json.loads(object_info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RenderError(f"invalid local object_info snapshot: {object_info_path}") from error
+    if not isinstance(schema, Mapping):
+        raise RenderError("local object_info snapshot must be a JSON object")
+    validate_graph_against_object_info(graph, schema)
 
 
 def validate_project(project: ProjectConfig) -> dict[str, int]:
@@ -1402,6 +1589,12 @@ def _positive_int(value: object, label: str) -> int:
     return value
 
 
+def _positive_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise RenderError(f"{label} must be a positive number")
+    return float(value)
+
+
 def _non_negative_int(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RenderError(f"{label} must be a non-negative integer")
@@ -1422,19 +1615,42 @@ def _safe_uploaded_name(value: object) -> str:
 
 
 def _model_files(project: ProjectConfig) -> ModelFiles:
-    configured = project.source.get("model_files")
-    if isinstance(configured, (list, tuple)) and all(
-        isinstance(name, str) and name for name in configured
-    ):
-        return ModelFiles.from_names(set(configured))
     roots = project.source.get("model_roots")
-    if isinstance(roots, (list, tuple)) and all(
-        isinstance(root, (str, Path)) for root in roots
+    if not isinstance(roots, (list, tuple)) or not all(
+        isinstance(root, (str, Path)) and str(root) for root in roots
     ):
-        return ModelFiles.discover(*(_local_path(project, root) for root in roots))
-    raise RenderError(
-        "project must provide model_files or model_roots for pre-submit validation"
-    )
+        raise RenderError(
+            "render requires role-correct on-disk model_roots; model_files is only a declaration"
+        )
+    resolved_roots = tuple(_local_path(project, root) for root in roots)
+    missing_roots = [root for root in resolved_roots if not root.is_dir()]
+    if missing_roots:
+        raise RenderError(
+            "configured model root does not exist: "
+            + ", ".join(str(root) for root in missing_roots)
+        )
+    role_kinds = {
+        "high": {"diffusion_models", "unet"},
+        "low": {"diffusion_models", "unet"},
+        "vae": {"vae"},
+        "text_encoder": {"text_encoders", "clip"},
+    }
+    models = _mapping(project.source.get("models"), "models")
+    for role, kinds in role_kinds.items():
+        filename = models.get(role)
+        if not isinstance(filename, str) or not filename:
+            raise RenderError(f"configured {role} model is missing a filename")
+        role_roots = [root for root in resolved_roots if root.name.casefold() in kinds]
+        if not any(
+            path.is_file() and path.name.casefold() == filename.casefold()
+            for root in role_roots
+            for path in root.rglob("*")
+        ):
+            raise RenderError(
+                f"configured {role} model is absent from a role-correct on-disk model root: "
+                f"{filename}"
+            )
+    return ModelFiles.discover(*resolved_roots)
 
 
 def _read_graph(path: Path) -> ApiGraph:
@@ -1517,14 +1733,17 @@ def _write_or_verify_json(path: Path, payload: object) -> None:
     """Write immutable evidence once, or reuse it only when it is byte-equivalent JSON."""
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     try:
-        with path.open("x", encoding="utf-8", newline="\n") as destination:
-            destination.write(encoded)
+        write_text(path, encoded)
         return
     except FileExistsError:
         pass
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RenderError(f"immutable evidence is unreadable: {path}") from error
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        try:
+            write_text(path, encoded, replace_existing=True)
+            return
+        except OSError as recovery_error:
+            raise RenderError(f"immutable evidence is unreadable: {path}") from recovery_error
     if json.dumps(existing, sort_keys=True) != json.dumps(payload, sort_keys=True):
         raise RenderError(f"immutable evidence does not match the prepared request: {path}")

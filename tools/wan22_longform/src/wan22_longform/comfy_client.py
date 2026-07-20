@@ -4,7 +4,6 @@ import ipaddress
 import json
 import re
 import secrets
-import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any, Mapping, Protocol
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from .atomic import copy_file, write_bytes
 from .workflow import ApiGraph
 
 
@@ -144,9 +144,7 @@ class ComfyClient:
     def fetch_output(self, output: HistoryOutput, destination: Path) -> Path:
         _validate_history_output(output.filename, output.subfolder, output.type)
         if output.local_path is not None:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(output.local_path, destination)
-            return destination
+            return copy_file(output.local_path, destination)
         query = urlencode(
             {
                 "filename": output.filename,
@@ -157,10 +155,7 @@ class ComfyClient:
         content = self.transport.request(
             "GET", f"{self.base_url}/view?{query}", None, {}
         )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("xb") as output_file:
-            output_file.write(content)
-        return destination
+        return write_bytes(destination, content)
 
     def _request_json(
         self,

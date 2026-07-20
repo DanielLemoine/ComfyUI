@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from .atomic import write_text
 from .hashing import sha256_file
 from .project import Attempt
 
@@ -17,7 +18,9 @@ class RenderMetadata:
     details: Mapping[str, Any] = field(default_factory=dict)
 
 
-def write_metadata(attempt: Attempt, metadata: RenderMetadata) -> Path:
+def write_metadata(
+    attempt: Attempt, metadata: RenderMetadata, *, replace_invalid: bool = False
+) -> Path:
     """Persist one immutable record of the files produced by an attempt."""
     path = attempt.path / "render-metadata.json"
     payload = {
@@ -29,10 +32,11 @@ def write_metadata(attempt: Attempt, metadata: RenderMetadata) -> Path:
         },
         "details": _json_ready(metadata.details),
     }
-    with path.open("x", encoding="utf-8") as destination:
-        json.dump(payload, destination, indent=2, sort_keys=True)
-        destination.write("\n")
-    return path
+    return write_text(
+        path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        replace_existing=replace_invalid,
+    )
 
 
 def _utc_timestamp(value: datetime) -> str:

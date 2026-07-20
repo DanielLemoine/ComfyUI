@@ -545,6 +545,8 @@ class AssemblyRecordCliTests(unittest.TestCase):
                 {"shot_id": "S010", "segment_id": "B010"},
                 {"shot_id": "S010", "segment_id": "S010_C002"},
             ]
+            source["shots"][0]["target_seconds"] = 4.1875
+            source["target_seconds"] = 4.1875
             manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
             project = load_project(manifest)
             self._accepted_attempt(project, "S010_C001")
@@ -854,12 +856,14 @@ class AssemblyRecordCliTests(unittest.TestCase):
         segment_graph = PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"
         bridge_graph = PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"
         manifest = root / "project.yaml"
+        segment_seconds = 17 / 16
+        total_seconds = segment_seconds * len(segment_ids)
         source = {
             "schema_version": 1,
             "project_id": "assembly_record_fixture",
             "title": "Assembly record fixture",
             "mode": "cinematic",
-            "target_seconds": 2,
+            "target_seconds": total_seconds,
             "output_root": str(root / "outputs"),
             "outputs": {
                 "review_mp4": str(root / "outputs" / "review.mp4"),
@@ -900,7 +904,6 @@ class AssemblyRecordCliTests(unittest.TestCase):
                 "review_mp4_codec": "h264",
                 "master_codec": "ffv1",
                 "seed_base": 1,
-                "seed_increment": 17,
             },
             "request": {"positive": "neutral adult", "negative": "low quality"},
             "inputs": {"opening_frame": str(opening)},
@@ -921,13 +924,13 @@ class AssemblyRecordCliTests(unittest.TestCase):
             "shots": [
                 {
                     "id": "S010",
-                    "target_seconds": 2,
+                    "target_seconds": total_seconds,
                     "anchor_image": str(opening),
                     "segments": [
                         {
                             "id": segment_id,
                             "action": "A neutral adult takes one measured step.",
-                            "expected_seconds": 1,
+                            "expected_seconds": segment_seconds,
                             "seed_offset": index,
                         }
                         for index, segment_id in enumerate(segment_ids)

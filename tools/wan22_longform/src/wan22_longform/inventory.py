@@ -16,6 +16,7 @@ import yaml
 
 from .config import ProjectConfig
 from .errors import PreflightError
+from .workflow import WorkflowError, validate_graph_against_object_info
 
 
 _CANONICAL_I2V_TEMPLATE_ID = "video_wan2_2_14B_i2v"
@@ -229,6 +230,7 @@ def _preflight_blockers(
             f"{flf_verification}"
         )
     blockers.extend(_model_role_blockers(model_inventory, project))
+    blockers.extend(_project_workflow_schema_blockers(project, object_info))
     blockers.extend(_runtime_revision_blockers(environment, custom_nodes))
     return tuple(blockers)
 
@@ -241,6 +243,68 @@ def _has_required_input_schema(schema: object) -> bool:
         return False
     required_inputs = input_spec.get("required")
     return isinstance(required_inputs, dict) and bool(required_inputs)
+
+
+def _project_workflow_schema_blockers(
+    project: ProjectConfig | None, object_info: Mapping[str, object]
+) -> tuple[str, ...]:
+    """Validate each hash-pinned API graph against the schema captured this preflight."""
+    if project is None or not object_info:
+        return ()
+    source = project.source
+    workflow_fields = (
+        "workflow_api",
+        "bridge_workflow_api",
+        "workflow_hashes",
+    )
+    if not any(field in source for field in workflow_fields):
+        return ()
+    if any(field not in source for field in workflow_fields):
+        return (
+            "project workflow schema proof is incomplete; provide both API workflow paths "
+            "and workflow_hashes",
+        )
+    hashes = source.get("workflow_hashes")
+    if not isinstance(hashes, Mapping):
+        return ("project workflow_hashes is not a mapping",)
+    blockers: list[str] = []
+    for workflow_key, hash_key, label in (
+        ("workflow_api", "segment_api", "segment"),
+        ("bridge_workflow_api", "bridge_api", "bridge"),
+    ):
+        raw_path = source.get(workflow_key)
+        expected_hash = hashes.get(hash_key)
+        if not isinstance(raw_path, (str, Path)) or not isinstance(expected_hash, str):
+            blockers.append(
+                f"project {label} workflow schema proof is incomplete"
+            )
+            continue
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = project.path.parent / path
+        try:
+            path = path.resolve()
+            if not path.is_file():
+                raise OSError("file does not exist")
+            actual_hash = _sha256_file(path)
+            if actual_hash.casefold() != expected_hash.casefold():
+                blockers.append(
+                    f"project {label} API workflow hash does not match workflow_hashes.{hash_key}"
+                )
+                continue
+            graph = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(graph, dict) or not all(
+                isinstance(node_id, str) and isinstance(node, dict)
+                for node_id, node in graph.items()
+            ):
+                raise WorkflowError("workflow is not an API graph")
+            validate_graph_against_object_info(graph, object_info)
+        except (OSError, json.JSONDecodeError, WorkflowError) as error:
+            blockers.append(
+                f"project {label} API workflow is incompatible with captured local "
+                f"/object_info: {error}"
+            )
+    return tuple(blockers)
 
 
 def _environment(comfy_root: Path, comfy_url: str | None) -> dict[str, object]:

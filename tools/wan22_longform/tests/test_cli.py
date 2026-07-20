@@ -165,6 +165,105 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
 
+    def test_preflight_cli_blocks_a_hash_pinned_graph_with_invalid_native_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._write_example_manifest(root)
+            source = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            invalid_graph = json.loads(
+                (PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            invalid_graph["7"]["inputs"]["unsupported_native_input"] = 1
+            invalid_graph_path = root / "invalid-segment-api.json"
+            invalid_graph_path.write_text(
+                json.dumps(invalid_graph), encoding="utf-8", newline="\n"
+            )
+            source["workflow_api"] = str(invalid_graph_path)
+            source["workflow_hashes"]["segment_api"] = hashlib.sha256(
+                invalid_graph_path.read_bytes()
+            ).hexdigest()
+            manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+
+            object_info = json.loads(
+                (PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            high = source["models"]["high"]
+            low = source["models"]["low"]
+            vae = source["models"]["vae"]
+            text_encoder = source["models"]["text_encoder"]
+            inventory = {
+                "roots": [
+                    {"kind": "diffusion_models", "files": [high, low]},
+                    {"kind": "vae", "files": [vae]},
+                    {"kind": "text_encoders", "files": [text_encoder]},
+                ]
+            }
+            available = {"available": True, "detail": "fixture"}
+            environment = {
+                "runtime_interpreter": available,
+                "comfyui_revision": available,
+                "frontend_version": available,
+                "pytorch_version": available,
+                "cuda_version": available,
+            }
+            canonical_i2v = root / "video_wan2_2_14B_i2v.json"
+            canonical_flf = root / "video_wan2_2_14B_flf2v.json"
+            canonical_i2v.write_text("{}", encoding="utf-8")
+            canonical_flf.write_text("{}", encoding="utf-8")
+            output = io.StringIO()
+
+            with (
+                patch(
+                    "wan22_longform.inventory._object_info",
+                    return_value=(object_info, "fixture"),
+                ),
+                patch("wan22_longform.inventory._model_inventory", return_value=inventory),
+                patch("wan22_longform.inventory._custom_nodes", return_value={"nodes": []}),
+                patch("wan22_longform.inventory._environment", return_value=environment),
+                patch(
+                    "wan22_longform.inventory._official_templates",
+                    return_value=(
+                        canonical_i2v,
+                        canonical_flf,
+                        [canonical_i2v, canonical_flf],
+                        "verified",
+                        "verified",
+                    ),
+                ),
+                patch(
+                    "wan22_longform.inventory._active_workflow_dir",
+                    return_value=(None, ()),
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = main(
+                    [
+                        "preflight",
+                        "--comfy-root",
+                        str(root),
+                        "--artifact-dir",
+                        str(root / "preflight"),
+                        "--project",
+                        str(manifest),
+                    ]
+                )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(payload["status"], "BLOCKED")
+            self.assertTrue(
+                any(
+                    "segment API workflow is incompatible with captured local /object_info"
+                    in blocker
+                    and "unsupported_native_input" in blocker
+                    for blocker in payload["blockers"]
+                )
+            )
+
     @staticmethod
     def _write_example_manifest(root: Path) -> Path:
         opening = root / "opening.png"
@@ -175,7 +274,7 @@ class CliTests(unittest.TestCase):
             "project_id": "cli_fixture",
             "title": "CLI fixture",
             "mode": "cinematic",
-            "target_seconds": 2,
+            "target_seconds": 1.0625,
             "output_root": str(root / "outputs"),
             "outputs": {
                 "review_mp4": str(root / "outputs" / "review.mp4"),
@@ -195,6 +294,7 @@ class CliTests(unittest.TestCase):
                 "vae.safetensors",
                 "text-encoder.safetensors",
             ],
+            "model_roots": [],
             "workflow_api": str(PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"),
             "bridge_workflow_api": str(PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"),
             "workflow_hashes": {
@@ -220,7 +320,6 @@ class CliTests(unittest.TestCase):
                 "review_mp4_codec": "h264",
                 "master_codec": "ffv1",
                 "seed_base": 1,
-                "seed_increment": 17,
             },
             "request": {
                 "positive": "neutral fully clothed adult",
@@ -247,13 +346,13 @@ class CliTests(unittest.TestCase):
             "shots": [
                 {
                     "id": "S010",
-                    "target_seconds": 2,
+                    "target_seconds": 1.0625,
                     "anchor_image": str(opening),
                     "segments": [
                         {
                             "id": "S010_C001",
                             "action": "A neutral adult pauses naturally.",
-                            "expected_seconds": 1,
+                            "expected_seconds": 1.0625,
                             "seed_offset": 0,
                         }
                     ],
@@ -271,5 +370,25 @@ class CliTests(unittest.TestCase):
             ],
             "assembly_order": [{"shot_id": "S010", "segment_id": "S010_C001"}],
         }
+        model_roots = {
+            "diffusion_models": root / "models" / "diffusion_models",
+            "vae": root / "models" / "vae",
+            "text_encoders": root / "models" / "text_encoders",
+        }
+        for directory in model_roots.values():
+            directory.mkdir(parents=True, exist_ok=True)
+        (model_roots["diffusion_models"] / "high.safetensors").write_bytes(b"high")
+        (model_roots["diffusion_models"] / "low.safetensors").write_bytes(b"low")
+        (model_roots["vae"] / "vae.safetensors").write_bytes(b"vae")
+        (model_roots["text_encoders"] / "text-encoder.safetensors").write_bytes(
+            b"text"
+        )
+        source["model_roots"] = [str(directory) for directory in model_roots.values()]
+        object_info = root / "object_info.json"
+        object_info.write_bytes(
+            (PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json").read_bytes()
+        )
+        source["object_info"] = str(object_info)
+        source["object_info_sha256"] = hashlib.sha256(object_info.read_bytes()).hexdigest()
         manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
         return manifest

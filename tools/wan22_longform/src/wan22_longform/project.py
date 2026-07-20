@@ -6,11 +6,11 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from shutil import copyfile
 from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
+from .atomic import copy_file, write_text
 from .config import ProjectConfig
 from .hashing import sha256_file
 
@@ -154,7 +154,7 @@ def create_attempt(
 
     parent_attempt = existing[-1] if existing else None
     manifest_snapshot = attempt_path / f"source-manifest{project.path.suffix or '.yaml'}"
-    copyfile(project.path, manifest_snapshot)
+    copy_file(project.path, manifest_snapshot)
     workflow_snapshot = attempt_path / "workflow-api.json"
     _write_workflow_snapshot(workflow_snapshot, project)
     request_snapshot = attempt_path / "request.json"
@@ -1581,7 +1581,7 @@ def _write_workflow_snapshot(destination: Path, project: ProjectConfig) -> None:
         source = Path(workflow)
         if not source.is_absolute():
             source = project.path.parent / source
-        copyfile(source, destination)
+        copy_file(source, destination)
         return
     _write_json(destination, workflow)
 
@@ -1636,9 +1636,10 @@ def _selected_inputs_payload(
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    with path.open("x", encoding="utf-8") as destination:
-        json.dump(_json_ready(payload), destination, indent=2, sort_keys=True)
-        destination.write("\n")
+    write_text(
+        path,
+        json.dumps(_json_ready(payload), indent=2, sort_keys=True) + "\n",
+    )
 
 
 def _load_attempt(path: Path) -> tuple[Attempt, tuple[Path, ...]]:

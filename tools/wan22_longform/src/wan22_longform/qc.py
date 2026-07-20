@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from .atomic import write_text
 from .hashing import sha256_file
 from .project import Attempt
 
@@ -21,6 +22,7 @@ def initialize_qc(
     tail_frames: list[Path],
     contact_sheet: Path,
     automatic_continuation_authorized: bool,
+    replace_invalid: bool = False,
 ) -> Path:
     path = attempt.path / "qc.yaml"
     payload = {
@@ -36,9 +38,11 @@ def initialize_qc(
         "status": "needs_review",
         "video": _artifact(video),
     }
-    with path.open("x", encoding="utf-8", newline="\n") as destination:
-        yaml.safe_dump(payload, destination, sort_keys=True)
-    return path
+    return write_text(
+        path,
+        yaml.safe_dump(payload, sort_keys=True),
+        replace_existing=replace_invalid,
+    )
 
 
 def read_qc(path: Path) -> dict[str, Any]:

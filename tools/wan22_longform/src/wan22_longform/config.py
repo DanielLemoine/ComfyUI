@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -13,6 +14,8 @@ PROJECT_SCHEMA_VERSION = 1
 BRIDGE_STRATEGIES = frozenset({"direct", "flf2v", "intentional_cut", "external_control"})
 ACCEPTED_SELECTED_TAIL = "accepted_selected_tail"
 ACCEPTED_SELECTED_HEAD = "accepted_selected_head"
+REVIEW_MP4_CODEC = "h264"
+MASTER_CODEC = "ffv1"
 
 
 class ConfigError(ValueError):
@@ -100,6 +103,8 @@ class Permissiveness:
 class ResolvedRenderConfig:
     models: Models
     permissiveness: Permissiveness
+    generation_fps: float = 16.0
+    generation_frames: int = 81
     identity: IdentityLora = field(default_factory=IdentityLora)
     vbvr: LoraSlot = field(default_factory=lambda: LoraSlot(branch="high", enabled=False))
     motion: LoraSlot = field(default_factory=lambda: LoraSlot(branch="high", enabled=False))
@@ -130,6 +135,7 @@ class BridgeContract:
     purpose: str | None
     from_segment: str | None
     to_segment: str | None
+    frames: int | None
 
 
 @dataclass(frozen=True)
@@ -209,7 +215,8 @@ def validate_project_contract(project: ProjectConfig) -> None:
     _manifest_inputs(source)
     shot_segments = _shots_contract(source)
     bridge_shots = _bridges_contract(source, shot_segments)
-    _assembly_order(source, shot_segments, bridge_shots)
+    assembly_order = _assembly_order(source, shot_segments, bridge_shots)
+    _duration_contract(source, bridge_shots, assembly_order)
 
 
 def _output_paths(project: ProjectConfig, output_root: str, outputs: Mapping[str, Any]) -> None:
@@ -238,10 +245,15 @@ def _render_contract(render: Mapping[str, Any]) -> None:
     for key in ("width", "height", "frames"):
         _positive_int(render.get(key), f"render.{key}")
     _positive_number(render.get("generation_fps"), "render.generation_fps")
-    _string(render.get("review_mp4_codec"), "render.review_mp4_codec")
-    _string(render.get("master_codec"), "render.master_codec")
+    if _string(render.get("review_mp4_codec"), "render.review_mp4_codec") != REVIEW_MP4_CODEC:
+        raise ConfigError(f"render.review_mp4_codec must be {REVIEW_MP4_CODEC}")
+    if _string(render.get("master_codec"), "render.master_codec") != MASTER_CODEC:
+        raise ConfigError(f"render.master_codec must be {MASTER_CODEC}")
     _non_negative_int(render.get("seed_base"), "render.seed_base")
-    _positive_int(render.get("seed_increment"), "render.seed_increment")
+    if "seed_increment" in render:
+        raise ConfigError(
+            "render.seed_increment is not used; use explicit segment seed_offset values"
+        )
 
 
 def _model_contract(models: Mapping[str, Any]) -> None:
@@ -482,12 +494,18 @@ def _bridges_contract(
                 )
             if from_segment == to_segment:
                 raise ConfigError(f"bridge {bridge_id} from_segment and to_segment must differ")
+        frames = (
+            _positive_int(bridge.get("frames"), f"bridge {bridge_id} frames")
+            if strategy == "flf2v"
+            else None
+        )
         bridge_shots[bridge_id] = BridgeContract(
             shot_id=shot_id,
             strategy=strategy,
             purpose=purpose,
             from_segment=from_segment,
             to_segment=to_segment,
+            frames=frames,
         )
     return bridge_shots
 
@@ -496,7 +514,7 @@ def _assembly_order(
     source: Mapping[str, Any],
     shot_segments: Mapping[str, frozenset[str]],
     bridge_shots: Mapping[str, BridgeContract],
-) -> None:
+) -> tuple[tuple[str, str], ...]:
     order = source.get("assembly_order")
     if not isinstance(order, (list, tuple)) or not order:
         raise ConfigError("assembly_order must be a non-empty list")
@@ -560,6 +578,94 @@ def _assembly_order(
             raise ConfigError(
                 f"transition policy {bridge_id} must be directly between declared source and destination segments"
             )
+    return tuple(entries)
+
+
+def canonical_frame_count(duration_seconds: float, generation_fps: float) -> int:
+    """Match the canonical Wan I2V expression: floor(duration * FPS + 1)."""
+    if duration_seconds < 0 or generation_fps <= 0:
+        raise ConfigError("canonical duration and FPS must be non-negative and positive")
+    value = Fraction(str(duration_seconds)) * Fraction(str(generation_fps))
+    return value.numerator // value.denominator + 1
+
+
+def canonical_duration_seconds(frame_count: int, generation_fps: float) -> float:
+    """Return the Duration widget value that yields frame_count in the canonical graph."""
+    if frame_count <= 0 or generation_fps <= 0:
+        raise ConfigError("canonical frame count and FPS must be positive")
+    return float(Fraction(frame_count - 1, 1) / Fraction(str(generation_fps)))
+
+
+def _duration_contract(
+    source: Mapping[str, Any],
+    bridge_shots: Mapping[str, BridgeContract],
+    assembly_order: tuple[tuple[str, str], ...],
+) -> None:
+    render = _required_mapping(source, "render")
+    generation_fps = _positive_number(
+        render.get("generation_fps"), "render.generation_fps"
+    )
+    generation_frames = _positive_int(render.get("frames"), "render.frames")
+    canonical_duration = canonical_duration_seconds(generation_frames, generation_fps)
+    if canonical_frame_count(canonical_duration, generation_fps) != generation_frames:
+        raise ConfigError("render.frames does not match the canonical duration/FPS formula")
+    frame_tolerance = 1 / generation_fps
+    rendered_segment_seconds = generation_frames / generation_fps
+    durations: dict[tuple[str, str], float] = {}
+    shots = source.get("shots")
+    if not isinstance(shots, (list, tuple)):
+        raise ConfigError("shots must be a list")
+    for shot in shots:
+        if not isinstance(shot, Mapping):
+            raise ConfigError("shot must be a mapping")
+        shot_id = _string(shot.get("id"), "shot.id")
+        segments = shot.get("segments")
+        if not isinstance(segments, (list, tuple)):
+            raise ConfigError(f"shot {shot_id} segments must be a list")
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                raise ConfigError(f"shot {shot_id} contains an invalid segment")
+            segment_id = _string(segment.get("id"), f"shot {shot_id} segment.id")
+            expected = _positive_number(
+                segment.get("expected_seconds"),
+                f"segment {segment_id} expected_seconds",
+            )
+            if abs(expected - rendered_segment_seconds) > frame_tolerance:
+                raise ConfigError(
+                    f"segment {segment_id} expected_seconds must match render.frames / "
+                    "render.generation_fps within one frame"
+                )
+            durations[(shot_id, segment_id)] = rendered_segment_seconds
+    for bridge_id, bridge in bridge_shots.items():
+        if bridge.strategy == "flf2v" and bridge.purpose != "technical_smoke":
+            if bridge.frames is None:
+                raise ConfigError(f"bridge {bridge_id} frames are required")
+            durations[(bridge.shot_id, bridge_id)] = bridge.frames / generation_fps
+
+    shot_totals: dict[str, float] = {}
+    for key in assembly_order:
+        if key not in durations:
+            raise ConfigError(
+                f"assembly_order has no rendered duration for {key[0]}/{key[1]}"
+            )
+        shot_totals[key[0]] = shot_totals.get(key[0], 0.0) + durations[key]
+    for shot in shots:
+        if not isinstance(shot, Mapping):
+            continue
+        shot_id = _string(shot.get("id"), "shot.id")
+        target = _positive_number(shot.get("target_seconds"), f"shot {shot_id} target_seconds")
+        actual = shot_totals.get(shot_id, 0.0)
+        if abs(target - actual) > frame_tolerance:
+            raise ConfigError(
+                f"shot {shot_id} target_seconds must match assembly_order rendered duration "
+                "within one frame"
+            )
+    project_target = _positive_number(source.get("target_seconds"), "target_seconds")
+    project_actual = sum(durations[key] for key in assembly_order)
+    if abs(project_target - project_actual) > frame_tolerance:
+        raise ConfigError(
+            "target_seconds must match assembly_order rendered duration within one frame"
+        )
 
 
 def load_presets(path: Path) -> PresetCatalog:
@@ -617,6 +723,7 @@ def resolve_preset(project: ProjectConfig, presets: PresetCatalog) -> ResolvedRe
     permissiveness_loras = _mapping(loras.get("permissiveness"), "loras.permissiveness")
     identity_source = _mapping(loras.get("identity"), "loras.identity")
     identity = _identity(identity_source, preset)
+    render = _mapping(source.get("render"), "render")
     return ResolvedRenderConfig(
         models=Models(
             high=_string(models.get("high"), "models.high"),
@@ -624,6 +731,10 @@ def resolve_preset(project: ProjectConfig, presets: PresetCatalog) -> ResolvedRe
             vae=_string(models.get("vae"), "models.vae"),
             text_encoder=_string(models.get("text_encoder"), "models.text_encoder"),
         ),
+        generation_fps=_positive_number(
+            render.get("generation_fps", 16.0), "render.generation_fps"
+        ),
+        generation_frames=_positive_int(render.get("frames", 81), "render.frames"),
         permissiveness=Permissiveness(
             mode=preset.permissiveness_mode,
             mystic=_slot(

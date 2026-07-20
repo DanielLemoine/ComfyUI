@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from argparse import Namespace
+from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +33,7 @@ from wan22_longform.project import (  # noqa: E402
     transition_attempt,
 )
 from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
+from wan22_longform.ffmpeg import MediaSpec  # noqa: E402
 from wan22_longform.qc import initialize_qc  # noqa: E402
 from wan22_longform.render import RenderError, render_bridge, render_segment, validate_project  # noqa: E402
 
@@ -80,14 +82,36 @@ class ContinuityContractTests(unittest.TestCase):
         self.anchor = self._artifact("anchor.png", b"anchor")
         self.second_anchor = self._artifact("second-anchor.png", b"second-anchor")
         self.override = self._artifact("override.png", b"override")
+        self.model_root = self.root / "models"
+        for kind, names in {
+            "diffusion_models": (
+                "configured-high.safetensors",
+                "configured-low.safetensors",
+            ),
+            "vae": ("wan_2.1_vae.safetensors",),
+            "text_encoders": ("umt5_xxl_fp8_e4m3fn_scaled.safetensors",),
+        }.items():
+            root = self.model_root / kind
+            root.mkdir(parents=True, exist_ok=True)
+            for name in names:
+                (root / name).write_bytes(name.encode("utf-8"))
+        self.object_info = self.root / "object_info.json"
+        self.object_info.write_bytes(
+            (PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json").read_bytes()
+        )
         self.segment_graph = PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"
         self.bridge_graph = PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"
         self.manifest = self.root / "project.yaml"
         self.source = self._source()
         self._write_manifest(self.source)
         self.project = ProjectConfig(path=self.manifest, source=self.source)
+        self._probe_media_patch = patch(
+            "wan22_longform.render.probe_media", side_effect=self._fixture_media
+        )
+        self._probe_media_patch.start()
 
     def tearDown(self) -> None:
+        self._probe_media_patch.stop()
         self.temporary_directory.cleanup()
 
     def test_continuation_uses_accepted_tail_and_records_immutable_provenance(self) -> None:
@@ -237,6 +261,7 @@ class ContinuityContractTests(unittest.TestCase):
             {"shot_id": "S010", "segment_id": "S010_C002"},
             {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
+        self._set_story_bridge_timing(source)
         project = self._project(source)
         client = FakeRenderClient(self.video)
 
@@ -269,6 +294,7 @@ class ContinuityContractTests(unittest.TestCase):
             {"shot_id": "S010", "segment_id": "S010_C002"},
             {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
+        self._set_story_bridge_timing(source)
         project = ProjectConfig(path=self.manifest, source=source)
         client = FakeRenderClient(self.video)
 
@@ -421,6 +447,7 @@ class ContinuityContractTests(unittest.TestCase):
             {"shot_id": "S010", "segment_id": "S010_C002"},
             {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
+        self._set_story_bridge_timing(source)
         project = ProjectConfig(path=self.manifest, source=source)
         client = FakeRenderClient(self.video)
 
@@ -491,6 +518,44 @@ class ContinuityContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ConfigError, "candidate_count.*qc.candidate_count"):
             validate_project_contract(self._project(source))
+
+    def test_strict_manifest_enforces_frame_duration_and_assembly_targets(self) -> None:
+        mutations = {
+            "segment duration": lambda source: source["shots"][0]["segments"][0].__setitem__(
+                "expected_seconds", 2.0
+            ),
+            "shot target": lambda source: source["shots"][0].__setitem__(
+                "target_seconds", 1.0
+            ),
+            "project target": lambda source: source.__setitem__("target_seconds", 1.0),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                source = copy.deepcopy(self.source)
+                mutate(source)
+
+                with self.assertRaisesRegex(ConfigError, "expected_seconds|target_seconds"):
+                    validate_project_contract(self._project(source))
+
+    def test_strict_manifest_rejects_declarative_codecs_and_dead_seed_increment(self) -> None:
+        mutations = {
+            "review codec": lambda source: source["render"].__setitem__(
+                "review_mp4_codec", "hevc"
+            ),
+            "master codec": lambda source: source["render"].__setitem__(
+                "master_codec", "prores"
+            ),
+            "dead seed increment": lambda source: source["render"].__setitem__(
+                "seed_increment", 17
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                source = copy.deepcopy(self.source)
+                mutate(source)
+
+                with self.assertRaisesRegex(ConfigError, "codec|seed_increment"):
+                    validate_project_contract(self._project(source))
 
     def test_strict_manifest_requires_declared_output_roles_inside_output_root(self) -> None:
         source = copy.deepcopy(self.source)
@@ -659,7 +724,7 @@ class ContinuityContractTests(unittest.TestCase):
             "project_id": "continuity_fixture",
             "title": "Continuity fixture",
             "mode": "continuous",
-            "target_seconds": 4,
+            "target_seconds": 3.1875,
             "output_root": str(self.root / "outputs"),
             "outputs": {
                 "review_mp4": str(self.root / "outputs" / "review.mp4"),
@@ -679,12 +744,19 @@ class ContinuityContractTests(unittest.TestCase):
                 "wan_2.1_vae.safetensors",
                 "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
             ],
+            "model_roots": [
+                str(self.model_root / "diffusion_models"),
+                str(self.model_root / "vae"),
+                str(self.model_root / "text_encoders"),
+            ],
             "workflow_api": str(self.segment_graph),
             "bridge_workflow_api": str(self.bridge_graph),
             "workflow_hashes": {
                 "segment_api": hashlib.sha256(self.segment_graph.read_bytes()).hexdigest(),
                 "bridge_api": hashlib.sha256(self.bridge_graph.read_bytes()).hexdigest(),
             },
+            "object_info": str(self.object_info),
+            "object_info_sha256": hashlib.sha256(self.object_info.read_bytes()).hexdigest(),
             "environment_snapshot": {
                 "captured_at": "2026-07-19T12:00:00Z",
                 "platform": "fixture",
@@ -700,7 +772,6 @@ class ContinuityContractTests(unittest.TestCase):
                 "review_mp4_codec": "h264",
                 "master_codec": "ffv1",
                 "seed_base": 400,
-                "seed_increment": 17,
             },
             "inputs": {"opening_frame": str(self.fallback)},
             "attempts_dir": str(self.root / "attempts"),
@@ -734,7 +805,7 @@ class ContinuityContractTests(unittest.TestCase):
             "shots": [
                 {
                     "id": "S010",
-                    "target_seconds": 4,
+                    "target_seconds": 2.125,
                     "anchor_image": str(self.anchor),
                     "camera": "eye level",
                     "environment": "fixture room",
@@ -742,13 +813,13 @@ class ContinuityContractTests(unittest.TestCase):
                         {
                             "id": "S010_C001",
                             "action": "The adult takes one natural step.",
-                            "expected_seconds": 2,
+                            "expected_seconds": 1.0625,
                             "seed_offset": 0,
                         },
                         {
                             "id": "S010_C002",
                             "action": "The adult takes one more natural step.",
-                            "expected_seconds": 2,
+                            "expected_seconds": 1.0625,
                             "seed_offset": 17,
                             "continue_from": "S010_C001",
                         },
@@ -756,7 +827,7 @@ class ContinuityContractTests(unittest.TestCase):
                 },
                 {
                     "id": "S020",
-                    "target_seconds": 2,
+                    "target_seconds": 1.0625,
                     "anchor_image": str(self.second_anchor),
                     "camera": "eye level",
                     "environment": "fixture room",
@@ -764,7 +835,7 @@ class ContinuityContractTests(unittest.TestCase):
                         {
                             "id": "S020_C001",
                             "action": "The adult pauses naturally.",
-                            "expected_seconds": 2,
+                            "expected_seconds": 1.0625,
                             "seed_offset": 34,
                         }
                     ],
@@ -789,6 +860,25 @@ class ContinuityContractTests(unittest.TestCase):
         path = self.root / name
         path.write_bytes(contents)
         return path
+
+    @staticmethod
+    def _fixture_media(path: Path) -> MediaSpec:
+        frame_count = 33 if path.name.startswith("bridge") else 17
+        return MediaSpec(
+            path=path,
+            width=640,
+            height=640,
+            fps=Fraction(16, 1),
+            time_base=Fraction(1, 16),
+            pixel_format="yuv420p",
+            codec="h264",
+            profile="High",
+            color_space="bt709",
+            color_transfer="bt709",
+            color_primaries="bt709",
+            audio=None,
+            frame_count=frame_count,
+        )
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
@@ -914,6 +1004,12 @@ class ContinuityContractTests(unittest.TestCase):
             {"shot_id": "S010", "segment_id": "S010_C002"},
             {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
+        ContinuityContractTests._set_story_bridge_timing(source)
+
+    @staticmethod
+    def _set_story_bridge_timing(source: dict[str, object]) -> None:
+        source["shots"][0]["target_seconds"] = 4.1875  # type: ignore[index]
+        source["target_seconds"] = 5.25
 
     def _missing_upstream(self, _project: ProjectConfig) -> None:
         return None

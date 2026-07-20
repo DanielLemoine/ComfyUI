@@ -239,6 +239,39 @@ class WorkflowPatchTests(unittest.TestCase):
             "configured-text-encoder.safetensors",
         )
 
+    def test_builder_patches_canonical_frame_count_and_create_video_fps(self) -> None:
+        for fixture_name, conditioning_title, title, fps, frames in (
+            ("native_segment_api.json", "I2V_CONDITIONING", "CREATE_VIDEO", 16.0, 81),
+            (
+                "native_bridge_api.json",
+                "FLF_CONDITIONING",
+                "BRIDGE_CREATE_VIDEO",
+                24.0,
+                49,
+            ),
+        ):
+            with self.subTest(fixture=fixture_name, fps=fps, frames=frames):
+                graph = build_api_graph(
+                    load_fixture(fixture_name),
+                    base_render_config(generation_fps=fps, generation_frames=frames),
+                    available_files(),
+                )
+
+                conditioner = find_unique_node(
+                    graph,
+                    conditioning_title,
+                    "WanImageToVideo"
+                    if conditioning_title == "I2V_CONDITIONING"
+                    else "WanFirstLastFrameToVideo",
+                )
+                self.assertEqual(conditioner.node["inputs"]["length"], frames)
+                self.assertEqual(
+                    find_unique_node(graph, title, "CreateVideo").node[
+                        "inputs"
+                    ]["fps"],
+                    fps,
+                )
+
     def test_enabled_lora_without_configured_filename_is_rejected(self) -> None:
         render = base_render_config(
             vbvr=LoraSlot(branch="high", strength=0.25, enabled=True)
@@ -303,6 +336,43 @@ class WorkflowPatchTests(unittest.TestCase):
 
         with self.assertRaisesRegex(WorkflowError, "unavailable output -1"):
             validate_graph_against_object_info(graph, load_native_schema())
+
+    def test_installed_schema_validation_rejects_invalid_literal_widgets(self) -> None:
+        schema = load_native_schema()
+        schema["WanImageToVideo"]["input"]["required"]["width"] = [  # type: ignore[index]
+            "INT",
+            {"min": 64, "max": 640, "step": 64},
+        ]
+        schema["WanImageToVideo"]["input"]["required"]["length"] = [  # type: ignore[index]
+            "INT",
+            {"min": 17, "max": 81, "step": 16},
+        ]
+        schema["CreateVideo"]["input"]["required"]["fps"] = [  # type: ignore[index]
+            "FLOAT",
+            {"min": 8, "max": 24, "step": 8},
+        ]
+        schema["UNETLoader"]["input"]["required"]["unet_name"] = [  # type: ignore[index]
+            [
+                "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+                "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+            ],
+            {},
+        ]
+
+        cases = (
+            ("width", ("10", "width", 641)),
+            ("length", ("10", "length", 18)),
+            ("fps", ("14", "fps", 20.0)),
+            ("non-finite fps", ("14", "fps", float("nan"))),
+            ("model dropdown", ("1", "unet_name", "missing-model.safetensors")),
+        )
+        for label, (node_id, input_name, bad_value) in cases:
+            with self.subTest(label=label):
+                graph = load_fixture("native_segment_api.json")
+                graph[node_id]["inputs"][input_name] = bad_value
+
+                with self.assertRaisesRegex(WorkflowError, input_name):
+                    validate_graph_against_object_info(graph, schema)
 
     def test_persisted_i2v_and_flf_graphs_are_clean_and_executable(self) -> None:
         ui_path = PROJECT_DIR / "workflows" / "ui" / "wan22_segment_i2v_native.json"
@@ -519,6 +589,74 @@ class WorkflowPatchTests(unittest.TestCase):
                 for link_id in graph_input["linkIds"]:
                     self.assertEqual(links[link_id]["origin_id"], -10)
                     self.assertEqual(links[link_id]["origin_slot"], slot)
+
+    def test_i2v_ui_is_rebased_from_the_canonical_normal_branch(self) -> None:
+        ui = json.loads(
+            (
+                PROJECT_DIR / "workflows" / "ui" / "wan22_segment_i2v_native.json"
+            ).read_text(encoding="utf-8")
+        )
+        provenance = ui["extra"]["wan22_longform"]
+        canonical_id = "84e2cf3f-de93-40ef-ab22-b9375296917b"
+        canonical_hash = (
+            "6eea9b627b10fcfaf3e75a43aad2c58d8daabdbf72b32ede1602c668cac376bb"
+        )
+
+        self.assertEqual(ui["nodes"][0]["type"], canonical_id)
+        self.assertEqual(provenance["source_template_id"], "video_wan2_2_14B_i2v")
+        self.assertEqual(provenance["source_template_sha256"], canonical_hash)
+        self.assertEqual(provenance["source_subgraph_id"], canonical_id)
+        self.assertEqual(provenance["source_subgraph"], "Image to Video (Wan2.2)")
+        self.assertNotIn("blueprints", provenance["source_template"].casefold())
+
+        subgraph = ui["definitions"]["subgraphs"][0]
+        self.assertEqual(subgraph["id"], canonical_id)
+        node_by_id = {node["id"]: node for node in subgraph["nodes"]}
+        links = subgraph["links"]
+
+        self.assertEqual(node_by_id[131]["widgets_values"], [False])
+        self.assertEqual(node_by_id[161]["widgets_values"], [5])
+        self.assertEqual(node_by_id[162]["widgets_values"], [16])
+        self.assertEqual(node_by_id[163]["widgets_values"], ["floor (a * b + 1)"])
+        self.assertIn("DURATION", [entry["name"] for entry in subgraph["inputs"]])
+
+        def has_link(
+            origin_id: int, origin_slot: int, target_id: int, target_slot: int
+        ) -> bool:
+            return any(
+                link["origin_id"] == origin_id
+                and link["origin_slot"] == origin_slot
+                and link["target_id"] == target_id
+                and link["target_slot"] == target_slot
+                for link in links
+            )
+
+        self.assertTrue(has_link(161, 0, 163, 0))
+        self.assertTrue(has_link(162, 0, 163, 1))
+        self.assertTrue(has_link(163, 1, 98, 7))
+        self.assertTrue(has_link(162, 0, 94, 2))
+        for normal_source, switch_id in ((95, 116), (96, 117), (127, 125), (128, 119), (126, 120)):
+            with self.subTest(normal_source=normal_source, switch_id=switch_id):
+                self.assertTrue(has_link(normal_source, 0, switch_id, 0))
+                self.assertTrue(has_link(131, 0, switch_id, 2))
+
+        forbidden_types = {"LoraLoaderModelOnly", "Note", "MarkdownNote"}
+        self.assertTrue(
+            forbidden_types.isdisjoint({node["type"] for node in subgraph["nodes"]})
+        )
+        self.assertNotIn("lightx2v", json.dumps(subgraph).casefold())
+
+        api = load_fixture("native_segment_api.json")
+        self.assertEqual(
+            find_unique_node(api, "I2V_CONDITIONING", "WanImageToVideo").node["inputs"][
+                "length"
+            ],
+            81,
+        )
+        self.assertEqual(
+            find_unique_node(api, "CREATE_VIDEO", "CreateVideo").node["inputs"]["fps"],
+            16,
+        )
 
     @staticmethod
     def _model_chain_titles(

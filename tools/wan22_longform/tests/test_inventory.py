@@ -39,6 +39,16 @@ class CollectPreflightTests(unittest.TestCase):
             )
         )
 
+    def _native_workflow_schema_fixture(self) -> dict[str, object]:
+        return json.loads(
+            (
+                PROJECT_DIR
+                / "tests"
+                / "fixtures"
+                / "native_workflow_object_info.json"
+            ).read_text(encoding="utf-8")
+        )
+
     @staticmethod
     def _package_template_dir(temporary_path: Path) -> Path:
         return (
@@ -229,6 +239,63 @@ class CollectPreflightTests(unittest.TestCase):
                         expected_blocker,
                         (result.artifact_dir / "preflight_report.md").read_text(encoding="utf-8"),
                     )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_blocks_manifest_pinned_non_wan_schema_mismatch(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            comfy_root, base_project, i2v_hash, flf_hash = self._ready_fixture(
+                temporary_path
+            )
+            segment = temporary_path / "segment.json"
+            bridge = temporary_path / "bridge.json"
+            segment_graph = json.loads(
+                (
+                    PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"
+                ).read_text(encoding="utf-8")
+            )
+            segment_graph["7"]["inputs"]["unknown_prompt_socket"] = "blocked"
+            segment.write_text(json.dumps(segment_graph), encoding="utf-8")
+            bridge.write_bytes(
+                (PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json").read_bytes()
+            )
+            project = ProjectConfig(
+                path=base_project.path,
+                source={
+                    **base_project.source,
+                    "workflow_api": str(segment),
+                    "bridge_workflow_api": str(bridge),
+                    "workflow_hashes": {
+                        "segment_api": hashlib.sha256(segment.read_bytes()).hexdigest(),
+                        "bridge_api": hashlib.sha256(bridge.read_bytes()).hexdigest(),
+                    },
+                },
+            )
+
+            with patch(
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256", i2v_hash
+            ), patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256", flf_hash
+            ):
+                result = collect_preflight(
+                    comfy_root=comfy_root,
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "preflight",
+                    object_info=self._native_workflow_schema_fixture(),
+                    project=project,
+                )
+
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertTrue(
+            any(
+                "segment API workflow is incompatible" in blocker
+                and "unknown inputs" in blocker
+                for blocker in result.blockers
+            )
+        )
 
     @patch("wan22_longform.inventory.subprocess.run")
     def test_collect_preflight_blocks_empty_or_malformed_native_schema(self, run) -> None:

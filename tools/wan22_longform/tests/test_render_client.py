@@ -6,6 +6,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -23,6 +25,7 @@ from wan22_longform.comfy_client import (  # noqa: E402
     HistoryResult,
 )
 from wan22_longform.config import ProjectConfig  # noqa: E402
+from wan22_longform.ffmpeg import MediaSpec  # noqa: E402
 from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
 from wan22_longform.project import (  # noqa: E402
     Attempt,
@@ -73,6 +76,7 @@ class FakeRenderClient:
         self.submitted: list[dict[str, dict[str, object]]] = []
         self.waited: list[str] = []
         self.uploaded: list[Path] = []
+        self.fetched: list[Path] = []
         self.fail_uploads = fail_uploads
         self.fail_submits = fail_submits
         self.fail_waits = fail_waits
@@ -110,9 +114,28 @@ class FakeRenderClient:
         )
 
     def fetch_output(self, output: HistoryOutput, destination: Path) -> Path:
+        self.fetched.append(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(output.local_path, destination)
         return destination
+
+
+def fixture_media(path: Path, *, frame_count: int, fps: int = 16) -> MediaSpec:
+    return MediaSpec(
+        path=path,
+        width=832,
+        height=480,
+        fps=Fraction(fps, 1),
+        time_base=Fraction(1, fps),
+        pixel_format="yuv420p",
+        codec="h264",
+        profile="High",
+        color_space="bt709",
+        color_transfer="bt709",
+        color_primaries="bt709",
+        audio=None,
+        frame_count=frame_count,
+    )
 
 
 def write_submission_fixture(attempt: Attempt, *, kind: str = "segment") -> dict[str, str]:
@@ -323,7 +346,24 @@ class RenderSegmentTests(unittest.TestCase):
         self.video.write_bytes(b"fixture-video")
         self.opening = self.root / "opening.png"
         self.opening.write_bytes(b"opening-frame")
+        self.model_root = self.root / "models"
+        for kind, names in {
+            "diffusion_models": (
+                "configured-high.safetensors",
+                "configured-low.safetensors",
+            ),
+            "vae": ("wan_2.1_vae.safetensors",),
+            "text_encoders": ("umt5_xxl_fp8_e4m3fn_scaled.safetensors",),
+        }.items():
+            root = self.model_root / kind
+            root.mkdir(parents=True, exist_ok=True)
+            for name in names:
+                (root / name).write_bytes(name.encode("utf-8"))
         self.workflow = PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"
+        self.object_info = self.root / "object_info.json"
+        self.object_info.write_bytes(
+            (PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json").read_bytes()
+        )
         self.manifest = self.root / "project.yaml"
         source = {
             "schema_version": 1,
@@ -350,6 +390,8 @@ class RenderSegmentTests(unittest.TestCase):
                 "segment_api": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),
                 "bridge_api": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),
             },
+            "object_info": str(self.object_info),
+            "object_info_sha256": hashlib.sha256(self.object_info.read_bytes()).hexdigest(),
             "environment_snapshot": {
                 "captured_at": "2026-07-19T00:00:00Z",
                 "platform": "fixture",
@@ -365,7 +407,6 @@ class RenderSegmentTests(unittest.TestCase):
                 "review_mp4_codec": "h264",
                 "master_codec": "ffv1",
                 "seed_base": 424242,
-                "seed_increment": 17,
             },
             "request": {
                 "positive": "configured positive prompt",
@@ -382,6 +423,11 @@ class RenderSegmentTests(unittest.TestCase):
                 "configured-low.safetensors",
                 "wan_2.1_vae.safetensors",
                 "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+            ],
+            "model_roots": [
+                str(self.model_root / "diffusion_models"),
+                str(self.model_root / "vae"),
+                str(self.model_root / "text_encoders"),
             ],
             "policy": {"automatic_continuation": False},
             "continuation": {"strategy": "selected_tail", "reset_limit": 3},
@@ -420,6 +466,11 @@ class RenderSegmentTests(unittest.TestCase):
         }
         self.manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
         self.project = ProjectConfig(path=self.manifest, source=source)
+        self._probe_media_patch = patch(
+            "wan22_longform.render.probe_media",
+            side_effect=lambda path: fixture_media(path, frame_count=81),
+        )
+        self._probe_media_patch.start()
 
     def _accepted_upstream(self, *, suffix: str = "") -> tuple[Attempt, Path, Path]:
         head = self.root / f"accepted-head{suffix}.png"
@@ -463,6 +514,7 @@ class RenderSegmentTests(unittest.TestCase):
         return upstream, head, tail
 
     def tearDown(self) -> None:
+        self._probe_media_patch.stop()
         self.temporary_directory.cleanup()
 
     @patch("wan22_longform.render.create_contact_sheet")
@@ -508,6 +560,8 @@ class RenderSegmentTests(unittest.TestCase):
             (attempt.path / "render-metadata.json").read_text(encoding="utf-8")
         )
         self.assertEqual(metadata["details"]["prompt_id"], "fixture-prompt")
+        self.assertEqual(metadata["details"]["media_timing"]["actual"]["frame_count"], 81)
+        self.assertEqual(metadata["details"]["media_timing"]["actual"]["fps"], "16")
         self.assertEqual(
             metadata["outputs"]["segment"]["sha256"],
             hashlib.sha256(b"fixture-video").hexdigest(),
@@ -536,6 +590,183 @@ class RenderSegmentTests(unittest.TestCase):
             {"prompt": graph},
         )
         self.assertEqual(self.manifest.read_bytes(), manifest_before)
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_non_default_generation_fps_is_submitted_and_sealed_in_timing_evidence(
+        self, extract, contact_sheet
+    ) -> None:
+        source = deepcopy(self.project.source)
+        seconds = 81 / 24
+        source["render"]["generation_fps"] = 24
+        source["target_seconds"] = seconds * 4
+        for shot in source["shots"]:
+            shot["target_seconds"] = seconds
+            shot["segments"][0]["expected_seconds"] = seconds
+        project = ProjectConfig(path=self.manifest, source=source)
+
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            paths = []
+            for index in range(count):
+                path = destination / f"{where}-{index}.png"
+                path.write_bytes(b"candidate")
+                paths.append(path)
+            return paths
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+
+        with patch(
+            "wan22_longform.render.probe_media",
+            side_effect=lambda path: fixture_media(path, frame_count=81, fps=24),
+        ):
+            attempt = render_segment(project, "S010", "S010_C001", FakeRenderClient(self.video))
+
+        graph = json.loads((attempt.path / "configured-workflow-api.json").read_text(encoding="utf-8"))
+        metadata = json.loads((attempt.path / "render-metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(graph["14"]["inputs"]["fps"], 24.0)
+        self.assertEqual(metadata["details"]["media_timing"]["expected"]["fps"], "24")
+        self.assertEqual(metadata["details"]["media_timing"]["actual"]["fps"], "24")
+
+    def test_timing_drift_blocks_metadata_and_qc_before_review(self) -> None:
+        with patch(
+            "wan22_longform.render.probe_media",
+            side_effect=lambda path: fixture_media(path, frame_count=79),
+        ):
+            with self.assertRaisesRegex(RenderError, "more than one frame"):
+                render_segment(self.project, "S010", "S010_C001", FakeRenderClient(self.video))
+
+        attempt = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        self.assertFalse((attempt.path / "render-metadata.json").exists())
+        self.assertFalse((attempt.path / "qc.yaml").exists())
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_segment_resume_replaces_a_nonzero_partial_output_before_metadata(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            paths = []
+            for index in range(count):
+                path = destination / f"{where}-{index}.png"
+                path.write_bytes(b"candidate")
+                paths.append(path)
+            return paths
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        client = FakeRenderClient(self.video, fail_waits=1)
+
+        with self.assertRaises(TimeoutError):
+            render_segment(self.project, "S010", "S010_C001", client)
+
+        failed = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        partial = failed.path / "outputs" / "segment.mp4"
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_bytes(b"partial-output")
+
+        resumed = resume_attempt(self.project, failed, client)
+
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(partial.read_bytes(), b"fixture-video")
+        self.assertEqual(len(client.fetched), 1)
+        metadata = json.loads((resumed.path / "render-metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            metadata["outputs"]["segment"]["sha256"],
+            hashlib.sha256(b"fixture-video").hexdigest(),
+        )
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_candidate_publish_interruption_is_cleaned_and_resumable(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.side_effect = lambda _video, count, where, destination: [
+            self._candidate(destination, where, index) for index in range(count)
+        ]
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        client = FakeRenderClient(self.video)
+        original_replace = render_module.os.replace
+
+        def interrupt_sheet_publish(source: Path | str, destination: Path | str) -> None:
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if (
+                source_path.name == "contact-sheet.png"
+                and destination_path.name == "contact-sheet.png"
+            ):
+                raise RuntimeError("fixture interruption after candidate frame publish")
+            original_replace(source, destination)
+
+        with patch(
+            "wan22_longform.render.os.replace", side_effect=interrupt_sheet_publish
+        ):
+            with self.assertRaisesRegex(RuntimeError, "candidate frame publish"):
+                render_segment(self.project, "S010", "S010_C001", client)
+
+        failed = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        self.assertTrue((failed.path / "candidate-frames").is_dir())
+        self.assertFalse((failed.path / "contact-sheet.png").exists())
+        self.assertFalse(list(failed.path.glob(".candidate-stage-*")))
+        self.assertFalse((failed.path / "render-metadata.json").exists())
+
+        resumed = resume_attempt(self.project, failed, client)
+
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertTrue((resumed.path / "contact-sheet.png").is_file())
+        self.assertEqual(len(client.submitted), 1)
+        self.assertEqual(client.waited, ["fixture-prompt", "fixture-prompt"])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_history_publish_interruption_is_resumable_without_duplicate_submission(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.side_effect = lambda _video, count, where, destination: [
+            self._candidate(destination, where, index) for index in range(count)
+        ]
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        client = FakeRenderClient(self.video)
+        original_write = render_module._write_or_verify_json
+
+        def interrupt_after_history(path: Path, payload: object) -> Path:
+            written = original_write(path, payload)
+            if path.name == "history.json":
+                raise RuntimeError("fixture interruption after history publication")
+            return written
+
+        with patch(
+            "wan22_longform.render._write_or_verify_json",
+            side_effect=interrupt_after_history,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "history publication"):
+                render_segment(self.project, "S010", "S010_C001", client)
+
+        failed = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        self.assertEqual(failed.state, AttemptState.RENDERING)
+        self.assertTrue((failed.path / "history.json").is_file())
+        self.assertFalse((failed.path / "outputs" / "segment.mp4").exists())
+        self.assertFalse(list(failed.path.glob(".history.json.*.staging")))
+
+        resumed = resume_attempt(self.project, failed, client)
+
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(len(client.submitted), 1)
+        self.assertEqual(client.waited, ["fixture-prompt", "fixture-prompt"])
 
     def test_invalid_model_policy_stops_before_submission(self) -> None:
         source = dict(self.project.source)
@@ -567,6 +798,18 @@ class RenderSegmentTests(unittest.TestCase):
 
                 self.assertEqual(client.uploaded, [])
                 self.assertEqual(client.submitted, [])
+
+    def test_declared_model_absent_from_disk_stops_before_uploading_or_submitting(self) -> None:
+        (self.model_root / "diffusion_models" / "configured-low.safetensors").unlink()
+        client = FakeRenderClient(self.video)
+
+        with self.assertRaisesRegex(
+            RenderError, "role-correct on-disk model root.*configured-low"
+        ):
+            render_segment(self.project, "S020", "S020_C001", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
 
     @patch("wan22_longform.render.create_contact_sheet")
     @patch("wan22_longform.render.extract_candidate_frames")
@@ -762,7 +1005,9 @@ class RenderSegmentTests(unittest.TestCase):
     def test_segment_recovery_keeps_prepared_evidence_and_never_duplicates_submission(
         self, extract, contact_sheet
     ) -> None:
-        extract.return_value = [self.opening]
+        extract.side_effect = lambda _video, count, where, destination: [
+            self._candidate(destination, where, index) for index in range(count)
+        ]
         contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
         cases = (
             ("upload", {"fail_uploads": 1}),
@@ -1103,6 +1348,13 @@ class RenderSegmentTests(unittest.TestCase):
             )
 
     @staticmethod
+    def _candidate(destination: Path, where: str, index: int) -> Path:
+        destination.mkdir(parents=True, exist_ok=True)
+        path = destination / f"{where}-{index}.png"
+        path.write_bytes(b"candidate")
+        return path
+
+    @staticmethod
     def _write_sheet(destination: Path) -> Path:
         destination.write_bytes(b"sheet")
         return destination
@@ -1118,7 +1370,24 @@ class RenderBridgeTests(unittest.TestCase):
         self.first.write_bytes(b"first-frame")
         self.last = self.root / "last.png"
         self.last.write_bytes(b"last-frame")
+        self.model_root = self.root / "models"
+        for kind, names in {
+            "diffusion_models": (
+                "configured-high.safetensors",
+                "configured-low.safetensors",
+            ),
+            "vae": ("wan_2.1_vae.safetensors",),
+            "text_encoders": ("umt5_xxl_fp8_e4m3fn_scaled.safetensors",),
+        }.items():
+            root = self.model_root / kind
+            root.mkdir(parents=True, exist_ok=True)
+            for name in names:
+                (root / name).write_bytes(name.encode("utf-8"))
         self.workflow = PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"
+        self.object_info = self.root / "object_info.json"
+        self.object_info.write_bytes(
+            (PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json").read_bytes()
+        )
         self.manifest = self.root / "project.yaml"
         self.source = {
             "schema_version": 1,
@@ -1147,6 +1416,8 @@ class RenderBridgeTests(unittest.TestCase):
                 ).hexdigest(),
                 "bridge_api": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),
             },
+            "object_info": str(self.object_info),
+            "object_info_sha256": hashlib.sha256(self.object_info.read_bytes()).hexdigest(),
             "environment_snapshot": {
                 "captured_at": "2026-07-19T00:00:00Z",
                 "platform": "fixture",
@@ -1162,7 +1433,6 @@ class RenderBridgeTests(unittest.TestCase):
                 "review_mp4_codec": "h264",
                 "master_codec": "ffv1",
                 "seed_base": 424242,
-                "seed_increment": 17,
             },
             "request": {
                 "positive": "configured positive prompt",
@@ -1193,6 +1463,11 @@ class RenderBridgeTests(unittest.TestCase):
                 "configured-low.safetensors",
                 "wan_2.1_vae.safetensors",
                 "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+            ],
+            "model_roots": [
+                str(self.model_root / "diffusion_models"),
+                str(self.model_root / "vae"),
+                str(self.model_root / "text_encoders"),
             ],
             "policy": {"automatic_continuation": False},
             "continuation": {"strategy": "selected_tail", "reset_limit": 3},
@@ -1226,8 +1501,14 @@ class RenderBridgeTests(unittest.TestCase):
         }
         self.manifest.write_text(yaml.safe_dump(self.source, sort_keys=True), encoding="utf-8")
         self.project = ProjectConfig(path=self.manifest, source=self.source)
+        self._probe_media_patch = patch(
+            "wan22_longform.render.probe_media",
+            side_effect=lambda path: fixture_media(path, frame_count=33),
+        )
+        self._probe_media_patch.start()
 
     def tearDown(self) -> None:
+        self._probe_media_patch.stop()
         self.temporary_directory.cleanup()
 
     @patch("wan22_longform.render.create_contact_sheet")
@@ -1308,10 +1589,55 @@ class RenderBridgeTests(unittest.TestCase):
 
     @patch("wan22_longform.render.create_contact_sheet")
     @patch("wan22_longform.render.extract_candidate_frames")
+    def test_bridge_resume_replaces_a_nonzero_partial_output_before_metadata(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.side_effect = lambda _video, count, where, destination: [
+            self._candidate(destination, where, index) for index in range(count)
+        ]
+        contact_sheet.side_effect = lambda _frames, destination: self._sheet(destination)
+        source = dict(self.source)
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "purpose": "technical_smoke",
+                "base_source_image": str(self.first),
+                "frames": 33,
+            }
+        ]
+        self.manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+        project = ProjectConfig(path=self.manifest, source=source)
+        client = FakeRenderClient(self.video, fail_waits=1)
+
+        with self.assertRaises(TimeoutError):
+            render_bridge(project, "B010", client)
+
+        failed = load_attempt(next((self.root / "attempts" / "S010" / "B010").iterdir()))
+        partial = failed.path / "outputs" / "bridge.mp4"
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_bytes(b"partial-output")
+
+        resumed = resume_attempt(project, failed, client)
+
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(partial.read_bytes(), b"fixture-video")
+        self.assertEqual(len(client.fetched), 1)
+        metadata = json.loads((resumed.path / "render-metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            metadata["outputs"]["bridge"]["sha256"],
+            hashlib.sha256(b"fixture-video").hexdigest(),
+        )
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
     def test_bridge_recovery_keeps_prepared_evidence_and_never_duplicates_submission(
         self, extract, contact_sheet
     ) -> None:
-        extract.return_value = [self.first]
+        extract.side_effect = lambda _video, count, where, destination: [
+            self._candidate(destination, where, index) for index in range(count)
+        ]
         contact_sheet.side_effect = lambda _frames, destination: self._sheet(destination)
         source = dict(self.source)
         source["bridges"] = [
@@ -1438,6 +1764,8 @@ class RenderBridgeTests(unittest.TestCase):
             {"shot_id": "S010", "segment_id": "S010_C001"},
             {"shot_id": "S010", "segment_id": "S010_C001_NEXT"},
         ]
+        source["target_seconds"] = 2.125
+        source["shots"][0]["target_seconds"] = 2.125
         client = FakeRenderClient(self.video)
 
         with self.assertRaisesRegex(RuntimeError, "only handles bridges with strategy flf2v"):

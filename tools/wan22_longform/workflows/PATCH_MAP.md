@@ -19,6 +19,15 @@ Disabled or zero-strength adapters are omitted rather than represented with plac
 
 Both quality graphs use the verified normal 20-step two-stage topology: high sampling uses Euler/simple, steps 0–10, and leftover noise enabled; low sampling adds no fresh noise and uses steps 10–20 with leftover noise disabled. The I2V baseline remains faithful to its installed official normal branch (`ModelSamplingSD3` shift `5`, CFG `3.5`); the official FLF baseline uses shift `8`, CFG `4`. The 4-step LightX2V lane remains preview-only and is not present in either quality graph.
 
+## Official I2V provenance and normal branch
+
+- Installed source: `D:\AI\ComfyUI\venv\Lib\site-packages\comfyui_workflow_templates_json\templates\video_wan2_2_14B_i2v.json`
+- Template identifier: `video_wan2_2_14B_i2v`
+- Verified SHA-256: `6eea9b627b10fcfaf3e75a43aad2c58d8daabdbf72b32ede1602c668cac376bb`
+- Canonical subgraph: `84e2cf3f-de93-40ef-ab22-b9375296917b` — `Image to Video (Wan2.2)`
+
+The packaged UI is a direct capture of that canonical normal branch, with only the true 4-step LoRA side removed. `Enable 4steps LoRA?` remains `false` and feeds the model, steps, CFG, and split-step switches, whose `on_false` inputs retain the normal quality values. `PrimitiveFloat Duration` and `PrimitiveFloat FPS` feed `ComfyMathExpression` `floor (a * b + 1)`; its integer output feeds `WanImageToVideo.length`, while the FPS primitive feeds `CreateVideo.fps`. The API graph keeps the same normal 20-step semantics as concrete executable values.
+
 ## Bridge FLF API titles
 
 - Models and sampling wrappers: `MODEL_HIGH`, `MODEL_LOW`, `MODEL_SAMPLING_HIGH`, `MODEL_SAMPLING_LOW`

@@ -295,3 +295,29 @@ OK (skipped=1)
 ```
 
 Full suite completed successfully with 230 collected tests and one intentional skip. `compileall`, Ruff, and `git diff --check` also passed. All validation remained local/static/unit-test only; no ComfyUI, GPU, network service, or runtime artifact was touched.
+
+## Supplement: Canonical I2V, Schema, Timing, and Recovery Hardening
+
+Date: 2026-07-20
+
+### Completed controls
+
+- Rebased the packaged I2V UI subgraph onto the installed registered canonical `video_wan2_2_14B_i2v.json` asset (`6eea9b627b10fcfaf3e75a43aad2c58d8daabdbf72b32ede1602c668cac376bb`), subgraph `84e2cf3f-de93-40ef-ab22-b9375296917b` / `Image to Video (Wan2.2)`.
+- Preserved the official normal quality path and its false-selected 4-step switches while excluding all LightX/LoRA loader nodes and true branches. The UI retains `Duration × FPS → floor(a*b+1) → WanImageToVideo.length`, with the same FPS routed to `CreateVideo`.
+- Made the normal preflight gate validate both hash-pinned API graphs against the captured local `/object_info`, including numeric bounds/steps and choice widgets. A CLI-level regression proves an invalid pinned native input returns `BLOCKED`.
+- Made `generation_frames` and `generation_fps` declarative graph inputs, enforced frame/duration/assembly contracts, verified fetched media timing before metadata/QC, fixed V1 codec policy, and rejected dead `seed_increment` configuration.
+- Required on-disk, role-correct model roots before normal validation/render submission; `model_files` remains declaration-only.
+- Added atomic staged publication for output fetches and evidence artifacts. Resume replaces nonzero partial segment and bridge outputs and recovers history, metadata, QC, candidate-frame, and contact-sheet interruption boundaries without duplicate submission.
+
+### Final verification
+
+```text
+Ran 246 tests in 46.194s
+OK (skipped=1)
+```
+
+- `ruff check src tests` — passed.
+- `git diff --check` — passed.
+- Canonical UI provenance/hash/topology verification — passed (`25` retained normal-branch nodes, `50` links).
+
+This supplement remained static/unit-test only. It did not start, stop, query, or modify ComfyUI, the GPU, external services, or the ignored runtime-artifact directory.

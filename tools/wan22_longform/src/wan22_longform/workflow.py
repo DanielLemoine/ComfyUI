@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, TypeAlias
 
 from .config import LoraSlot, ModelFiles, ResolvedRenderConfig
@@ -78,6 +79,9 @@ def build_api_graph(
     find_unique_node(graph, "TEXT_ENCODER", "CLIPLoader").node["inputs"][
         "clip_name"
     ] = render.models.text_encoder
+    conditioning, _, _ = _conditioner_and_samplers(graph)
+    conditioning.node["inputs"]["length"] = render.generation_frames
+    _create_video_node(graph).node["inputs"]["fps"] = render.generation_fps
 
     for sampling_title, lora_title, slot in _ordered_lora_slots(render):
         if slot.is_enabled:
@@ -194,6 +198,10 @@ def validate_two_stage_graph(graph: ApiGraph) -> None:
             raise WorkflowError(
                 f"optional LoRA {node.node_id} requires a configured filename"
             )
+    create_video = _create_video_node(graph)
+    fps = create_video.node.get("inputs", {}).get("fps")
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0:
+        raise WorkflowError("CreateVideo fps must be a positive number")
 
 
 def _conditioner_and_samplers(
@@ -241,6 +249,22 @@ def _conditioner_and_samplers(
     )
 
 
+def _create_video_node(graph: ApiGraph) -> NodeRef:
+    matches = [
+        NodeRef(str(node_id), node)
+        for node_id, node in graph.items()
+        if node.get("class_type") == "CreateVideo"
+        and node.get("_meta", {}).get("title")
+        in {"CREATE_VIDEO", "BRIDGE_CREATE_VIDEO"}
+    ]
+    if len(matches) != 1:
+        raise WorkflowError(
+            "expected exactly one titled native CreateVideo node; "
+            f"found {len(matches)} matches"
+        )
+    return matches[0]
+
+
 def _quality_profile(conditioning: NodeRef) -> tuple[float, float]:
     if conditioning.node.get("class_type") == "WanImageToVideo":
         return 5.0, 3.5
@@ -280,46 +304,164 @@ def validate_graph_against_object_info(
                 f"node {node_id} class_type {class_type} has unknown inputs: {unknown}"
             )
         for input_name, value in inputs.items():
-            if not _is_link(value):
-                continue
-            source_id = str(value[0])
-            if source_id not in graph:
-                raise WorkflowError(
-                    f"node {node_id} input {input_name} links to missing node {value[0]}"
-                )
-            source_class = graph[source_id].get("class_type")
-            source_schema = (
-                object_info.get(source_class) if isinstance(source_class, str) else None
-            )
-            source_outputs = (
-                source_schema.get("output")
-                if isinstance(source_schema, Mapping)
-                else None
-            )
-            output_index = value[1]
-            if (
-                not isinstance(source_outputs, list)
-                or output_index < 0
-                or output_index >= len(source_outputs)
-            ):
-                raise WorkflowError(
-                    f"node {node_id} input {input_name} uses unavailable output "
-                    f"{output_index} from node {source_id}"
-                )
             input_spec = required.get(input_name, optional.get(input_name))
-            expected_type = (
-                input_spec[0]
-                if isinstance(input_spec, list)
-                and input_spec
-                and isinstance(input_spec[0], str)
-                else None
-            )
-            output_type = source_outputs[output_index]
-            if expected_type is not None and output_type != expected_type:
-                raise WorkflowError(
-                    f"node {node_id} input {input_name} expects {expected_type}, but "
-                    f"node {source_id} output {output_index} provides {output_type}"
+            if _is_link(value):
+                _validate_link_input(
+                    graph,
+                    object_info,
+                    node_id,
+                    input_name,
+                    value,
+                    input_spec,
                 )
+            else:
+                _validate_literal_input(
+                    node_id, class_type, input_name, value, input_spec
+                )
+
+
+def _validate_link_input(
+    graph: ApiGraph,
+    object_info: Mapping[str, object],
+    node_id: str,
+    input_name: str,
+    value: list[object],
+    input_spec: object,
+) -> None:
+    source_id = str(value[0])
+    if source_id not in graph:
+        raise WorkflowError(
+            f"node {node_id} input {input_name} links to missing node {value[0]}"
+        )
+    source_class = graph[source_id].get("class_type")
+    source_schema = object_info.get(source_class) if isinstance(source_class, str) else None
+    source_outputs = source_schema.get("output") if isinstance(source_schema, Mapping) else None
+    output_index = value[1]
+    if (
+        not isinstance(source_outputs, list)
+        or output_index < 0
+        or output_index >= len(source_outputs)
+    ):
+        raise WorkflowError(
+            f"node {node_id} input {input_name} uses unavailable output "
+            f"{output_index} from node {source_id}"
+        )
+    expected_type = _schema_input_type(input_spec)
+    output_type = source_outputs[output_index]
+    if expected_type is not None and output_type != expected_type:
+        raise WorkflowError(
+            f"node {node_id} input {input_name} expects {expected_type}, but "
+            f"node {source_id} output {output_index} provides {output_type}"
+        )
+
+
+def _validate_literal_input(
+    node_id: str,
+    class_type: object,
+    input_name: str,
+    value: object,
+    input_spec: object,
+) -> None:
+    if not isinstance(input_spec, list) or not input_spec:
+        return
+    descriptor = input_spec[0]
+    metadata = input_spec[1] if len(input_spec) > 1 and isinstance(input_spec[1], Mapping) else {}
+    choices = _schema_choices(descriptor, metadata)
+    if choices is not None and value not in choices:
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} uses unavailable "
+            f"literal value {value!r}"
+        )
+    if descriptor == "INT":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise WorkflowError(
+                f"node {node_id} class_type {class_type} input {input_name} must be an integer"
+            )
+        _validate_numeric_bounds(node_id, class_type, input_name, value, metadata)
+    elif descriptor == "FLOAT":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise WorkflowError(
+                f"node {node_id} class_type {class_type} input {input_name} must be numeric"
+            )
+        _validate_numeric_bounds(node_id, class_type, input_name, value, metadata)
+    elif descriptor == "BOOLEAN" and not isinstance(value, bool):
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} must be boolean"
+        )
+    elif descriptor == "STRING" and not isinstance(value, str):
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} must be a string"
+        )
+
+
+def _schema_input_type(input_spec: object) -> str | None:
+    if (
+        isinstance(input_spec, list)
+        and input_spec
+        and isinstance(input_spec[0], str)
+    ):
+        return input_spec[0]
+    return None
+
+
+def _schema_choices(
+    descriptor: object, metadata: Mapping[str, object]
+) -> tuple[object, ...] | None:
+    if isinstance(descriptor, list):
+        return tuple(descriptor)
+    options = metadata.get("options")
+    if isinstance(options, list):
+        return tuple(options)
+    return None
+
+
+def _validate_numeric_bounds(
+    node_id: str,
+    class_type: object,
+    input_name: str,
+    value: int | float,
+    metadata: Mapping[str, object],
+) -> None:
+    number = _decimal(value, node_id, class_type, input_name)
+    minimum = metadata.get("min")
+    maximum = metadata.get("max")
+    if minimum is not None and number < _decimal(minimum, node_id, class_type, input_name):
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} is below its schema minimum"
+        )
+    if maximum is not None and number > _decimal(maximum, node_id, class_type, input_name):
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} exceeds its schema maximum"
+        )
+    step = metadata.get("step")
+    if step is None:
+        return
+    step_value = _decimal(step, node_id, class_type, input_name)
+    if step_value <= 0:
+        return
+    origin = _decimal(minimum, node_id, class_type, input_name) if minimum is not None else Decimal(0)
+    if (number - origin) % step_value != 0:
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} does not match its schema step"
+        )
+
+
+def _decimal(value: object, node_id: str, class_type: object, input_name: str) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} has malformed numeric schema"
+        )
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation as error:
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} has malformed numeric schema"
+        ) from error
+    if not number.is_finite():
+        raise WorkflowError(
+            f"node {node_id} class_type {class_type} input {input_name} has malformed numeric schema"
+        )
+    return number
 
 
 def _ordered_lora_slots(

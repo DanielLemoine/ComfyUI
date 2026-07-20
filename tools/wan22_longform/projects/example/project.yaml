@@ -22,7 +22,6 @@ render:
   review_mp4_codec: h264
   master_codec: ffv1
   seed_base: 240719
-  seed_increment: 17
 
 models:
   high: wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
@@ -30,12 +29,18 @@ models:
   vae: wan_2.1_vae.safetensors
   text_encoder: umt5_xxl_fp8_e4m3fn_scaled.safetensors
 
-# Replace this portable inventory with model_roots for live disk discovery if desired.
+# Portable declaration for preflight reporting only. Render/validate require the
+# role-correct model_roots below and verify the files exist before submission.
 model_files:
   - wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
   - wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
   - wan_2.1_vae.safetensors
   - umt5_xxl_fp8_e4m3fn_scaled.safetensors
+
+model_roots:
+  - D:\AI\models\diffusion_models
+  - D:\AI\models\vae
+  - D:\AI\models\text_encoders
 
 workflow_api: ../../workflows/api/wan22_segment_i2v_native_api.json
 bridge_workflow_api: ../../workflows/api/wan22_bridge_flf2v_native_api.json

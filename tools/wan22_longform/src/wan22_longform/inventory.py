@@ -251,10 +251,7 @@ def _environment(comfy_root: Path, comfy_url: str | None) -> dict[str, object]:
         ),
         "comfy_root": str(comfy_root),
         "comfy_url": comfy_url,
-        "cuda_version": _runtime_command(
-            runtime,
-            ["-c", "import torch; print(torch.version.cuda or 'unavailable')"],
-        ),
+        "cuda_version": _cuda_version(runtime),
         "ffmpeg": _command_output(["ffmpeg", "-version"]),
         "frontend_version": _runtime_command(
             runtime,
@@ -312,6 +309,23 @@ def _runtime_command(runtime: Path | None, arguments: list[str]) -> dict[str, ob
             "detail": "no trustworthy ComfyUI runtime interpreter is available",
         }
     return _command_output([str(runtime), *arguments])
+
+
+def _cuda_version(runtime: Path | None) -> dict[str, object]:
+    evidence = _runtime_command(
+        runtime,
+        ["-c", "import torch; print(torch.version.cuda or 'unavailable')"],
+    )
+    if evidence.get("available") is not True:
+        return evidence
+    detail = evidence.get("detail")
+    normalized = detail.strip() if isinstance(detail, str) else ""
+    if not normalized or normalized.casefold() == "unavailable":
+        return {
+            "available": False,
+            "detail": normalized or "CUDA version probe returned empty output",
+        }
+    return evidence
 
 
 def _command_output(command: list[str]) -> dict[str, object]:

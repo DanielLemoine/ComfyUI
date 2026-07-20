@@ -727,6 +727,40 @@ class CollectPreflightTests(unittest.TestCase):
             )
 
     @patch("wan22_longform.inventory.subprocess.run")
+    def test_cpu_only_runtime_cuda_sentinel_blocks_ready(self, run) -> None:
+        def command_result(command, **_kwargs):
+            if any("torch.version.cuda" in str(part) for part in command):
+                return CompletedProcess(command, 0, "unavailable\n", "")
+            return CompletedProcess(command, 0, "fixture output", "")
+
+        run.side_effect = command_result
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            comfy_root, project, i2v_hash, flf_hash = self._ready_fixture(temporary_path)
+
+            with patch(
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256", i2v_hash
+            ), patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256", flf_hash
+            ):
+                result = collect_preflight(
+                    comfy_root=comfy_root,
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                    project=project,
+                )
+
+            environment = json.loads(
+                (result.artifact_dir / "environment.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(environment["cuda_version"]["available"])
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertTrue(
+                any("cuda_version" in blocker for blocker in result.blockers)
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
     def test_unavailable_custom_node_revision_blocks_ready(self, run) -> None:
         def command_result(command, **_kwargs):
             if "custom_nodes" in " ".join(str(part) for part in command):

@@ -176,3 +176,26 @@ Static validation:
 - `git diff --check`
 
 All follow-up work remained local and static/unit-test only. No GPU, ComfyUI runtime, network service, or untracked runtime artifact was used or modified.
+
+### CUDA sentinel follow-up
+
+The final Important re-review found that the CUDA probe's literal `unavailable` output still had exit code 0 and was therefore represented as available evidence. CUDA evidence now fails closed when the probe returns empty output or the case-insensitive `unavailable` sentinel; the existing runtime evidence blocker then prevents READY.
+
+TDD RED:
+
+```text
+Ran 30 inventory tests in 0.982s
+FAILED (failures=1)
+```
+
+Final GREEN:
+
+```text
+Ran 30 inventory tests in 1.184s
+OK
+
+Ran 208 tests in 21.856s
+OK (skipped=1)
+```
+
+No reviewed-boundary, runtime-execution, or artifact behavior changed.

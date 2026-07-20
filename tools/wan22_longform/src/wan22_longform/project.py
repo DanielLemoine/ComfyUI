@@ -702,6 +702,7 @@ def _verify_assembly_output_evidence(
     decision_payload = _read_json(Path(boundary["path"]))
     if decision_payload.get("boundary_approvals", []) != plan.get("boundary_approvals", []):
         raise ProjectStateError("assembly boundary approvals do not match the serialized plan")
+    _verify_boundary_decision_log(plan, decision_payload)
     for name in ("review_mp4", "edit_master_ffv1", "edit_master_prores"):
         target = targets.get(name)
         output = final_outputs.get(name)
@@ -783,6 +784,27 @@ def _verify_boundary_approval_evidence(
             raise ProjectStateError("assembly plan boundary approval diagnostic hashes do not match")
         if evidence.get("left_source") != inputs[index - 1] or evidence.get("right_source") != inputs[index]:
             raise ProjectStateError("assembly plan boundary approval sources do not match the record")
+
+
+def _verify_boundary_decision_log(
+    plan: Mapping[str, Any], decision_payload: Mapping[str, Any]
+) -> None:
+    approvals = plan.get("boundary_approvals", [])
+    decisions = decision_payload.get("decisions")
+    planned_decisions = plan.get("boundary_decisions")
+    if not isinstance(approvals, list) or not isinstance(decisions, list) or not isinstance(
+        planned_decisions, list
+    ):
+        raise ProjectStateError("assembly boundary decision evidence is invalid")
+    for approval in approvals:
+        if not isinstance(approval, Mapping) or not isinstance(
+            index := approval.get("boundary_index"), int
+        ) or isinstance(index, bool):
+            raise ProjectStateError("assembly boundary approval index is invalid")
+        if index < 1 or index > len(decisions) or index > len(planned_decisions):
+            raise ProjectStateError("assembly boundary decision approval index is out of range")
+        if decisions[index - 1] != planned_decisions[index - 1]:
+            raise ProjectStateError("assembly boundary decision does not match the serialized plan")
 
 
 def _verify_hashed_path(entry: Any, label: str) -> None:

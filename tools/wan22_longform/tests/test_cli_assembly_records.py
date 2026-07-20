@@ -186,6 +186,73 @@ class AssemblyRecordCliTests(unittest.TestCase):
                 "integrity_failed",
             )
 
+    def test_status_and_resume_reject_tampered_boundary_decision_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001", "S010_C002"))
+            project = load_project(manifest)
+            self._accepted_attempt(project, "S010_C001")
+            self._accepted_attempt(project, "S010_C002")
+            reviewed = BoundaryDecision("left", "right", 3, 0, True, "requires review")
+
+            with self._assembly_execution_patch(), patch(
+                "wan22_longform.cli.compare_boundary", return_value=reviewed
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "assemble-project",
+                            str(manifest),
+                            "--approve-no-trim-boundary",
+                            "1",
+                            "Reviewed at 200%.",
+                        ]
+                    ),
+                    0,
+                )
+
+            record = assembly_records(project)[0]
+            decision_log_path = record.path / "boundary-decisions.json"
+            decision_log = json.loads(decision_log_path.read_text(encoding="utf-8"))
+            plan = json.loads((record.path / "assembly-plan.json").read_text(encoding="utf-8"))
+            decision_log["decisions"] = [plan["boundary_decisions"][0]]
+            decision_log["decisions"][0]["left_hash"] = "forged-left-hash"
+            decision_log_path.write_text(
+                json.dumps(decision_log, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            outputs_path = record.path / "outputs.json"
+            outputs = json.loads(outputs_path.read_text(encoding="utf-8"))
+            outputs["boundary_decisions"]["sha256"] = hashlib.sha256(
+                decision_log_path.read_bytes()
+            ).hexdigest()
+            outputs_path.write_text(json.dumps(outputs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            outputs_hash = hashlib.sha256(outputs_path.read_bytes()).hexdigest()
+            for decision_path in sorted((record.path / "decisions").glob("*.json")):
+                decision = json.loads(decision_path.read_text(encoding="utf-8"))
+                evidence = decision.get("details", {}).get("evidence")
+                if evidence is not None and "boundary_decisions" in evidence:
+                    evidence["boundary_decisions"] = outputs["boundary_decisions"]
+                    evidence["outputs_json"]["sha256"] = outputs_hash
+                    decision_path.write_text(
+                        json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                    )
+
+            status_stdout = io.StringIO()
+            with contextlib.redirect_stdout(status_stdout):
+                self.assertEqual(cli.main(["status", str(manifest)]), 0)
+            self.assertEqual(
+                json.loads(status_stdout.getvalue())["assembly_records"][0]["state"],
+                "integrity_failed",
+            )
+
+            resume_stdout = io.StringIO()
+            with contextlib.redirect_stdout(resume_stdout):
+                self.assertEqual(cli.main(["resume", str(manifest)]), 0)
+            self.assertEqual(
+                json.loads(resume_stdout.getvalue())["assembly_records"][0]["state"],
+                "integrity_failed",
+            )
+
     def test_failed_assembly_is_preserved_and_a_new_request_gets_a_new_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

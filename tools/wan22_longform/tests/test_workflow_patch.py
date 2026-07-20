@@ -555,9 +555,12 @@ class WorkflowPatchTests(unittest.TestCase):
         source = nodes["KEYFRAME_SOURCE_IMAGE"]
         prompt = nodes["END_KEYFRAME_EDIT_INSTRUCTION"]
         author = nodes["QWEN_EDIT_PLANNED_END_KEYFRAME"]
+        resize = nodes["OUTPUT_RESIZE_576X1024"]
         saver = nodes["SAVE_PLANNED_END_KEYFRAME"]
         self.assertEqual(source["type"], "LoadImage")
         self.assertEqual(prompt["type"], "PrimitiveStringMultiline")
+        self.assertEqual(resize["type"], "ImageScale")
+        self.assertEqual(resize["widgets_values"], ["lanczos", 576, 1024, "center"])
         self.assertEqual(saver["type"], "SaveImage")
         self.assertIn("Preserve the exact same adult woman's facial identity", prompt["widgets_values"][0])
         self.assertEqual(saver["widgets_values"][0], "wan22_longform/flf_planned_end")
@@ -573,7 +576,11 @@ class WorkflowPatchTests(unittest.TestCase):
         )
         self.assertEqual(
             links[author["outputs"][0]["links"][0]][1:6],
-            [author["id"], 0, saver["id"], 0, "IMAGE"],
+            [author["id"], 0, resize["id"], 0, "IMAGE"],
+        )
+        self.assertEqual(
+            links[resize["outputs"][0]["links"][0]][1:6],
+            [resize["id"], 0, saver["id"], 0, "IMAGE"],
         )
 
         subgraph = workflow["definitions"]["subgraphs"][0]
@@ -595,9 +602,14 @@ class WorkflowPatchTests(unittest.TestCase):
             "source and author nodes must not overlap",
         )
         self.assertGreaterEqual(
-            saver["pos"][0] - (author["pos"][0] + author["size"][0]),
+            resize["pos"][0] - (author["pos"][0] + author["size"][0]),
             24,
-            "author and saver nodes must not overlap",
+            "author and output-resize nodes must not overlap",
+        )
+        self.assertGreaterEqual(
+            saver["pos"][0] - (resize["pos"][0] + resize["size"][0]),
+            24,
+            "output-resize and saver nodes must not overlap",
         )
 
 

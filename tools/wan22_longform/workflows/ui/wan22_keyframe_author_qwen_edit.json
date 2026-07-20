@@ -1,14 +1,14 @@
 {
   "id": "91f6bbe2-ed41-4fd6-bac7-71d5b5864ecb",
   "revision": 1,
-  "last_node_id": 435,
-  "last_link_id": 705,
+  "last_node_id": 500,
+  "last_link_id": 706,
   "nodes": [
     {
       "id": 60,
       "type": "SaveImage",
       "pos": [
-        520,
+        870,
         -160
       ],
       "size": [
@@ -22,7 +22,7 @@
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 696
+          "link": 706
         }
       ],
       "outputs": [],
@@ -225,6 +225,82 @@
       },
       "widgets_values": [],
       "title": "QWEN_EDIT_PLANNED_END_KEYFRAME"
+    },
+    {
+      "id": 500,
+      "type": "ImageScale",
+      "pos": [
+        520,
+        -160
+      ],
+      "size": [
+        320,
+        180
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 696
+        },
+        {
+          "name": "upscale_method",
+          "type": "COMBO",
+          "widget": {
+            "name": "upscale_method"
+          },
+          "link": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": null
+        },
+        {
+          "name": "crop",
+          "type": "COMBO",
+          "widget": {
+            "name": "crop"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            706
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageScale",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.48",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": [
+        "lanczos",
+        576,
+        1024,
+        "center"
+      ],
+      "title": "OUTPUT_RESIZE_576X1024"
     }
   ],
   "links": [
@@ -240,7 +316,7 @@
       696,
       433,
       0,
-      60,
+      500,
       0,
       "IMAGE"
     ],
@@ -251,6 +327,14 @@
       433,
       3,
       "STRING"
+    ],
+    [
+      706,
+      500,
+      0,
+      60,
+      0,
+      "IMAGE"
     ]
   ],
   "groups": [],

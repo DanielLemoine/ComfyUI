@@ -612,6 +612,49 @@ class WorkflowPatchTests(unittest.TestCase):
             "output-resize and saver nodes must not overlap",
         )
 
+    def test_qwen_next_scene_keyframe_author_routes_progression_before_lightning(self) -> None:
+        workflow_path = (
+            PROJECT_DIR
+            / "workflows"
+            / "ui"
+            / "wan22_keyframe_author_qwen_next_scene.json"
+        )
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        nodes = {node["title"]: node for node in workflow["nodes"]}
+        self.assertEqual(nodes["OUTPUT_RESIZE_576X1024"]["widgets_values"][1:3], [576, 1024])
+
+        subgraph = workflow["definitions"]["subgraphs"][0]
+        subgraph_nodes = {
+            node["title"]: node for node in subgraph["nodes"] if "title" in node
+        }
+        progression = subgraph_nodes["NEXT_SCENE_PROGRESSION_LORA"]
+        lightning = subgraph_nodes["QWEN_EDIT_LIGHTNING_LORA"]
+        base_model = subgraph_nodes["QWEN_EDIT_BASE_MODEL"]
+        model_switch = subgraph_nodes["Switch (Model)"]
+        self.assertEqual(progression["type"], "LoraLoaderModelOnly")
+        self.assertEqual(
+            progression["widgets_values"],
+            ["qwen_image_edit\\next-scene_lora-v2-3000.safetensors", 0.7],
+        )
+
+        links = {link["id"]: link for link in subgraph["links"]}
+        base_to_progression = links[progression["inputs"][0]["link"]]
+        self.assertEqual(
+            [base_to_progression["origin_id"], base_to_progression["target_id"]],
+            [base_model["id"], progression["id"]],
+        )
+        progression_to_lightning = links[lightning["inputs"][0]["link"]]
+        self.assertEqual(
+            [progression_to_lightning["origin_id"], progression_to_lightning["target_id"]],
+            [progression["id"], lightning["id"]],
+        )
+        false_input = model_switch["inputs"][0]
+        progression_to_switch = links[false_input["link"]]
+        self.assertEqual(
+            [progression_to_switch["origin_id"], progression_to_switch["target_id"]],
+            [progression["id"], model_switch["id"]],
+        )
+
 
     def test_quality_graphs_use_their_verified_normal_template_baselines(self) -> None:
         for fixture_name, high_sampler, low_sampler, shift, cfg in (

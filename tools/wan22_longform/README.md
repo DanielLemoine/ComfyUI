@@ -6,6 +6,7 @@ This package supplies two native ComfyUI API/UI render workflows, two keyframe u
 - `wan22_bridge_flf2v_native`: a native first/last-frame bridge with two explicit endpoint images.
 - `wan22_extract_last_frame`: saves the exact final frame from a completed MP4 for use as a later shot's start image.
 - `wan22_keyframe_author_qwen_edit`: uses the installed Qwen Image Edit model to author a planned FLF end keyframe from a supplied source image.
+- `wan22_keyframe_author_qwen_next_scene`: adds a Qwen Edit scene-progression adapter for planned endpoints that must advance subject action and camera position.
 - `wan22_six_segment_sequence_native`: six optionally rendered or reused I2V sections with one assembled final MP4.
 - `wan22_longform.cli`: immutable attempts, QC evidence, accepted-only assembly records, and copy-only workflow deployment.
 
@@ -83,6 +84,13 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
   by default (4 steps, CFG 1); turn `Enable Lightning LoRA` off inside the
   Qwen subgraph for the normal 20-step, CFG 4 route. Do not load the Wan-only
   `sgfw` video LoRA into this image-edit graph.
+- **`wan22_keyframe_author_qwen_next_scene`**: use this variant when the
+  endpoint must visibly advance along the same scene while retaining the
+  subject's apparent camera size. It applies the installed Qwen Edit Next Scene
+  LoRA at `0.7` before the optional Lightning accelerator. Start the edit prompt
+  with `Next Scene:`. The visible `OUTPUT_RESIZE_576X1024` node saves a
+  576x1024 endpoint by default; change its width and height directly when
+  needed.
 
 An FLF end image is a planned keyframe, not something that can be extracted
 from an as-yet-unrendered clip. Create or edit that future endpoint first, then

@@ -15,6 +15,13 @@ The clean base contains no `LoraLoaderModelOnly` nodes. `build_api_graph(base_gr
 
 Disabled or zero-strength adapters are omitted rather than represented with placeholder filenames.
 
+The manual I2V UI is intentionally the exception: it visibly routes the
+installed `wan22-i2v-a14b\\sgfw\\wan22_i2v_a14b_sgfw.safetensors` adapter from
+`MODEL_HIGH` through `LORA_IDENTITY_HIGH` and from `MODEL_LOW` through
+`LORA_IDENTITY_LOW` before the two sampling wrappers. Both nodes start at
+strength `0.8` and can be set to `0` together for a manual neutral run. This
+does not change the clean API graph or the runner's manifest policy.
+
 ## Quality baseline
 
 Both quality graphs use the verified normal 20-step two-stage topology: high sampling uses Euler/simple, steps 0–10, and leftover noise enabled; low sampling adds no fresh noise and uses steps 10–20 with leftover noise disabled. The I2V baseline remains faithful to its installed official normal branch (`ModelSamplingSD3` shift `5`, CFG `3.5`); the official FLF baseline uses shift `8`, CFG `4`. The 4-step LightX2V lane remains preview-only and is not present in either quality graph.

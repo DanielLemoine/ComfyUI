@@ -282,8 +282,8 @@
         "version": 1,
         "state": {
           "lastGroupId": 19,
-          "lastNodeId": 164,
-          "lastLinkId": 292,
+          "lastNodeId": 166,
+          "lastLinkId": 296,
           "lastRerouteId": 0
         },
         "revision": 0,
@@ -685,7 +685,7 @@
                 "localized_name": "model",
                 "name": "model",
                 "type": "MODEL",
-                "link": 216
+                "link": 295
               }
             ],
             "outputs": [
@@ -1154,6 +1154,74 @@
             "title": "MODEL_LOW"
           },
           {
+            "id": 166,
+            "type": "LoraLoaderModelOnly",
+            "pos": [
+              500,
+              20
+            ],
+            "size": [
+              400,
+              140
+            ],
+            "flags": {},
+            "order": 22,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "model",
+                "name": "model",
+                "type": "MODEL",
+                "link": 220
+              },
+              {
+                "localized_name": "lora_name",
+                "name": "lora_name",
+                "type": "COMBO",
+                "widget": {
+                  "name": "lora_name"
+                },
+                "link": null
+              },
+              {
+                "localized_name": "strength_model",
+                "name": "strength_model",
+                "type": "FLOAT",
+                "widget": {
+                  "name": "strength_model"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "MODEL",
+                "name": "MODEL",
+                "type": "MODEL",
+                "slot_index": 0,
+                "links": [
+                  296
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "LoraLoaderModelOnly",
+              "cnr_id": "comfy-core",
+              "ver": "0.3.49",
+              "models": [
+                {
+                  "name": "wan22-i2v-a14b\\sgfw\\wan22_i2v_a14b_sgfw.safetensors",
+                  "directory": "loras"
+                }
+              ]
+            },
+            "widgets_values": [
+              "wan22-i2v-a14b\\sgfw\\wan22_i2v_a14b_sgfw.safetensors",
+              0.8
+            ],
+            "title": "LORA_IDENTITY_LOW"
+          },
+          {
             "id": 95,
             "type": "UNETLoader",
             "pos": [
@@ -1218,6 +1286,74 @@
               "default"
             ],
             "title": "MODEL_HIGH"
+          },
+          {
+            "id": 165,
+            "type": "LoraLoaderModelOnly",
+            "pos": [
+              500,
+              -220
+            ],
+            "size": [
+              400,
+              140
+            ],
+            "flags": {},
+            "order": 23,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "model",
+                "name": "model",
+                "type": "MODEL",
+                "link": 216
+              },
+              {
+                "localized_name": "lora_name",
+                "name": "lora_name",
+                "type": "COMBO",
+                "widget": {
+                  "name": "lora_name"
+                },
+                "link": null
+              },
+              {
+                "localized_name": "strength_model",
+                "name": "strength_model",
+                "type": "FLOAT",
+                "widget": {
+                  "name": "strength_model"
+                },
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "MODEL",
+                "name": "MODEL",
+                "type": "MODEL",
+                "slot_index": 0,
+                "links": [
+                  295
+                ]
+              }
+            ],
+            "properties": {
+              "Node name for S&R": "LoraLoaderModelOnly",
+              "cnr_id": "comfy-core",
+              "ver": "0.3.49",
+              "models": [
+                {
+                  "name": "wan22-i2v-a14b\\sgfw\\wan22_i2v_a14b_sgfw.safetensors",
+                  "directory": "loras"
+                }
+              ]
+            },
+            "widgets_values": [
+              "wan22-i2v-a14b\\sgfw\\wan22_i2v_a14b_sgfw.safetensors",
+              0.8
+            ],
+            "title": "LORA_IDENTITY_HIGH"
           },
           {
             "id": 127,
@@ -1572,7 +1708,7 @@
                 "localized_name": "model",
                 "name": "model",
                 "type": "MODEL",
-                "link": 220
+                "link": 296
               }
             ],
             "outputs": [
@@ -1858,6 +1994,14 @@
             "id": 220,
             "origin_id": 96,
             "origin_slot": 0,
+            "target_id": 166,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 296,
+            "origin_id": 166,
+            "origin_slot": 0,
             "target_id": 103,
             "target_slot": 0,
             "type": "MODEL"
@@ -1953,6 +2097,14 @@
           {
             "id": 216,
             "origin_id": 95,
+            "origin_slot": 0,
+            "target_id": 165,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 295,
+            "origin_id": 165,
             "origin_slot": 0,
             "target_id": 104,
             "target_slot": 0,

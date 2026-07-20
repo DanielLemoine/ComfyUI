@@ -761,9 +761,25 @@ class WorkflowPatchTests(unittest.TestCase):
         self.assertTrue(has_link(163, 1, 98, 7))
         self.assertTrue(has_link(162, 0, 94, 2))
 
+        identity_lora = "wan22-i2v-a14b\\sgfw\\wan22_i2v_a14b_sgfw.safetensors"
+        identity_nodes = {
+            node["title"]: node
+            for node in subgraph["nodes"]
+            if node["type"] == "LoraLoaderModelOnly"
+        }
+        self.assertEqual(
+            set(identity_nodes),
+            {"LORA_IDENTITY_HIGH", "LORA_IDENTITY_LOW"},
+        )
+        for title in ("LORA_IDENTITY_HIGH", "LORA_IDENTITY_LOW"):
+            with self.subTest(title=title):
+                self.assertEqual(identity_nodes[title]["widgets_values"], [identity_lora, 0.8])
+
         normal_routes = (
-            (95, 104, 0),
-            (96, 103, 0),
+            (95, 165, 0),
+            (165, 104, 0),
+            (96, 166, 0),
+            (166, 103, 0),
             (128, 86, 5),
             (126, 86, 6),
             (127, 86, 7),
@@ -782,7 +798,6 @@ class WorkflowPatchTests(unittest.TestCase):
 
         forbidden_types = {
             "ComfySwitchNode",
-            "LoraLoaderModelOnly",
             "Note",
             "MarkdownNote",
         }

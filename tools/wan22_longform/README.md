@@ -55,8 +55,11 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
 - **`wan22_segment_i2v_native`**: choose/upload the opening frame in
   `START_IMAGE`, write the action in `PROMPT_POSITIVE`, and leave the verified
   model selections at their defaults unless changing them deliberately. The
-  default is 640x640 for 5 seconds. Click **Run**; the MP4 is saved below
-  `D:\AI\outputs\wan22_longform\segment_`.
+  visible `LORA_IDENTITY_HIGH` and `LORA_IDENTITY_LOW` nodes use the installed
+  `sgfw` LoRA at `0.8`; include `sgfw` in the positive prompt and keep both
+  strengths equal. Set both strengths to `0` to disable the manual identity
+  adapter. The default is 640x640 for 5 seconds. Click **Run**; the MP4 is
+  saved below `D:\AI\outputs\wan22_longform\segment_`.
 - **`wan22_bridge_flf2v_native`**: choose the start and end frames in
   `BRIDGE_FIRST_IMAGE` and `BRIDGE_LAST_IMAGE`, set `PROMPT_POSITIVE`, then
   click **Run**. Its default is 640x640 and 81 frames; the MP4 is saved below
@@ -166,7 +169,13 @@ The low-level `assemble` command accepts arbitrary files only for diagnostics an
 
 Use the presets in sequence: `P0_IDENTITY_BASELINE`, `P1_BASE_CONTROL`, `P2_BALANCED_MYSTIC`, `P3_MYSTIC_MOTION`, then `P4_GENERAL_FALLBACK`. Do not jump to a stronger adapter merely to conceal a continuity or prompt problem. The policy layer keeps high-/low-noise LoRA routing and mutually exclusive permissiveness adapters checked.
 
-Identity LoRA remains pending until a real local file is installed and named in `loras.identity`. Use `single_both` only when one verified identity LoRA is appropriate for both experts, or `split` when verified high/low files are available. Never claim identity lock while `mode: none` is active.
+The manual I2V canvas includes the locally installed `sgfw` identity LoRA on
+both model branches. Its `0.8` strength is a starting point, not a fidelity
+guarantee; inspect the generated subject and adjust both branches together.
+The runner remains manifest-controlled: use `single_both` only when one
+verified identity LoRA is appropriate for both experts, or `split` when
+verified high/low files are available. Never claim identity lock while a
+runner manifest has `mode: none` active.
 
 For cinematic continuity, keep one clear camera action per segment, preserve clothing/setting details in the positive prompt, and change only one control dimension per retry. Treat a first/last-frame bridge as a transition tool, not a replacement for reviewing the actual segment tail and next-segment head.
 

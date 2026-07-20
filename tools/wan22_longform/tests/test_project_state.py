@@ -28,6 +28,7 @@ from wan22_longform.project import (  # noqa: E402
     needs_render,
     transition_assembly_record,
     transition_attempt,
+    recorded_boundary_approvals,
     verify_assembly_record_inputs,
 )
 
@@ -290,6 +291,32 @@ class ProjectStateTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ProjectStateError, "output hash changed"):
             verify_assembly_record_inputs(record)
+
+    def test_assembly_record_treats_missing_boundary_approvals_as_empty(self) -> None:
+        source = self._review_attempt()
+        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
+        rendered = self.root / "accepted-segment.mp4"
+        rendered.write_bytes(b"accepted-segment")
+        record = create_assembly_record(
+            self.project,
+            "project",
+            inputs=(
+                {
+                    "attempt_id": source.attempt_id,
+                    "attempt_path": source.path,
+                    "output": {
+                        "path": rendered,
+                        "sha256": hashlib.sha256(rendered.read_bytes()).hexdigest(),
+                    },
+                    "segment_id": source.segment_id,
+                    "shot_id": source.shot_id,
+                },
+            ),
+            requested={"scope": "project"},
+            now=self.now,
+        )
+
+        self.assertEqual(recorded_boundary_approvals(record), ())
 
     def test_metadata_records_output_provenance_without_overwriting(self) -> None:
         attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)

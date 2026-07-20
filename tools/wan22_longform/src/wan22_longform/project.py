@@ -343,6 +343,7 @@ def create_assembly_record(
     if not isinstance(requested, Mapping):
         raise ProjectStateError("assembly record requested details must be a mapping")
     input_payload = _assembly_inputs_payload(inputs)
+    _requested_boundary_approvals(requested)
     requested_payload = _json_ready(requested)
     created_at = _as_utc(now())
     root = _assembly_records_root(project) / scope
@@ -496,6 +497,18 @@ def verify_assembly_record_inputs(record: AssemblyRecord) -> tuple[dict[str, Any
     return tuple(_assembly_inputs_payload(inputs))
 
 
+def recorded_boundary_approvals(record: AssemblyRecord) -> tuple[dict[str, Any], ...]:
+    """Read canonical reviewed-boundary approvals from an immutable assembly record."""
+    persisted = load_assembly_record(record.path)
+    if persisted.assembly_id != record.assembly_id:
+        raise ProjectStateError("assembly record approval verification identity does not match")
+    payload = _read_json(record.path / "assembly.json")
+    requested = payload.get("requested")
+    if not isinstance(requested, Mapping):
+        raise ProjectStateError("assembly record requested details must be a mapping")
+    return _requested_boundary_approvals(requested)
+
+
 def verify_assembly_record_integrity(record: AssemblyRecord) -> AssemblyRecordIntegrity:
     """Rehash persisted assembly evidence without changing a lifecycle record."""
     persisted, decision_paths = _load_assembly_record(record.path)
@@ -602,6 +615,32 @@ def _assembly_inputs_payload(
     return payload
 
 
+def _requested_boundary_approvals(requested: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    raw_approvals = requested.get("boundary_approvals", [])
+    if not isinstance(raw_approvals, list):
+        raise ProjectStateError("assembly requested boundary approvals must be a list")
+    approvals: list[dict[str, Any]] = []
+    indexes: set[int] = set()
+    for raw_approval in raw_approvals:
+        if not isinstance(raw_approval, Mapping):
+            raise ProjectStateError("assembly requested boundary approval must be a mapping")
+        boundary_index = raw_approval.get("boundary_index")
+        note = raw_approval.get("note")
+        if not isinstance(boundary_index, int) or isinstance(boundary_index, bool) or boundary_index < 1:
+            raise ProjectStateError("assembly requested boundary approval index must be positive")
+        if not isinstance(note, str) or not note or note != note.strip():
+            raise ProjectStateError(
+                "assembly requested boundary approval note must be stripped and non-empty"
+            )
+        if boundary_index in indexes:
+            raise ProjectStateError("assembly requested boundary approvals must be unique")
+        indexes.add(boundary_index)
+        approvals.append({"boundary_index": boundary_index, "note": note})
+    if [approval["boundary_index"] for approval in approvals] != sorted(indexes):
+        raise ProjectStateError("assembly requested boundary approvals must be sorted")
+    return tuple(approvals)
+
+
 def _capture_integrity_failure(
     failures: list[str],
     label: str,
@@ -631,6 +670,8 @@ def _verify_assembly_start_evidence(
     plan = _read_json(record.path / "assembly-plan.json")
     if not isinstance(plan.get("targets"), Mapping):
         raise ProjectStateError("assembly plan has no target mapping")
+    record_payload = _read_json(record.path / "assembly.json")
+    _verify_boundary_approval_evidence(record_payload, plan)
 
 
 def _verify_assembly_output_evidence(
@@ -658,6 +699,9 @@ def _verify_assembly_output_evidence(
         boundary["path"]
     ).resolve():
         raise ProjectStateError("assembly boundary decisions do not match the serialized plan")
+    decision_payload = _read_json(Path(boundary["path"]))
+    if decision_payload.get("boundary_approvals", []) != plan.get("boundary_approvals", []):
+        raise ProjectStateError("assembly boundary approvals do not match the serialized plan")
     for name in ("review_mp4", "edit_master_ffv1", "edit_master_prores"):
         target = targets.get(name)
         output = final_outputs.get(name)
@@ -698,6 +742,47 @@ def _verify_record_artifact_evidence(
     _verify_hashed_path(entry, f"assembly {key}")
     if Path(entry["path"]).resolve() != (record.path / filename).resolve():
         raise ProjectStateError(f"assembly {key} must reference {filename}")
+
+
+def _verify_boundary_approval_evidence(
+    record_payload: Mapping[str, Any], plan: Mapping[str, Any]
+) -> None:
+    requested = record_payload.get("requested")
+    if not isinstance(requested, Mapping):
+        raise ProjectStateError("assembly record requested details must be a mapping")
+    approvals = _requested_boundary_approvals(requested)
+    plan_approvals = plan.get("boundary_approvals", [])
+    if not isinstance(plan_approvals, list):
+        raise ProjectStateError("assembly plan boundary approvals must be a list")
+    if len(plan_approvals) != len(approvals):
+        raise ProjectStateError("assembly plan boundary approvals do not match the record")
+    inputs = record_payload.get("inputs")
+    decisions = plan.get("boundary_decisions")
+    if not isinstance(inputs, list) or not isinstance(decisions, list):
+        raise ProjectStateError("assembly plan approval evidence is missing source boundaries")
+    for requested_approval, evidence in zip(approvals, plan_approvals):
+        if not isinstance(evidence, Mapping):
+            raise ProjectStateError("assembly plan boundary approval evidence must be a mapping")
+        index = requested_approval["boundary_index"]
+        if evidence.get("boundary_index") != index or evidence.get("note") != requested_approval["note"]:
+            raise ProjectStateError("assembly plan boundary approval does not match the record")
+        if index > len(decisions) or index >= len(inputs):
+            raise ProjectStateError("assembly plan boundary approval index is out of range")
+        decision = decisions[index - 1]
+        diagnostic = evidence.get("diagnostic")
+        if not isinstance(decision, Mapping) or not isinstance(diagnostic, Mapping):
+            raise ProjectStateError("assembly plan boundary approval diagnostic evidence is invalid")
+        if decision.get("requires_review") is not True or decision.get("trim_right_frames") != 0:
+            raise ProjectStateError(
+                "assembly plan reviewed boundary approval must preserve review and zero trim"
+            )
+        if diagnostic != {
+            "left_hash": decision.get("left_hash"),
+            "right_hash": decision.get("right_hash"),
+        }:
+            raise ProjectStateError("assembly plan boundary approval diagnostic hashes do not match")
+        if evidence.get("left_source") != inputs[index - 1] or evidence.get("right_source") != inputs[index]:
+            raise ProjectStateError("assembly plan boundary approval sources do not match the record")
 
 
 def _verify_hashed_path(entry: Any, label: str) -> None:

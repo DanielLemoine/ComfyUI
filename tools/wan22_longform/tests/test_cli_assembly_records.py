@@ -74,6 +74,118 @@ class AssemblyRecordCliTests(unittest.TestCase):
             self.assertTrue((records[0].path / "outputs.json").is_file())
             self.assertTrue((root / "deliverables" / "review.mp4").is_file())
 
+    def test_approved_no_trim_boundary_binds_the_record_plan_and_decision_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001", "S010_C002"))
+            project = load_project(manifest)
+            self._accepted_attempt(project, "S010_C001")
+            self._accepted_attempt(project, "S010_C002")
+            reviewed = BoundaryDecision(
+                "diagnostic-left",
+                "diagnostic-right",
+                3,
+                0,
+                True,
+                "perceptually similar boundary frame requires review",
+            )
+
+            with self._assembly_execution_patch(), patch(
+                "wan22_longform.cli.compare_boundary", return_value=reviewed
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "assemble-project",
+                            str(manifest),
+                            "--approve-no-trim-boundary",
+                            "1",
+                            "  Reviewed at 200%; retain both frames.  ",
+                        ]
+                    ),
+                    0,
+                )
+
+            record = assembly_records(project)[0]
+            assembly = json.loads((record.path / "assembly.json").read_text(encoding="utf-8"))
+            plan = json.loads((record.path / "assembly-plan.json").read_text(encoding="utf-8"))
+            decisions = json.loads((record.path / "boundary-decisions.json").read_text(encoding="utf-8"))
+            expected = {
+                "boundary_index": 1,
+                "note": "Reviewed at 200%; retain both frames.",
+            }
+            self.assertEqual(assembly["requested"]["boundary_approvals"], [expected])
+            self.assertEqual(plan["boundary_approvals"][0]["boundary_index"], expected["boundary_index"])
+            self.assertEqual(plan["boundary_approvals"][0]["note"], expected["note"])
+            self.assertEqual(plan["boundary_approvals"][0]["diagnostic"], {
+                "left_hash": "diagnostic-left",
+                "right_hash": "diagnostic-right",
+            })
+            self.assertEqual(
+                plan["boundary_approvals"][0]["left_source"], assembly["inputs"][0]
+            )
+            self.assertEqual(
+                plan["boundary_approvals"][0]["right_source"], assembly["inputs"][1]
+            )
+            self.assertTrue(plan["boundary_decisions"][0]["requires_review"])
+            self.assertEqual(decisions["boundary_approvals"], plan["boundary_approvals"])
+
+    def test_status_and_resume_reject_tampered_plan_boundary_approval_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001", "S010_C002"))
+            project = load_project(manifest)
+            self._accepted_attempt(project, "S010_C001")
+            self._accepted_attempt(project, "S010_C002")
+            reviewed = BoundaryDecision("left", "right", 3, 0, True, "requires review")
+
+            with self._assembly_execution_patch(), patch(
+                "wan22_longform.cli.compare_boundary", return_value=reviewed
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "assemble-project",
+                            str(manifest),
+                            "--approve-no-trim-boundary",
+                            "1",
+                            "Reviewed at 200%.",
+                        ]
+                    ),
+                    0,
+                )
+
+            record = assembly_records(project)[0]
+            plan_path = record.path / "assembly-plan.json"
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            plan["boundary_approvals"][0]["note"] = "Forged approval note"
+            plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            plan_hash = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            for decision_path in sorted((record.path / "decisions").glob("*.json")):
+                decision = json.loads(decision_path.read_text(encoding="utf-8"))
+                evidence = decision.get("details", {}).get("evidence")
+                if evidence is not None:
+                    evidence["assembly_plan"]["sha256"] = plan_hash
+                    decision_path.write_text(
+                        json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                    )
+
+            status_stdout = io.StringIO()
+            with contextlib.redirect_stdout(status_stdout):
+                self.assertEqual(cli.main(["status", str(manifest)]), 0)
+            self.assertEqual(
+                json.loads(status_stdout.getvalue())["assembly_records"][0]["state"],
+                "integrity_failed",
+            )
+
+            resume_stdout = io.StringIO()
+            with contextlib.redirect_stdout(resume_stdout):
+                self.assertEqual(cli.main(["resume", str(manifest)]), 0)
+            self.assertEqual(
+                json.loads(resume_stdout.getvalue())["assembly_records"][0]["state"],
+                "integrity_failed",
+            )
+
     def test_failed_assembly_is_preserved_and_a_new_request_gets_a_new_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

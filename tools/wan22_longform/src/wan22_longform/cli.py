@@ -3,10 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .assembly import AssemblyTargets, compare_boundary, execute_assembly_plan, plan_assembly
+from .assembly import (
+    AssemblyTargets,
+    BoundaryApproval,
+    compare_boundary,
+    execute_assembly_plan,
+    plan_assembly,
+)
 from .comfy_client import ComfyClient
 from .config import ProjectConfig, load_project, validate_project_contract
 from .ffmpeg import probe_media
@@ -23,6 +30,7 @@ from .project import (
     inspect_assembly_records,
     load_assembly_record,
     load_attempt,
+    recorded_boundary_approvals,
     transition_assembly_record,
     transition_attempt,
     verify_assembly_record_integrity,
@@ -120,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     assemble_shot.add_argument("shot_id")
     assemble_shot.add_argument("--output-dir", type=Path)
     _add_assembly_options(assemble_shot)
+    _add_reviewed_boundary_approval_option(assemble_shot)
     assemble_shot.set_defaults(handler=_handle_assemble_shot)
 
     assemble_project = subparsers.add_parser(
@@ -128,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     assemble_project.add_argument("project", type=Path)
     assemble_project.add_argument("--output-dir", type=Path)
     _add_assembly_options(assemble_project)
+    _add_reviewed_boundary_approval_option(assemble_project)
     assemble_project.set_defaults(handler=_handle_assemble_project)
 
     status = subparsers.add_parser("status", help="show immutable attempt state")
@@ -209,6 +219,17 @@ def _add_assembly_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rife-review-mp4", type=Path)
     parser.add_argument("--request-rife", action="store_true")
     parser.add_argument("--qc-approved", action="store_true")
+
+
+def _add_reviewed_boundary_approval_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--approve-no-trim-boundary",
+        action="append",
+        default=[],
+        dest="boundary_approvals",
+        metavar=("INDEX", "NOTE"),
+        nargs=2,
+    )
 
 
 def _handle_preflight(args: argparse.Namespace) -> int:
@@ -617,11 +638,16 @@ def _assemble_attempts(
     output_policy = _manifest_output_policy(project)
     selected = [_accepted_assembly_input(attempt) for attempt in attempts]
     videos = [video for video, _ in selected]
+    approvals = _canonical_boundary_approvals(args.boundary_approvals, len(videos) - 1)
     record = create_assembly_record(
         project,
         scope,
         inputs=tuple(input_record for _, input_record in selected),
         requested={
+            "boundary_approvals": [
+                {"boundary_index": approval.boundary_index, "note": approval.note}
+                for approval in approvals
+            ],
             "qc_approved": bool(args.qc_approved),
             "manifest_outputs": output_policy,
             "request_rife": bool(args.request_rife),
@@ -742,9 +768,14 @@ def _execute_assembly_record(
     requested_paths = tuple(path.resolve() for path in input_paths)
     if verified_paths != requested_paths:
         raise ValueError("assembly record inputs no longer match the accepted source selection")
+    approvals = tuple(
+        BoundaryApproval(approval["boundary_index"], approval["note"])
+        for approval in recorded_boundary_approvals(record)
+    )
     plan = _plan_assembly(
-        input_paths,
+        verified_paths,
         targets,
+        boundary_approvals=approvals,
         request_rife=request_rife,
         qc_approved=qc_approved,
     )
@@ -752,7 +783,7 @@ def _execute_assembly_record(
     plan_path = write_assembly_record_json(
         record,
         "assembly-plan.json",
-        _assembly_plan_payload(plan, targets, decision_log),
+        _assembly_plan_payload(plan, targets, decision_log, verified),
     )
     start_evidence = {
         "assembly_json": _hashed_assembly_path(record.path / "assembly.json", "assembly record"),
@@ -764,7 +795,18 @@ def _execute_assembly_record(
         "local FFmpeg assembly started",
         details={"evidence": start_evidence},
     )
-    result = execute_assembly_plan(plan, decision_log=decision_log)
+    with tempfile.TemporaryDirectory(prefix="wan22-boundary-decisions-") as temporary:
+        execution_decision_log = Path(temporary) / "boundary-decisions.json"
+        result = execute_assembly_plan(plan, decision_log=execution_decision_log)
+        execution_decisions = json.loads(execution_decision_log.read_text(encoding="utf-8"))
+    write_assembly_record_json(
+        record,
+        "boundary-decisions.json",
+        {
+            **execution_decisions,
+            "boundary_approvals": _boundary_approval_evidence(plan, verified),
+        },
+    )
     outputs_payload = _assembly_outputs_payload(targets, decision_log, result)
     outputs_path = write_assembly_record_json(
         assembling,
@@ -796,6 +838,7 @@ def _plan_assembly(
     input_paths: Sequence[Path],
     targets: AssemblyTargets,
     *,
+    boundary_approvals: tuple[BoundaryApproval, ...] = (),
     request_rife: bool,
     qc_approved: bool,
 ):
@@ -805,6 +848,7 @@ def _plan_assembly(
         inputs,
         targets,
         boundary_decisions=decisions,
+        boundary_approvals=boundary_approvals,
         request_rife=request_rife,
         qc_approved=qc_approved,
     )
@@ -890,9 +934,15 @@ def _mark_assembly_failed(record: AssemblyRecord, error: Exception) -> None:
     )
 
 
-def _assembly_plan_payload(plan: Any, targets: AssemblyTargets, decision_log: Path) -> dict[str, Any]:
+def _assembly_plan_payload(
+    plan: Any,
+    targets: AssemblyTargets,
+    decision_log: Path,
+    inputs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
     return {
         "audio_policy": plan.audio_policy,
+        "boundary_approvals": _boundary_approval_evidence(plan, inputs),
         "boundary_decisions": [dict(decision.__dict__) for decision in plan.boundary_decisions],
         "concat_manifest": str(plan.concat_manifest),
         "decision_log": str(decision_log),
@@ -915,6 +965,51 @@ def _assembly_plan_payload(plan: Any, targets: AssemblyTargets, decision_log: Pa
         "output_fps": str(plan.output_fps),
         "targets": _assembly_targets_payload(targets),
     }
+
+
+def _canonical_boundary_approvals(
+    raw_approvals: Sequence[Sequence[str]], boundary_count: int
+) -> tuple[BoundaryApproval, ...]:
+    approvals: list[BoundaryApproval] = []
+    indexes: set[int] = set()
+    for raw_approval in raw_approvals:
+        if len(raw_approval) != 2:
+            raise ValueError("boundary approval requires an index and note")
+        raw_index, raw_note = raw_approval
+        try:
+            boundary_index = int(raw_index)
+        except (TypeError, ValueError) as error:
+            raise ValueError("boundary approval index must be a positive integer") from error
+        if boundary_index < 1 or boundary_index > boundary_count:
+            raise ValueError("boundary approval index is out of range")
+        if boundary_index in indexes:
+            raise ValueError("duplicate boundary approval")
+        if not isinstance(raw_note, str) or not (note := raw_note.strip()):
+            raise ValueError("boundary approval note must not be blank")
+        indexes.add(boundary_index)
+        approvals.append(BoundaryApproval(boundary_index, note))
+    return tuple(sorted(approvals, key=lambda approval: approval.boundary_index))
+
+
+def _boundary_approval_evidence(
+    plan: Any, inputs: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for approval in plan.boundary_approvals:
+        decision = plan.boundary_decisions[approval.boundary_index - 1]
+        evidence.append(
+            {
+                "boundary_index": approval.boundary_index,
+                "diagnostic": {
+                    "left_hash": decision.left_hash,
+                    "right_hash": decision.right_hash,
+                },
+                "left_source": dict(inputs[approval.boundary_index - 1]),
+                "note": approval.note,
+                "right_source": dict(inputs[approval.boundary_index]),
+            }
+        )
+    return evidence
 
 
 def _assembly_outputs_payload(

@@ -16,7 +16,9 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 from wan22_longform.assembly import (  # noqa: E402
     AssemblyError,
     AssemblyTargets,
+    BoundaryApproval,
     BoundaryDecision,
+    approve_reviewed_boundaries,
     compare_boundary,
     compare_frame_hashes,
     plan_assembly,
@@ -274,6 +276,93 @@ class AssemblyPlanTests(unittest.TestCase):
 
         self.assertFalse(targets.review_mp4.with_suffix(".concat.txt").exists())
 
+    def test_reviewed_near_duplicate_preserves_both_frames_without_clearing_review(self) -> None:
+        left = self._media("left.mp4")
+        right = self._media("right.mp4")
+        similar = compare_frame_hashes("different", "different", perceptual_distance=3)
+        approval = BoundaryApproval(1, "Reviewed at 200%; retain both frames.")
+
+        plan = plan_assembly(
+            [left, right],
+            self._targets(),
+            boundary_decisions=[similar],
+            boundary_approvals=[approval],
+        )
+
+        self.assertEqual(plan.boundary_approvals, (approval,))
+        self.assertTrue(plan.boundary_decisions[0].requires_review)
+        self.assertFalse(any(operation.kind == "trim_boundary" for operation in plan.operations))
+
+    def test_reviewed_boundary_rejects_blank_approval_note(self) -> None:
+        left = self._media("left.mp4")
+        right = self._media("right.mp4")
+        similar = compare_frame_hashes("different", "different", perceptual_distance=3)
+
+        with self.assertRaisesRegex(AssemblyError, "approval note"):
+            approve_reviewed_boundaries([similar], [BoundaryApproval(1, "  ")], [left, right])
+
+    def test_reviewed_boundary_rejects_duplicate_approval(self) -> None:
+        left = self._media("left.mp4")
+        right = self._media("right.mp4")
+        similar = compare_frame_hashes("different", "different", perceptual_distance=3)
+        approvals = [
+            BoundaryApproval(1, "Reviewed once."),
+            BoundaryApproval(1, "Reviewed twice."),
+        ]
+
+        with self.assertRaisesRegex(AssemblyError, "duplicate boundary approval"):
+            approve_reviewed_boundaries([similar], approvals, [left, right])
+
+    def test_reviewed_boundary_rejects_out_of_range_approval(self) -> None:
+        left = self._media("left.mp4")
+        right = self._media("right.mp4")
+        similar = compare_frame_hashes("different", "different", perceptual_distance=3)
+
+        with self.assertRaisesRegex(AssemblyError, "boundary approval index"):
+            approve_reviewed_boundaries(
+                [similar],
+                [BoundaryApproval(2, "Reviewed at 200%.")],
+                [left, right],
+            )
+
+    def test_reviewed_boundary_rejects_alpha_approval(self) -> None:
+        left = self._media("left.mkv", pixel_format="yuva420p")
+        right = self._media("right.mkv", pixel_format="yuva420p")
+        alpha = BoundaryDecision(
+            left_hash="",
+            right_hash="",
+            perceptual_distance=0,
+            trim_right_frames=0,
+            requires_review=True,
+            reason="alpha-capable boundary media requires review in V1",
+        )
+
+        with self.assertRaisesRegex(AssemblyError, "alpha-capable"):
+            approve_reviewed_boundaries(
+                [alpha],
+                [BoundaryApproval(1, "Reviewed alpha boundary.")],
+                [left, right],
+            )
+
+    def test_reviewed_boundary_rejects_nonzero_trim_approval(self) -> None:
+        left = self._media("left.mp4")
+        right = self._media("right.mp4")
+        review_required_trim = BoundaryDecision(
+            left_hash="left",
+            right_hash="right",
+            perceptual_distance=3,
+            trim_right_frames=1,
+            requires_review=True,
+            reason="forged review-required trim",
+        )
+
+        with self.assertRaisesRegex(AssemblyError, "zero-trim"):
+            approve_reviewed_boundaries(
+                [review_required_trim],
+                [BoundaryApproval(1, "Keep the cut.")],
+                [left, right],
+            )
+
     def test_plan_defers_safely_quoted_manifest_creation_until_execution(self) -> None:
         left = self._media("left clip.mp4")
         right = self._media("right clip's.mp4")
@@ -475,6 +564,7 @@ class AssemblyPlanTests(unittest.TestCase):
         *,
         width: int = 1280,
         fps: Fraction = Fraction(16, 1),
+        pixel_format: str = "yuv420p",
     ) -> MediaSpec:
         path = self.root / name
         path.write_bytes(b"fixture")
@@ -484,7 +574,7 @@ class AssemblyPlanTests(unittest.TestCase):
             height=720,
             fps=fps,
             time_base=Fraction(1, fps),
-            pixel_format="yuv420p",
+            pixel_format=pixel_format,
             codec="h264",
             profile="High",
             color_space="bt709",

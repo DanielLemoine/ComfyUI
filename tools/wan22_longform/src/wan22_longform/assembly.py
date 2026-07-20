@@ -31,6 +31,12 @@ class BoundaryDecision:
 
 
 @dataclass(frozen=True)
+class BoundaryApproval:
+    boundary_index: int
+    note: str
+
+
+@dataclass(frozen=True)
 class AssemblyTargets:
     review_mp4: Path
     edit_master_ffv1: Path
@@ -58,6 +64,7 @@ class AssemblyPlan:
     expected_duration: Fraction | None
     output_fps: Fraction
     boundary_decisions: tuple[BoundaryDecision, ...]
+    boundary_approvals: tuple[BoundaryApproval, ...]
     operations: tuple[AssemblyOperation, ...]
 
 
@@ -302,6 +309,7 @@ def plan_assembly(
     output: AssemblyTargets,
     *,
     boundary_decisions: list[BoundaryDecision] | None = None,
+    boundary_approvals: tuple[BoundaryApproval, ...] = (),
     request_rife: bool = False,
     qc_approved: bool = False,
 ) -> AssemblyPlan:
@@ -319,7 +327,14 @@ def plan_assembly(
         if output.rife_review_mp4 is None:
             raise AssemblyError("RIFE requires an explicit review MP4 target")
     _validate_inputs(inputs)
-    trims = _trim_counts(inputs, boundary_decisions)
+    approvals = tuple(boundary_approvals)
+    decisions = boundary_decisions
+    if boundary_decisions is None:
+        if approvals:
+            raise AssemblyError("boundary approvals require boundary decisions")
+    else:
+        decisions = approve_reviewed_boundaries(boundary_decisions, approvals, inputs)
+    trims = _trim_counts(inputs, decisions, approvals)
 
     concat_manifest = output.review_mp4.with_suffix(".concat.txt")
     normalized_inputs, normalization = _normalization_operations(
@@ -409,7 +424,8 @@ def plan_assembly(
         expected_frame_count=None,
         expected_duration=None,
         output_fps=inputs[0].fps,
-        boundary_decisions=tuple(boundary_decisions or ()),
+        boundary_decisions=tuple(decisions or ()),
+        boundary_approvals=approvals,
         operations=tuple(operations),
     )
 
@@ -565,15 +581,21 @@ def _normalization_operations(
 def _trim_counts(
     inputs: list[MediaSpec],
     boundary_decisions: list[BoundaryDecision] | None,
+    boundary_approvals: tuple[BoundaryApproval, ...] = (),
 ) -> tuple[int, ...]:
     if boundary_decisions is None:
         return (0,) * len(inputs)
     if len(boundary_decisions) != len(inputs) - 1:
         raise AssemblyError("assembly requires one boundary decision between each input pair")
+    approved_indexes = {approval.boundary_index for approval in boundary_approvals}
     counts = [0] * len(inputs)
     for index, decision in enumerate(boundary_decisions, start=1):
         if decision.requires_review:
-            raise AssemblyError("boundary decision requires review before automatic assembly")
+            if index not in approved_indexes:
+                raise AssemblyError("boundary decision requires review before automatic assembly")
+            if decision.trim_right_frames != 0:
+                raise AssemblyError("reviewed boundary approvals must preserve a zero-trim boundary")
+            continue
         if decision.trim_right_frames not in {0, 1}:
             raise AssemblyError("boundary decision requires review before automatic assembly")
         if decision.trim_right_frames == 0:
@@ -583,6 +605,35 @@ def _trim_counts(
         _verify_exact_duplicate_boundary(decision, inputs[index - 1], inputs[index])
         counts[index] = decision.trim_right_frames
     return tuple(counts)
+
+
+def approve_reviewed_boundaries(
+    decisions: list[BoundaryDecision],
+    approvals: tuple[BoundaryApproval, ...] | list[BoundaryApproval],
+    inputs: list[MediaSpec],
+) -> list[BoundaryDecision]:
+    approved_indexes: set[int] = set()
+    for approval in approvals:
+        if not isinstance(approval.boundary_index, int) or isinstance(approval.boundary_index, bool):
+            raise AssemblyError("boundary approval index must be a positive integer")
+        if approval.boundary_index < 1 or approval.boundary_index > len(decisions):
+            raise AssemblyError("boundary approval index is out of range")
+        if not isinstance(approval.note, str) or not approval.note.strip():
+            raise AssemblyError("boundary approval note must not be blank")
+        if approval.boundary_index in approved_indexes:
+            raise AssemblyError("duplicate boundary approval")
+
+        decision = decisions[approval.boundary_index - 1]
+        if not decision.requires_review:
+            raise AssemblyError("boundary approval requires a review-required boundary")
+        if decision.trim_right_frames != 0:
+            raise AssemblyError("reviewed boundary approvals must preserve a zero-trim boundary")
+        if _media_has_alpha(inputs[approval.boundary_index - 1]) or _media_has_alpha(
+            inputs[approval.boundary_index]
+        ):
+            raise AssemblyError("alpha-capable boundary media cannot use reviewed boundary approval")
+        approved_indexes.add(approval.boundary_index)
+    return list(decisions)
 
 
 def _trim_operations(

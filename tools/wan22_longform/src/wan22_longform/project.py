@@ -59,6 +59,18 @@ class AssemblyRecord:
 
 
 @dataclass(frozen=True)
+class AssemblyRecordIntegrity:
+    """Read-only verification result for one persisted assembly record."""
+
+    record: AssemblyRecord
+    failures: tuple[str, ...]
+
+    @property
+    def intact(self) -> bool:
+        return not self.failures
+
+
+@dataclass(frozen=True)
 class QcCandidate:
     path: Path
     sha256: str
@@ -461,6 +473,50 @@ def verify_assembly_record_inputs(record: AssemblyRecord) -> tuple[dict[str, Any
     return tuple(_assembly_inputs_payload(inputs))
 
 
+def verify_assembly_record_integrity(record: AssemblyRecord) -> AssemblyRecordIntegrity:
+    """Rehash persisted assembly evidence without changing a lifecycle record."""
+    persisted, decision_paths = _load_assembly_record(record.path)
+    if persisted.assembly_id != record.assembly_id:
+        raise ProjectStateError("assembly record integrity identity does not match")
+    failures: list[str] = []
+    payload = _read_json(record.path / "assembly.json")
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        failures.append("source inputs: assembly record requires an immutable input list")
+    else:
+        _capture_integrity_failure(
+            failures,
+            "source inputs",
+            lambda: _assembly_inputs_payload(inputs),
+        )
+
+    decisions = tuple(_read_json(path) for path in decision_paths)
+    assembling = _assembly_transition(decisions, AssemblyState.ASSEMBLING)
+    if assembling is not None:
+        _capture_integrity_failure(
+            failures,
+            "assembly evidence",
+            lambda: _verify_assembly_start_evidence(record, assembling),
+        )
+
+    assembled = _assembly_transition(decisions, AssemblyState.ASSEMBLED)
+    if assembled is not None:
+        _capture_integrity_failure(
+            failures,
+            "final outputs",
+            lambda: _verify_assembly_output_evidence(record, assembled),
+        )
+
+    final = _assembly_transition(decisions, AssemblyState.FINAL)
+    if final is not None:
+        _capture_integrity_failure(
+            failures,
+            "finalized evidence",
+            lambda: _verify_assembly_output_evidence(record, final),
+        )
+    return AssemblyRecordIntegrity(persisted, tuple(failures))
+
+
 def _attempts_root(project: ProjectConfig) -> Path:
     configured = project.source.get("attempts_dir", project.path.parent / "attempts")
     root = Path(configured)
@@ -521,6 +577,118 @@ def _assembly_inputs_payload(
             }
         )
     return payload
+
+
+def _capture_integrity_failure(
+    failures: list[str],
+    label: str,
+    check: Callable[[], Any],
+) -> None:
+    try:
+        check()
+    except (OSError, ProjectStateError) as error:
+        failures.append(f"{label}: {error}")
+
+
+def _assembly_transition(
+    decisions: Sequence[Mapping[str, Any]], target: AssemblyState
+) -> Mapping[str, Any] | None:
+    matches = [decision for decision in decisions if decision.get("to") == target]
+    if len(matches) > 1:
+        raise ProjectStateError(f"assembly record has multiple {target} transitions")
+    return matches[0] if matches else None
+
+
+def _verify_assembly_start_evidence(
+    record: AssemblyRecord, decision: Mapping[str, Any]
+) -> None:
+    evidence = _assembly_evidence(decision, AssemblyState.ASSEMBLING)
+    _verify_record_artifact_evidence(record, evidence, "assembly_json", "assembly.json")
+    _verify_record_artifact_evidence(record, evidence, "assembly_plan", "assembly-plan.json")
+    plan = _read_json(record.path / "assembly-plan.json")
+    if not isinstance(plan.get("targets"), Mapping):
+        raise ProjectStateError("assembly plan has no target mapping")
+
+
+def _verify_assembly_output_evidence(
+    record: AssemblyRecord, decision: Mapping[str, Any]
+) -> None:
+    evidence = _assembly_evidence(decision, _assembly_state(decision.get("to"), "assembly decision target state"))
+    _verify_record_artifact_evidence(record, evidence, "assembly_plan", "assembly-plan.json")
+    _verify_record_artifact_evidence(record, evidence, "outputs_json", "outputs.json")
+    plan = _read_json(record.path / "assembly-plan.json")
+    targets = plan.get("targets")
+    if not isinstance(targets, Mapping):
+        raise ProjectStateError("assembly plan has no target mapping")
+    outputs_payload = _read_json(record.path / "outputs.json")
+    final_outputs = outputs_payload.get("outputs")
+    if not isinstance(final_outputs, Mapping) or not final_outputs:
+        raise ProjectStateError("assembly output evidence has no output mapping")
+    if evidence.get("final_outputs") != final_outputs:
+        raise ProjectStateError("assembly final output hashes do not match transition evidence")
+    boundary = outputs_payload.get("boundary_decisions")
+    if evidence.get("boundary_decisions") != boundary:
+        raise ProjectStateError("assembly boundary evidence does not match transition evidence")
+    _verify_hashed_path(boundary, "assembly boundary decisions")
+    decision_log = plan.get("decision_log")
+    if not isinstance(decision_log, str) or Path(decision_log).resolve() != Path(
+        boundary["path"]
+    ).resolve():
+        raise ProjectStateError("assembly boundary decisions do not match the serialized plan")
+    for name in ("review_mp4", "edit_master_ffv1", "edit_master_prores"):
+        target = targets.get(name)
+        output = final_outputs.get(name)
+        if not isinstance(target, str):
+            raise ProjectStateError(f"assembly plan has no {name} target")
+        _verify_hashed_path(output, f"assembly {name}")
+        if Path(target).resolve() != Path(output["path"]).resolve():
+            raise ProjectStateError(f"assembly {name} does not match the serialized plan")
+    rife_target = targets.get("rife_review_mp4")
+    rife_output = final_outputs.get("rife_review_mp4")
+    if rife_output is not None:
+        if not isinstance(rife_target, str):
+            raise ProjectStateError("assembly RIFE output has no serialized target")
+        _verify_hashed_path(rife_output, "assembly rife_review_mp4")
+        if Path(rife_target).resolve() != Path(rife_output["path"]).resolve():
+            raise ProjectStateError("assembly RIFE output does not match the serialized plan")
+
+
+def _assembly_evidence(
+    decision: Mapping[str, Any], target: AssemblyState
+) -> Mapping[str, Any]:
+    details = decision.get("details")
+    if not isinstance(details, Mapping):
+        raise ProjectStateError(f"assembly {target} transition has no evidence details")
+    evidence = details.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise ProjectStateError(f"assembly {target} transition has no evidence mapping")
+    return evidence
+
+
+def _verify_record_artifact_evidence(
+    record: AssemblyRecord,
+    evidence: Mapping[str, Any],
+    key: str,
+    filename: str,
+) -> None:
+    entry = evidence.get(key)
+    _verify_hashed_path(entry, f"assembly {key}")
+    if Path(entry["path"]).resolve() != (record.path / filename).resolve():
+        raise ProjectStateError(f"assembly {key} must reference {filename}")
+
+
+def _verify_hashed_path(entry: Any, label: str) -> None:
+    if not isinstance(entry, Mapping):
+        raise ProjectStateError(f"{label} hash evidence is invalid")
+    raw_path = entry.get("path")
+    expected_hash = entry.get("sha256")
+    if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
+        raise ProjectStateError(f"{label} hash evidence is invalid")
+    path = Path(raw_path).resolve()
+    if not path.is_file():
+        raise ProjectStateError(f"{label} does not exist: {path}")
+    if sha256_file(path) != expected_hash:
+        raise ProjectStateError(f"{label} hash changed: {path}")
 
 
 def _write_workflow_snapshot(destination: Path, project: ProjectConfig) -> None:

@@ -58,7 +58,8 @@ Important fields:
 - A story `flf2v` bridge requires explicit `first_image`/`last_image` paths backed by accepted, hash-verified QC provenance: first is a tail candidate and last is a head candidate. `base_source_image` is allowed only with `purpose: technical_smoke`, never as a story-bridge fallback.
 - A story `flf2v` bridge also requires `from_segment` and `to_segment` in its own shot. Its entry in `assembly_order` must sit directly between those exact segment entries. The runner verifies that its selected tail/head inputs come from those declared accepted attempts.
 - A bridge id may not reuse a segment id in the same shot. Technical-smoke bridges are never allowed in `assembly_order`.
-- `assembly_order` is mandatory for `assemble-project`; it prevents chronology from being inferred from filesystem timestamps.
+- `assembly_order` is mandatory for project and shot assembly; a shot must include every one of its production segments and non-smoke bridges exactly once, so a declared story FLF bridge cannot silently become a direct cut.
+- `output_root` and the three `outputs` paths are immutable output-role templates. Each declared role must live inside `output_root`; the runner records their resolved root and role filenames, then writes to a unique record-local directory by default (or an explicit `--output-dir`). It never writes directly into the declared root. `--rife-review-mp4` is honored only with `--request-rife`.
 
 The first bridge in the example is deliberately a `technical_smoke` configuration. Before a story bridge, replace it with the two exact accepted-QC endpoint paths.
 
@@ -90,10 +91,13 @@ python -m wan22_longform.cli retry .\attempts\... --note "retry with lower motio
 python -m wan22_longform.cli resume .\project.yaml --timeout 1800
 python -m wan22_longform.cli status .\project.yaml
 
-# Assemble only hash-verified accepted outputs. No timeline order is inferred for a project.
+# Assemble only hash-verified accepted outputs. No timeline order is inferred for a project or shot.
 # Each command creates a new immutable assembly record under assembly-records/.
 python -m wan22_longform.cli assemble-shot .\project.yaml S010 --qc-approved
 python -m wan22_longform.cli assemble-project .\project.yaml --qc-approved
+# Optional RIFE target: it is an explicit protected target, never an ignored flag.
+python -m wan22_longform.cli assemble-project .\project.yaml --qc-approved --request-rife `
+  --rife-review-mp4 .\review\rife-review.mp4
 ```
 
 `render-shot` deliberately refuses any dependent continuation before submitting anything. Review and accept the upstream tail, then submit the dependent segment with `render-segment`. It never chooses a frame or silently creates a bridge. Submit `render-bridge` only after explicitly recording the accepted QC endpoint paths in the manifest.
@@ -102,9 +106,9 @@ The `--timeout` default is 1800 seconds because a cold two-UNET Wan load can tak
 
 ### Assembly records and recovery
 
-`assemble-shot` and `assemble-project` first validate the strict manifest, re-hash every accepted source video, then create an append-only record in `assembly-records/<scope>/assembly-...`. The record captures the selected attempt ids and paths, source hashes, requested output policy, exact FFmpeg plan, boundary decisions, output hashes, and lifecycle decisions: `planned → assembling → assembled → final`. A failed plan or FFmpeg run is recorded as `failed` and its partial targets are never overwritten.
+`assemble-shot` and `assemble-project` first validate the strict manifest, re-hash every accepted source video, then create an append-only record in `assembly-records/<scope>/assembly-...`. The record captures the selected attempt ids and paths, source hashes, resolved output-role template, exact FFmpeg plan, boundary decisions, output hashes, and lifecycle decisions: `planned → assembling → assembled → final`. The plan, output-evidence file, boundary decisions, and final output hashes are cryptographically bound in the append-only transition details. A failed plan or FFmpeg run is recorded as `failed` and its partial targets are never overwritten.
 
-Use `status project.yaml` to inspect every record. `resume project.yaml` reports incomplete or failed records but deliberately does not restart an assembly, overwrite a target, or re-render an accepted segment. Start a new reviewed assembly request with a new `--output-dir` when recovering from a partial explicit target; the default record-local output directory is already unique.
+Use `status project.yaml` to inspect every record. It rechecks accepted source videos, the serialized plan, boundary evidence, and finalized outputs read-only. If any hash no longer matches, the record is reported as `integrity_failed` with its original `recorded_state`; `resume` excludes it from recovery guidance and never restarts an assembly, overwrites a target, or re-renders an accepted segment. Start a new reviewed assembly request with a new `--output-dir` when recovering from a partial explicit target; the default record-local output directory is already unique.
 
 The low-level `assemble` command accepts arbitrary files only for diagnostics and requires `--diagnostic-only`. It is not the reviewed project assembly path and does not produce an accepted-project assembly record.
 

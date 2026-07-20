@@ -72,6 +72,7 @@ class AssemblyRecordCliTests(unittest.TestCase):
             )
             self.assertTrue((records[0].path / "assembly-plan.json").is_file())
             self.assertTrue((records[0].path / "outputs.json").is_file())
+            self.assertTrue((root / "deliverables" / "review.mp4").is_file())
 
     def test_failed_assembly_is_preserved_and_a_new_request_gets_a_new_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -104,7 +105,7 @@ class AssemblyRecordCliTests(unittest.TestCase):
             failed_records = assembly_records(project)
             self.assertEqual(len(failed_records), 1)
             self.assertEqual(failed_records[0].state, AssemblyState.FAILED)
-            self.assertTrue((root / "failed-deliverables" / "project-review.mp4").is_file())
+            self.assertTrue((root / "failed-deliverables" / "review.mp4").is_file())
             self.assertEqual(load_attempt(source.path).state, AttemptState.ACCEPTED)
 
             with self._assembly_execution_patch(), contextlib.redirect_stdout(io.StringIO()):
@@ -154,6 +155,135 @@ class AssemblyRecordCliTests(unittest.TestCase):
             self.assertEqual(resumed["incomplete_assembly_records"][0]["state"], "planned")
             self.assertEqual(load_assembly_record(record.path).state, AssemblyState.PLANNED)
             self.assertEqual(load_attempt(source.path).state, AttemptState.ACCEPTED)
+
+    def test_status_and_resume_surface_tampered_final_record_as_an_integrity_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001",))
+            project = load_project(manifest)
+            source = self._accepted_attempt(project, "S010_C001")
+
+            with self._assembly_execution_patch(), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["assemble-project", str(manifest)]), 0)
+
+            record = assembly_records(project)[0]
+            (source.path / "outputs" / "segment.mp4").write_bytes(b"tampered source")
+            (record.path / "assembly-plan.json").write_text("{}\n", encoding="utf-8")
+            outputs = json.loads((record.path / "outputs.json").read_text(encoding="utf-8"))
+            Path(outputs["outputs"]["review_mp4"]["path"]).write_bytes(b"tampered review")
+
+            status_stdout = io.StringIO()
+            with contextlib.redirect_stdout(status_stdout):
+                self.assertEqual(cli.main(["status", str(manifest)]), 0)
+            status = json.loads(status_stdout.getvalue())
+            reported = status["assembly_records"][0]
+            self.assertEqual(reported["state"], "integrity_failed")
+            self.assertEqual(reported["recorded_state"], "final")
+            self.assertEqual(reported["integrity"]["status"], "failed")
+            self.assertGreaterEqual(len(reported["integrity"]["failures"]), 3)
+
+            resume_stdout = io.StringIO()
+            with contextlib.redirect_stdout(resume_stdout):
+                self.assertEqual(cli.main(["resume", str(manifest)]), 0)
+            resumed = json.loads(resume_stdout.getvalue())
+            self.assertEqual(resumed["assembly_records"][0]["state"], "integrity_failed")
+            self.assertEqual(resumed["incomplete_assembly_records"], [])
+            self.assertEqual(resumed["integrity_failures"][0]["assembly_id"], record.assembly_id)
+
+    def test_assemble_shot_uses_explicit_story_bridge_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001", "S010_C002"))
+            source = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            opening = source["inputs"]["opening_frame"]
+            source["bridges"] = [
+                {
+                    "id": "B010",
+                    "shot_id": "S010",
+                    "strategy": "flf2v",
+                    "purpose": "story",
+                    "first_image": opening,
+                    "last_image": opening,
+                    "from_segment": "S010_C001",
+                    "to_segment": "S010_C002",
+                    "frames": 33,
+                }
+            ]
+            source["assembly_order"] = [
+                {"shot_id": "S010", "segment_id": "S010_C001"},
+                {"shot_id": "S010", "segment_id": "B010"},
+                {"shot_id": "S010", "segment_id": "S010_C002"},
+            ]
+            manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+            project = load_project(manifest)
+            self._accepted_attempt(project, "S010_C001")
+            self._accepted_attempt(project, "B010")
+            self._accepted_attempt(project, "S010_C002")
+
+            with self._assembly_execution_patch(), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["assemble-shot", str(manifest), "S010"]), 0)
+
+            record = json.loads(
+                (assembly_records(project)[0].path / "assembly.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                [entry["segment_id"] for entry in record["inputs"]],
+                ["S010_C001", "B010", "S010_C002"],
+            )
+
+    def test_assemble_project_binds_manifest_outputs_and_honors_explicit_rife_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001",))
+            project = load_project(manifest)
+            self._accepted_attempt(project, "S010_C001")
+            rife_target = root / "custom-review" / "rife.mp4"
+
+            with self._assembly_execution_patch(), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "assemble-project",
+                            str(manifest),
+                            "--request-rife",
+                            "--qc-approved",
+                            "--rife-review-mp4",
+                            str(rife_target),
+                        ]
+                    ),
+                    0,
+                )
+
+            record = assembly_records(project)[0]
+            assembly = json.loads((record.path / "assembly.json").read_text(encoding="utf-8"))
+            self.assertTrue((record.path / "outputs" / "outputs" / "review.mp4").is_file())
+            self.assertEqual(
+                assembly["requested"]["manifest_outputs"]["output_root"],
+                str((root / "outputs").resolve()),
+            )
+            self.assertEqual(
+                assembly["requested"]["manifest_outputs"]["roles"]["review_mp4"],
+                "review.mp4",
+            )
+            plan = json.loads((record.path / "assembly-plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["targets"]["rife_review_mp4"], str(rife_target.resolve()))
+
+    def test_assemble_project_rejects_an_unused_rife_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001",))
+            project = load_project(manifest)
+            self._accepted_attempt(project, "S010_C001")
+
+            with self.assertRaisesRegex(ValueError, "requires --request-rife"):
+                cli.main(
+                    [
+                        "assemble-project",
+                        str(manifest),
+                        "--rife-review-mp4",
+                        str(root / "ignored.mp4"),
+                    ]
+                )
 
     def test_direct_assemble_requires_an_explicit_diagnostic_acknowledgement(self) -> None:
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):

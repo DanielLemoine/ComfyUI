@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3 - 2026-07-19
+
+- Made `status` and `resume` read-only integrity checks: source video hashes, serialized plan evidence, boundary decisions, and finalized outputs now fail closed as `integrity_failed` instead of appearing as clean final records.
+- Bound the assembly record, plan, output-evidence file, boundary decisions, and final output hashes into append-only transition evidence.
+- Made shot assembly consume its validated `assembly_order`, including declared story FLF bridges, and reject incomplete or ambiguous shot timelines.
+- Bound manifest output declarations as safe record-local role/name templates and honored explicit `--rife-review-mp4` targets only with `--request-rife`.
+
 ## 0.1.2 - 2026-07-19
 
 - Replaced source-attempt assembly states with separate immutable assembly records containing accepted source hashes, requested targets, plans, boundary evidence, output hashes, and recoverable success/failure decisions.

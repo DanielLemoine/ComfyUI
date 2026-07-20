@@ -338,6 +338,13 @@ class ContinuityContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "candidate_count.*qc.candidate_count"):
             validate_project_contract(self._project(source))
 
+    def test_strict_manifest_requires_declared_output_roles_inside_output_root(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["outputs"]["review_mp4"] = str(self.root / "outside-review.mp4")
+
+        with self.assertRaisesRegex(ConfigError, "outputs.review_mp4.*output_root"):
+            validate_project_contract(self._project(source))
+
     def test_strict_manifest_rejects_unknown_bridge_shot(self) -> None:
         source = copy.deepcopy(self.source)
         source["bridges"] = [

@@ -15,6 +15,7 @@ from .hashing import sha256_file
 from .inventory import collect_preflight
 from .project import (
     AssemblyRecord,
+    AssemblyRecordIntegrity,
     AssemblyState,
     Attempt,
     AttemptState,
@@ -24,6 +25,7 @@ from .project import (
     load_attempt,
     transition_assembly_record,
     transition_attempt,
+    verify_assembly_record_integrity,
     verify_assembly_record_inputs,
     write_assembly_record_json,
 )
@@ -299,6 +301,7 @@ def _outcome_handler(state: AttemptState) -> Callable[[argparse.Namespace], int]
 
 
 def _handle_assemble(args: argparse.Namespace) -> int:
+    _validate_rife_request(args)
     result = _execute_assembly(
         [path.resolve() for path in args.input],
         AssemblyTargets(
@@ -334,10 +337,11 @@ def _handle_status(args: argparse.Namespace) -> int:
     target = args.target.resolve()
     if target.is_file():
         project = load_project(target)
+        records = _assembly_record_integrities(project)
         _print_json(
             {
                 "assembly_records": [
-                    _assembly_record_payload(record) for record in assembly_records(project)
+                    _assembly_record_payload(record.record, record) for record in records
                 ],
                 "attempts": [_attempt_payload(attempt) for attempt in _project_attempts(project)],
                 "project": str(project.path),
@@ -360,14 +364,21 @@ def _handle_resume(args: argparse.Namespace) -> int:
         client = _client(args)
         for attempt in planned:
             resumed.append(_attempt_payload(resume_attempt(project, attempt, client)))
-    records = assembly_records(project)
+    records = _assembly_record_integrities(project)
     _print_json(
         {
-            "assembly_records": [_assembly_record_payload(record) for record in records],
+            "assembly_records": [
+                _assembly_record_payload(record.record, record) for record in records
+            ],
             "incomplete_assembly_records": [
-                _assembly_recovery_payload(record)
+                _assembly_recovery_payload(record.record)
                 for record in records
-                if record.state is not AssemblyState.FINAL
+                if record.intact and record.record.state is not AssemblyState.FINAL
+            ],
+            "integrity_failures": [
+                _assembly_record_payload(record.record, record)
+                for record in records
+                if not record.intact
             ],
             "project": str(project.path),
             "resumed": resumed,
@@ -461,16 +472,55 @@ def _accepted_shot_attempts(project: ProjectConfig, shot_id: str) -> tuple[Attem
     segments = shot.get("segments")
     if not isinstance(segments, (list, tuple)) or not segments:
         raise ValueError(f"shot has no configured segments: {shot_id}")
+    expected = {
+        segment["id"]
+        for segment in segments
+        if isinstance(segment, Mapping) and isinstance(segment.get("id"), str)
+    }
+    if len(expected) != len(segments):
+        raise ValueError(f"shot has an invalid segment: {shot_id}")
+    bridges = project.source.get("bridges", ())
+    if not isinstance(bridges, (list, tuple)):
+        raise ValueError("project bridges must be a list")
+    for bridge in bridges:
+        if not isinstance(bridge, Mapping):
+            raise ValueError("project bridge must be a mapping")
+        if bridge.get("shot_id") != shot_id or bridge.get("purpose") == "technical_smoke":
+            continue
+        bridge_id = bridge.get("id")
+        if not isinstance(bridge_id, str):
+            raise ValueError(f"shot has an invalid bridge: {shot_id}")
+        expected.add(bridge_id)
+    order = project.source.get("assembly_order")
+    if not isinstance(order, (list, tuple)) or not order:
+        raise ValueError("assemble-shot requires a non-empty explicit assembly_order")
+    selected_ids: list[str] = []
+    for item in order:
+        if not isinstance(item, Mapping):
+            raise ValueError("assembly_order entries must be mappings")
+        if item.get("shot_id") != shot_id:
+            continue
+        segment_id = item.get("segment_id")
+        if not isinstance(segment_id, str):
+            raise ValueError("assembly_order entries require shot_id and segment_id")
+        if segment_id in selected_ids:
+            raise ValueError(f"assembly_order is ambiguous for shot {shot_id}/{segment_id}")
+        selected_ids.append(segment_id)
+    if not selected_ids:
+        raise ValueError(f"assembly_order has no entries for shot: {shot_id}")
+    missing = expected.difference(selected_ids)
+    unexpected = set(selected_ids).difference(expected)
+    if missing or unexpected:
+        details = ", ".join(sorted((*missing, *unexpected)))
+        raise ValueError(f"assembly_order does not fully define shot {shot_id}: {details}")
     accepted = _accepted_by_key(project)
     ordered: list[Attempt] = []
-    for segment in segments:
-        if not isinstance(segment, Mapping) or not isinstance(segment.get("id"), str):
-            raise ValueError(f"shot has an invalid segment: {shot_id}")
-        key = (shot_id, segment["id"])
+    for segment_id in selected_ids:
+        key = (shot_id, segment_id)
         try:
             ordered.append(accepted[key])
         except KeyError as error:
-            raise ValueError(f"shot segment is not accepted: {shot_id}/{segment['id']}") from error
+            raise ValueError(f"shot timeline entry is not accepted: {shot_id}/{segment_id}") from error
     return tuple(ordered)
 
 
@@ -510,6 +560,44 @@ def _accepted_by_key(project: ProjectConfig) -> dict[tuple[str, str], Attempt]:
     return selected
 
 
+def _validate_rife_request(args: argparse.Namespace) -> None:
+    if args.rife_review_mp4 is not None and not args.request_rife:
+        raise ValueError("--rife-review-mp4 requires --request-rife")
+
+
+def _manifest_output_policy(project: ProjectConfig) -> dict[str, Any]:
+    raw_root = project.source.get("output_root")
+    outputs = project.source.get("outputs")
+    if not isinstance(raw_root, str) or not isinstance(outputs, Mapping):
+        raise ValueError("project has no valid manifest output policy")
+    output_root = _resolve_project_path(project, raw_root)
+    roles: dict[str, str] = {}
+    for name in ("review_mp4", "edit_master_ffv1", "edit_master_prores"):
+        raw_target = outputs.get(name)
+        if not isinstance(raw_target, str):
+            raise ValueError(f"project has no {name} output declaration")
+        declared = _resolve_project_path(project, raw_target)
+        if not declared.is_relative_to(output_root):
+            raise ValueError(f"manifest {name} must be inside output_root")
+        if not declared.name:
+            raise ValueError(f"manifest {name} must name a file")
+        roles[name] = declared.name
+    if len(set(roles.values())) != len(roles):
+        raise ValueError("manifest output role names must be distinct")
+    return {"output_root": str(output_root), "roles": roles}
+
+
+def _resolve_project_path(project: ProjectConfig, value: str) -> Path:
+    path = Path(value)
+    return (path if path.is_absolute() else project.path.parent / path).resolve()
+
+
+def _output_root_template(output_root: str) -> str:
+    name = Path(output_root).name or "declared-output"
+    _safe_path_component(name, "manifest output_root name")
+    return name
+
+
 def _assemble_attempts(
     project: ProjectConfig,
     attempts: Sequence[Attempt],
@@ -519,6 +607,8 @@ def _assemble_attempts(
     if not attempts:
         raise ValueError("assembly requires at least one accepted attempt")
     _safe_path_component(scope, "assembly scope")
+    _validate_rife_request(args)
+    output_policy = _manifest_output_policy(project)
     selected = [_accepted_assembly_input(attempt) for attempt in attempts]
     videos = [video for video, _ in selected]
     record = create_assembly_record(
@@ -527,20 +617,32 @@ def _assemble_attempts(
         inputs=tuple(input_record for _, input_record in selected),
         requested={
             "qc_approved": bool(args.qc_approved),
+            "manifest_outputs": output_policy,
             "request_rife": bool(args.request_rife),
             "requested_output_dir": str(args.output_dir.resolve()) if args.output_dir else None,
+            "rife_review_mp4": (
+                str(args.rife_review_mp4.resolve()) if args.rife_review_mp4 else None
+            ),
             "scope": scope,
         },
     )
-    output_dir = args.output_dir.resolve() if args.output_dir else record.path / "outputs"
+    output_dir = (
+        args.output_dir.resolve()
+        if args.output_dir
+        else record.path / "outputs" / _output_root_template(output_policy["output_root"])
+    )
     if output_dir.is_file():
         _mark_assembly_failed(record, ValueError(f"assembly output path is a file: {output_dir}"))
         raise ValueError(f"assembly output path is a file: {output_dir}")
     targets = AssemblyTargets(
-        review_mp4=output_dir / f"{scope}-review.mp4",
-        edit_master_ffv1=output_dir / f"{scope}-edit-master.ffv1.mkv",
-        edit_master_prores=output_dir / f"{scope}-edit-master.prores.mov",
-        rife_review_mp4=(output_dir / f"{scope}-rife-review.mp4")
+        review_mp4=output_dir / output_policy["roles"]["review_mp4"],
+        edit_master_ffv1=output_dir / output_policy["roles"]["edit_master_ffv1"],
+        edit_master_prores=output_dir / output_policy["roles"]["edit_master_prores"],
+        rife_review_mp4=(
+            args.rife_review_mp4.resolve()
+            if args.rife_review_mp4
+            else output_dir / "rife-review.mp4"
+        )
         if args.request_rife
         else None,
     )
@@ -558,7 +660,9 @@ def _assemble_attempts(
     _print_json(
         {
             **_assembly_payload(result),
-            "assembly_record": _assembly_record_payload(finalized),
+            "assembly_record": _assembly_record_payload(
+                finalized, verify_assembly_record_integrity(finalized)
+            ),
             "attempts": [_attempt_payload(attempt) for attempt in attempts],
             "scope": scope,
         }
@@ -639,31 +743,45 @@ def _execute_assembly_record(
         qc_approved=qc_approved,
     )
     decision_log = record.path / "boundary-decisions.json"
-    write_assembly_record_json(
+    plan_path = write_assembly_record_json(
         record,
         "assembly-plan.json",
         _assembly_plan_payload(plan, targets, decision_log),
     )
+    start_evidence = {
+        "assembly_json": _hashed_assembly_path(record.path / "assembly.json", "assembly record"),
+        "assembly_plan": _hashed_assembly_path(plan_path, "assembly plan"),
+    }
     assembling = transition_assembly_record(
         record,
         AssemblyState.ASSEMBLING,
         "local FFmpeg assembly started",
+        details={"evidence": start_evidence},
     )
     result = execute_assembly_plan(plan, decision_log=decision_log)
-    write_assembly_record_json(
+    outputs_payload = _assembly_outputs_payload(targets, decision_log, result)
+    outputs_path = write_assembly_record_json(
         assembling,
         "outputs.json",
-        _assembly_outputs_payload(targets, decision_log, result),
+        outputs_payload,
     )
+    finalized_evidence = {
+        "assembly_plan": _hashed_assembly_path(plan_path, "assembly plan"),
+        "boundary_decisions": outputs_payload["boundary_decisions"],
+        "final_outputs": outputs_payload["outputs"],
+        "outputs_json": _hashed_assembly_path(outputs_path, "assembly outputs"),
+    }
     assembled = transition_assembly_record(
         assembling,
         AssemblyState.ASSEMBLED,
         "all requested outputs passed post-output validation",
+        details={"evidence": finalized_evidence},
     )
     final = transition_assembly_record(
         assembled,
         AssemblyState.FINAL,
         "assembly evidence finalized",
+        details={"evidence": finalized_evidence},
     )
     return result, final
 
@@ -705,13 +823,28 @@ def _assembly_payload(result: Any) -> dict[str, Any]:
     }
 
 
-def _assembly_record_payload(record: AssemblyRecord) -> dict[str, str]:
-    return {
+def _assembly_record_integrities(project: ProjectConfig) -> tuple[AssemblyRecordIntegrity, ...]:
+    return tuple(verify_assembly_record_integrity(record) for record in assembly_records(project))
+
+
+def _assembly_record_payload(
+    record: AssemblyRecord, integrity: AssemblyRecordIntegrity | None = None
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "assembly_id": record.assembly_id,
         "path": str(record.path),
         "scope": record.scope,
         "state": str(record.state),
     }
+    if integrity is None:
+        return payload
+    if integrity.intact:
+        payload["integrity"] = {"failures": [], "status": "verified"}
+        return payload
+    payload["recorded_state"] = payload["state"]
+    payload["state"] = "integrity_failed"
+    payload["integrity"] = {"failures": list(integrity.failures), "status": "failed"}
+    return payload
 
 
 def _assembly_recovery_payload(record: AssemblyRecord) -> dict[str, str]:

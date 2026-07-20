@@ -189,8 +189,8 @@ def validate_project_contract(project: ProjectConfig) -> None:
     if mode not in {"cinematic", "continuous"}:
         raise ConfigError("mode must be cinematic or continuous")
     _positive_number(source.get("target_seconds"), "target_seconds")
-    _string(source.get("output_root"), "output_root")
-    _output_paths(_required_mapping(source, "outputs"))
+    output_root = _string(source.get("output_root"), "output_root")
+    _output_paths(project, output_root, _required_mapping(source, "outputs"))
     _render_contract(_required_mapping(source, "render"))
     _model_contract(_required_mapping(source, "models"))
     _model_inventory_contract(source)
@@ -208,9 +208,25 @@ def validate_project_contract(project: ProjectConfig) -> None:
     _assembly_order(source, shot_segments, bridge_shots)
 
 
-def _output_paths(outputs: Mapping[str, Any]) -> None:
+def _output_paths(project: ProjectConfig, output_root: str, outputs: Mapping[str, Any]) -> None:
+    root = Path(output_root)
+    if not root.is_absolute():
+        root = project.path.parent / root
+    root = root.resolve()
+    names: set[str] = set()
     for key in ("review_mp4", "edit_master_ffv1", "edit_master_prores"):
-        _string(outputs.get(key), f"outputs.{key}")
+        declared = _string(outputs.get(key), f"outputs.{key}")
+        target = Path(declared)
+        if not target.is_absolute():
+            target = project.path.parent / target
+        target = target.resolve()
+        if not target.is_relative_to(root):
+            raise ConfigError(f"outputs.{key} must be inside output_root")
+        if not target.name:
+            raise ConfigError(f"outputs.{key} must name a file")
+        if target.name in names:
+            raise ConfigError("output role filenames must be distinct")
+        names.add(target.name)
 
 
 def _render_contract(render: Mapping[str, Any]) -> None:

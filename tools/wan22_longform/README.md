@@ -1,9 +1,10 @@
 # Wan2.2 long-form operator package
 
-This package supplies two native ComfyUI API/UI workflows, one six-segment manual sequence workflow, and a local-only operator runner:
+This package supplies two native ComfyUI API/UI render workflows, one last-frame utility workflow, one six-segment manual sequence workflow, and a local-only operator runner:
 
 - `wan22_segment_i2v_native`: a quality-first Wan 2.2 image-to-video segment.
 - `wan22_bridge_flf2v_native`: a native first/last-frame bridge with two explicit endpoint images.
+- `wan22_extract_last_frame`: saves the exact final frame from a completed MP4 for use as a later shot's start image.
 - `wan22_six_segment_sequence_native`: six optionally rendered or reused I2V sections with one assembled final MP4.
 - `wan22_longform.cli`: immutable attempts, QC evidence, accepted-only assembly records, and copy-only workflow deployment.
 
@@ -48,7 +49,7 @@ The persisted I2V graph uses stable executable titles: `PROMPT_POSITIVE`, `PROMP
 
 ### Manual ComfyUI execution
 
-The three deployed UI workflows are complete manual canvases: their `LoadImage` and
+The deployed render UI workflows are complete manual canvases: their `LoadImage` and
 `SaveVideo` nodes are already wired to the native Wan subgraph. Open them from
 ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
 `.NOT_BUILT` marker.
@@ -61,10 +62,22 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
   strengths equal. Set both strengths to `0` to disable the manual identity
   adapter. The default is 640x640 for 5 seconds. Click **Run**; the MP4 is
   saved below `D:\AI\outputs\wan22_longform\segment_`.
-- **`wan22_bridge_flf2v_native`**: choose the start and end frames in
-  `BRIDGE_FIRST_IMAGE` and `BRIDGE_LAST_IMAGE`, set `PROMPT_POSITIVE`, then
-  click **Run**. Its default is 640x640 and 81 frames; the MP4 is saved below
+- **`wan22_bridge_flf2v_native`**: this is the single-clip first/last-frame
+  workflow. Choose the start and planned end keyframes in `BRIDGE_FIRST_IMAGE`
+  and `BRIDGE_LAST_IMAGE`, set `PROMPT_POSITIVE`, then click **Run**. Its
+  default is 640x640 and 81 frames; the MP4 is saved below
   `D:\AI\outputs\wan22_longform\bridge_`.
+- **`wan22_extract_last_frame`**: after a clip is complete, paste its absolute
+  MP4 path into `EXTRACT_EXACT_LAST_FRAME` and click **Run**. It writes exactly
+  one PNG below `D:\AI\outputs\wan22_longform\flf_last_frame_`. Upload that
+  PNG into the next FLF clip's first-image loader. This utility does not render
+  video and is intentionally a separate workflow.
+
+An FLF end image is a planned keyframe, not something that can be extracted
+from an as-yet-unrendered clip. Create or edit that future endpoint first, then
+render the FLF shot. After the shot is rendered, extract its actual last frame
+to become the next shot's start image; independently plan the next shot's end
+keyframe before rendering that shot.
 - **`wan22_six_segment_sequence_native`**: this is the long-form manual
   canvas. Each `SEGMENT_nn` has its own private subgraph definition: enter the
   segment to edit its `PROMPT_POSITIVE`, `PROMPT_NEGATIVE`, or add a LoRA.

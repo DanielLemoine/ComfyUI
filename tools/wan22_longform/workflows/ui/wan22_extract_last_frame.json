@@ -1,0 +1,57 @@
+{
+  "last_node_id": 2,
+  "last_link_id": 1,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "WanVideoTailFrames",
+      "pos": [80, 160],
+      "size": [470, 190],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {"name": "video_path", "type": "STRING", "widget": {"name": "video_path"}, "link": null},
+        {"name": "tail_frames", "type": "INT", "widget": {"name": "tail_frames"}, "link": null},
+        {"name": "target_fps", "type": "FLOAT", "widget": {"name": "target_fps"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "tail_frames", "type": "IMAGE", "slot_index": 0, "links": [1]}
+      ],
+      "properties": {"Node name for S&R": "WanVideoTailFrames"},
+      "widgets_values": ["D:\\AI\\outputs\\wan22_longform\\paste_completed_mp4_path_here.mp4", 1, 16],
+      "title": "EXTRACT_EXACT_LAST_FRAME"
+    },
+    {
+      "id": 2,
+      "type": "SaveImage",
+      "pos": [650, 175],
+      "size": [380, 130],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 1},
+        {"name": "filename_prefix", "type": "STRING", "widget": {"name": "filename_prefix"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "images", "type": "IMAGE", "slot_index": 0, "links": null}
+      ],
+      "properties": {"Node name for S&R": "SaveImage", "cnr_id": "comfy-core", "ver": "0.3.45"},
+      "widgets_values": ["wan22_longform/flf_last_frame"],
+      "title": "SAVE_LAST_FRAME_FOR_NEXT_SHOT"
+    }
+  ],
+  "links": [[1, 1, 0, 2, 0, "IMAGE"]],
+  "groups": [
+    {
+      "title": "1. Paste the completed MP4's absolute path. 2. Run to save exactly one final frame.",
+      "bounding": [40, 80, 1040, 320],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {"workflowRendererVersion": "LG"},
+  "version": 0.4
+}

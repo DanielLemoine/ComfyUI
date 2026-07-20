@@ -523,6 +523,28 @@ class WorkflowPatchTests(unittest.TestCase):
                 self.assertEqual(save_node["inputs"][0]["link"], video_link)
                 self.assertGreaterEqual(ui["last_link_id"], max(links_by_id))
 
+    def test_last_frame_extractor_is_a_small_standalone_utility(self) -> None:
+        workflow_path = (
+            PROJECT_DIR / "workflows" / "ui" / "wan22_extract_last_frame.json"
+        )
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        nodes = {node["title"]: node for node in workflow["nodes"]}
+
+        extractor = nodes["EXTRACT_EXACT_LAST_FRAME"]
+        saver = nodes["SAVE_LAST_FRAME_FOR_NEXT_SHOT"]
+        self.assertEqual(extractor["type"], "WanVideoTailFrames")
+        self.assertEqual(extractor["widgets_values"][1:], [1, 16])
+        self.assertEqual(saver["type"], "SaveImage")
+        self.assertGreaterEqual(
+            saver["pos"][0] - (extractor["pos"][0] + extractor["size"][0]),
+            24,
+            "last-frame utility nodes must not overlap",
+        )
+
+        self.assertEqual(len(workflow["links"]), 1)
+        link = workflow["links"][0]
+        self.assertEqual(link[1:6], [extractor["id"], 0, saver["id"], 0, "IMAGE"])
+
 
     def test_quality_graphs_use_their_verified_normal_template_baselines(self) -> None:
         for fixture_name, high_sampler, low_sampler, shift, cfg in (

@@ -23,8 +23,8 @@ from wan22_longform.comfy_client import (  # noqa: E402
     HistoryResult,
 )
 from wan22_longform.config import ProjectConfig  # noqa: E402
-from wan22_longform.project import AttemptState, create_attempt  # noqa: E402
-from wan22_longform.qc import read_qc  # noqa: E402
+from wan22_longform.project import AttemptState, create_attempt, transition_attempt  # noqa: E402
+from wan22_longform.qc import initialize_qc, read_qc  # noqa: E402
 from wan22_longform.render import render_bridge, render_segment, resume_attempt  # noqa: E402
 
 
@@ -390,7 +390,18 @@ class RenderSegmentTests(unittest.TestCase):
 
         extract.side_effect = fake_extract
         contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
-        planned = create_attempt(self.project, "S040", "S040_C001")
+        planned = create_attempt(
+            self.project,
+            "S040",
+            "S040_C001",
+            selected_inputs={
+                "opening_frame": {
+                    "path": str(self.opening),
+                    "sha256": hashlib.sha256(self.opening.read_bytes()).hexdigest(),
+                    "source": "project_fallback",
+                }
+            },
+        )
         client = FakeRenderClient(self.video)
 
         resumed = resume_attempt(self.project, planned, client)
@@ -487,6 +498,25 @@ class RenderBridgeTests(unittest.TestCase):
         extract.side_effect = fake_extract
         contact_sheet.side_effect = fake_contact_sheet
         client = EndpointClient(self.video)
+        upstream = create_attempt(self.project, "S010", "S010_C001")
+        for state in (AttemptState.RENDERING, AttemptState.RENDERED, AttemptState.NEEDS_REVIEW):
+            upstream = transition_attempt(upstream, state, "fixture")
+        sheet = self.root / "accepted-sheet.png"
+        sheet.write_bytes(b"sheet")
+        initialize_qc(
+            upstream,
+            video=self.video,
+            head_frames=[self.last],
+            tail_frames=[self.first],
+            contact_sheet=sheet,
+            automatic_continuation_authorized=False,
+        )
+        transition_attempt(
+            upstream,
+            AttemptState.ACCEPTED,
+            "accepted endpoint fixture",
+            selected_continuation_frame=self.first,
+        )
 
         attempt = render_bridge(self.project, "B010", client)
 

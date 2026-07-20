@@ -9,6 +9,8 @@ import yaml
 
 
 PERMISSIVENESS_MODES = frozenset({"none", "mystic", "wan_general"})
+PROJECT_SCHEMA_VERSION = 1
+BRIDGE_STRATEGIES = frozenset({"direct", "flf2v", "intentional_cut", "external_control"})
 
 
 class ConfigError(ValueError):
@@ -165,6 +167,228 @@ def load_project(path: Path) -> ProjectConfig:
     source = _read_mapping(path)
     _required_mapping(source, "models")
     return ProjectConfig(path=path.resolve(), source=_freeze(source))
+
+
+def validate_project_contract(project: ProjectConfig) -> None:
+    """Check the versioned operator manifest shape without changing source state."""
+    source = project.source
+    if source.get("schema_version") != PROJECT_SCHEMA_VERSION:
+        raise ConfigError(f"schema_version must be {PROJECT_SCHEMA_VERSION}")
+    _string(source.get("project_id"), "project_id")
+    _string(source.get("title"), "title")
+    mode = _string(source.get("mode"), "mode")
+    if mode not in {"cinematic", "continuous"}:
+        raise ConfigError("mode must be cinematic or continuous")
+    _positive_number(source.get("target_seconds"), "target_seconds")
+    _string(source.get("output_root"), "output_root")
+    _output_paths(_required_mapping(source, "outputs"))
+    _render_contract(_required_mapping(source, "render"))
+    _model_contract(_required_mapping(source, "models"))
+    _model_inventory_contract(source)
+    _string(source.get("workflow_api"), "workflow_api")
+    _string(source.get("bridge_workflow_api"), "bridge_workflow_api")
+    _workflow_hashes(_required_mapping(source, "workflow_hashes"))
+    _environment_snapshot(_required_mapping(source, "environment_snapshot"))
+    _lora_contract(_required_mapping(source, "loras"))
+    _policy_contract(_required_mapping(source, "policy"))
+    _continuation_contract(_required_mapping(source, "continuation"))
+    _qc_contract(_required_mapping(source, "qc"))
+    _manifest_inputs(source)
+    _shots_contract(source)
+    _bridges_contract(source)
+    _assembly_order(source)
+
+
+def _output_paths(outputs: Mapping[str, Any]) -> None:
+    for key in ("review_mp4", "edit_master_ffv1", "edit_master_prores"):
+        _string(outputs.get(key), f"outputs.{key}")
+
+
+def _render_contract(render: Mapping[str, Any]) -> None:
+    _string(render.get("workflow"), "render.workflow")
+    for key in ("width", "height", "frames"):
+        _positive_int(render.get(key), f"render.{key}")
+    _positive_number(render.get("generation_fps"), "render.generation_fps")
+    _string(render.get("review_mp4_codec"), "render.review_mp4_codec")
+    _string(render.get("master_codec"), "render.master_codec")
+    _non_negative_int(render.get("seed_base"), "render.seed_base")
+    _positive_int(render.get("seed_increment"), "render.seed_increment")
+
+
+def _model_contract(models: Mapping[str, Any]) -> None:
+    for key in ("high", "low", "vae", "text_encoder"):
+        value = _string(models.get(key), f"models.{key}")
+        if Path(value).name != value:
+            raise ConfigError(f"models.{key} must be an exact filename")
+    if models["high"].casefold() == models["low"].casefold():
+        raise ConfigError("models.high and models.low must differ")
+
+
+def _model_inventory_contract(source: Mapping[str, Any]) -> None:
+    model_files = source.get("model_files")
+    model_roots = source.get("model_roots")
+    if model_files is None and model_roots is None:
+        raise ConfigError("project requires model_files or model_roots")
+    if model_files is not None:
+        if not isinstance(model_files, (list, tuple)) or not all(
+            isinstance(name, str) and name for name in model_files
+        ):
+            raise ConfigError("model_files must be a list of exact filenames")
+        known = {name.casefold() for name in model_files}
+        for key in ("high", "low", "vae", "text_encoder"):
+            name = _string(_required_mapping(source, "models").get(key), f"models.{key}")
+            if name.casefold() not in known:
+                raise ConfigError(f"model_files does not contain models.{key}")
+    if model_roots is not None and (
+        not isinstance(model_roots, (list, tuple))
+        or not all(isinstance(root, (str, Path)) and str(root) for root in model_roots)
+    ):
+        raise ConfigError("model_roots must be a list of local paths")
+
+
+def _workflow_hashes(hashes: Mapping[str, Any]) -> None:
+    for key in ("segment_api", "bridge_api"):
+        value = _string(hashes.get(key), f"workflow_hashes.{key}")
+        if len(value) != 64 or any(character not in "0123456789abcdefABCDEF" for character in value):
+            raise ConfigError(f"workflow_hashes.{key} must be a SHA-256 hex digest")
+
+
+def _environment_snapshot(snapshot: Mapping[str, Any]) -> None:
+    for key in ("captured_at", "platform", "python", "gpu"):
+        _string(snapshot.get(key), f"environment_snapshot.{key}")
+
+
+def _lora_contract(loras: Mapping[str, Any]) -> None:
+    identity = _required_mapping(loras, "identity")
+    mode = _string(identity.get("mode"), "loras.identity.mode")
+    if mode not in {"none", "single_both", "split"}:
+        raise ConfigError("loras.identity.mode is invalid")
+    for key in ("vbvr", "motion", "corrective", "permissiveness"):
+        _required_mapping(loras, key)
+
+
+def _policy_contract(policy: Mapping[str, Any]) -> None:
+    _bool(policy.get("automatic_continuation"), "policy.automatic_continuation")
+
+
+def _continuation_contract(continuation: Mapping[str, Any]) -> None:
+    if _string(continuation.get("strategy"), "continuation.strategy") != "selected_tail":
+        raise ConfigError("continuation.strategy must be selected_tail")
+    _positive_int(continuation.get("reset_limit"), "continuation.reset_limit")
+
+
+def _qc_contract(qc: Mapping[str, Any]) -> None:
+    _positive_int(qc.get("candidate_count"), "qc.candidate_count")
+    _non_negative_int(qc.get("retry_limit"), "qc.retry_limit")
+
+
+def _manifest_inputs(source: Mapping[str, Any]) -> None:
+    inputs = source.get("inputs", {})
+    if not isinstance(inputs, Mapping):
+        raise ConfigError("inputs must be a mapping")
+    opening = inputs.get("opening_frame")
+    if opening is not None:
+        if isinstance(opening, Mapping):
+            opening = opening.get("path")
+        _string(opening, "inputs.opening_frame")
+
+
+def _shots_contract(source: Mapping[str, Any]) -> None:
+    shots = source.get("shots")
+    if not isinstance(shots, (list, tuple)) or not shots:
+        raise ConfigError("shots must be a non-empty list")
+    seen_shots: set[str] = set()
+    for shot in shots:
+        if not isinstance(shot, Mapping):
+            raise ConfigError("shot must be a mapping")
+        shot_id = _string(shot.get("id"), "shot.id")
+        if shot_id in seen_shots:
+            raise ConfigError(f"duplicate shot id: {shot_id}")
+        seen_shots.add(shot_id)
+        _positive_number(shot.get("target_seconds"), f"shot {shot_id} target_seconds")
+        anchor = shot.get("anchor_image")
+        if anchor is not None:
+            _string(anchor, f"shot {shot_id} anchor_image")
+        elif source.get("inputs", {}).get("opening_frame") is None:
+            raise ConfigError(f"shot {shot_id} requires anchor_image or inputs.opening_frame")
+        segments = shot.get("segments")
+        if not isinstance(segments, (list, tuple)) or not segments:
+            raise ConfigError(f"shot {shot_id} requires a non-empty segments list")
+        seen_segments: set[str] = set()
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                raise ConfigError(f"shot {shot_id} contains an invalid segment")
+            segment_id = _string(segment.get("id"), f"shot {shot_id} segment.id")
+            if segment_id in seen_segments:
+                raise ConfigError(f"shot {shot_id} has duplicate segment id: {segment_id}")
+            seen_segments.add(segment_id)
+            _string(segment.get("action"), f"segment {segment_id} action")
+            _positive_number(segment.get("expected_seconds"), f"segment {segment_id} expected_seconds")
+            _non_negative_int(segment.get("seed_offset"), f"segment {segment_id} seed_offset")
+            continuation = segment.get("continue_from")
+            if continuation is not None:
+                reference = _string(continuation, f"segment {segment_id} continue_from")
+                if reference not in seen_segments:
+                    raise ConfigError(
+                        f"segment {segment_id} continue_from must reference an earlier same-shot segment"
+                    )
+                if "opening_image" in segment or "opening_frame" in segment:
+                    raise ConfigError(
+                        f"segment {segment_id} cannot combine continue_from with an opening override"
+                    )
+            overrides = [key for key in ("opening_image", "opening_frame") if key in segment]
+            if len(overrides) > 1:
+                raise ConfigError(f"segment {segment_id} has multiple opening overrides")
+            for key in overrides:
+                _string(segment.get(key), f"segment {segment_id} {key}")
+
+
+def _bridges_contract(source: Mapping[str, Any]) -> None:
+    bridges = source.get("bridges", ())
+    if not isinstance(bridges, (list, tuple)):
+        raise ConfigError("bridges must be a list")
+    seen: set[str] = set()
+    for bridge in bridges:
+        if not isinstance(bridge, Mapping):
+            raise ConfigError("bridge must be a mapping")
+        bridge_id = _string(bridge.get("id"), "bridge.id")
+        if bridge_id in seen:
+            raise ConfigError(f"duplicate bridge id: {bridge_id}")
+        seen.add(bridge_id)
+        _string(bridge.get("shot_id"), f"bridge {bridge_id} shot_id")
+        strategy = _string(bridge.get("strategy"), f"bridge {bridge_id} strategy")
+        if strategy not in BRIDGE_STRATEGIES:
+            raise ConfigError(f"bridge {bridge_id} strategy is invalid")
+        base = bridge.get("base_source_image")
+        first = bridge.get("first_image")
+        last = bridge.get("last_image")
+        if strategy == "flf2v":
+            if base is not None:
+                _string(base, f"bridge {bridge_id} base_source_image")
+                if bridge.get("purpose") != "technical_smoke":
+                    raise ConfigError(
+                        f"bridge {bridge_id} base_source_image is only allowed for purpose technical_smoke"
+                    )
+                if first is not None or last is not None:
+                    raise ConfigError(f"bridge {bridge_id} base source cannot have explicit endpoints")
+            elif first is None or last is None:
+                raise ConfigError(f"bridge {bridge_id} requires both explicit endpoints")
+            else:
+                _string(first, f"bridge {bridge_id} first_image")
+                _string(last, f"bridge {bridge_id} last_image")
+        elif base is not None or first is not None or last is not None:
+            raise ConfigError(f"bridge {bridge_id} endpoints require strategy flf2v")
+
+
+def _assembly_order(source: Mapping[str, Any]) -> None:
+    order = source.get("assembly_order")
+    if not isinstance(order, (list, tuple)) or not order:
+        raise ConfigError("assembly_order must be a non-empty list")
+    for item in order:
+        if not isinstance(item, Mapping):
+            raise ConfigError("assembly_order entry must be a mapping")
+        _string(item.get("shot_id"), "assembly_order shot_id")
+        _string(item.get("segment_id"), "assembly_order segment_id")
 
 
 def load_presets(path: Path) -> PresetCatalog:
@@ -364,6 +588,25 @@ def _number(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{name} must be a number")
     return float(value)
+
+
+def _positive_number(value: Any, name: str) -> float:
+    number = _number(value, name)
+    if number <= 0:
+        raise ConfigError(f"{name} must be positive")
+    return number
+
+
+def _positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{name} must be a positive integer")
+    return value
+
+
+def _non_negative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{name} must be a non-negative integer")
+    return value
 
 
 def _bool(value: Any, name: str) -> bool:

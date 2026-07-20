@@ -1,3 +1,3 @@
 # Add local input images here
 
-Place a real, rights-cleared neutral anchor image here as `anchor.png` before validating or rendering the sample project. No person image is bundled with this package.
+Place real, rights-cleared neutral anchors here as `s010_anchor.png` and `s020_anchor.png` before validating or rendering the sample project. The first is the continuous-shot anchor; the second is the intentional reset anchor. No person image or identity LoRA is bundled with this package.

@@ -1,26 +1,65 @@
+schema_version: 1
+project_id: neutral_continuity_starter
+title: Identity-disabled Wan 2.2 continuity starter
+mode: continuous
+target_seconds: 4
+output_root: outputs/neutral_continuity_starter
+
+outputs:
+  review_mp4: outputs/neutral_continuity_starter/review.mp4
+  edit_master_ffv1: outputs/neutral_continuity_starter/edit-master.mkv
+  edit_master_prores: outputs/neutral_continuity_starter/edit-master.mov
+
 preset: P0_IDENTITY_BASELINE
 presets: ../../config/presets.yaml
+
+render:
+  workflow: wan22_segment_i2v_native_api.json
+  width: 640
+  height: 640
+  frames: 17
+  generation_fps: 16
+  review_mp4_codec: h264
+  master_codec: ffv1
+  seed_base: 240719
+  seed_increment: 17
 
 models:
   high: wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
   low: wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+  vae: wan_2.1_vae.safetensors
+  text_encoder: umt5_xxl_fp8_e4m3fn_scaled.safetensors
 
 # Replace this portable inventory with model_roots for live disk discovery if desired.
 model_files:
   - wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
   - wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+  - wan_2.1_vae.safetensors
+  - umt5_xxl_fp8_e4m3fn_scaled.safetensors
 
 workflow_api: ../../workflows/api/wan22_segment_i2v_native_api.json
 bridge_workflow_api: ../../workflows/api/wan22_bridge_flf2v_native_api.json
+workflow_hashes:
+  segment_api: fe7ffa26875ced3487956a68f417cec61a126bebd1e0133cf7bd481ddc069883
+  bridge_api: be005de9c98fcd4467ee0f26b784cd925d79e4eac1e5ec0d127d56517c378126
 
-inputs:
-  # Supply one neutral, fully clothed adult anchor image before rendering.
-  opening_frame: inputs/anchor.png
+# Captured from the local preflight on 2026-07-19. Refresh before a production run.
+environment_snapshot:
+  captured_at: "2026-07-19T00:00:00Z"
+  platform: Windows-10-10.0.26200-SP0
+  python: CPython 3.11.6
+  gpu: NVIDIA GeForce RTX 5090, 595.95, 32607 MiB
 
 attempts_dir: attempts
 candidate_count: 5
 policy:
   automatic_continuation: false
+continuation:
+  strategy: selected_tail
+  reset_limit: 3
+qc:
+  candidate_count: 5
+  retry_limit: 2
 
 loras:
   identity:
@@ -45,39 +84,62 @@ request:
   negative: >-
     low quality, overexposure, still image, subtitles, watermark, distorted anatomy, extra fingers,
     malformed hands, duplicate limbs, unstable face, abrupt camera jump, crowded background.
-  seed: 240719
-  width: 640
-  height: 640
-  frames: 17
+
+prompt_blocks:
+  identity_lock: >-
+    The same adult reference subject; preserve adult identity, hairstyle, body silhouette,
+    clothing, fabric, colors, and fit without glamour framing.
+  continuity_lock: >-
+    Continue the established motion, camera path, environment, lighting, and wardrobe without a pose reset.
+  negative: >-
+    distorted anatomy, extra fingers, malformed hands, duplicate limbs, unstable face, camera reset,
+    flicker, body reshaping, glamour pose, cleavage emphasis, chest bounce.
 
 shots:
   - id: S010
+    target_seconds: 2
+    # Add this user-owned fully clothed adult anchor before any render.
+    anchor_image: inputs/s010_anchor.png
     camera: slow forward dolly, eye-level framing
     environment: quiet modern hallway with soft window light
     segments:
       - id: S010_C001
         action: The adult walks three measured steps down the hallway and pauses naturally.
+        expected_seconds: 1.0625
         seed_offset: 0
+      - id: S010_C002
+        action: The same adult continues one measured step from the accepted prior tail frame.
+        expected_seconds: 1.0625
+        seed_offset: 17
+        continue_from: S010_C001
   - id: S020
+    target_seconds: 2
+    # This reset anchor is also user-supplied; it is not an identity LoRA claim.
+    anchor_image: inputs/s020_anchor.png
     camera: gentle lateral move, eye-level framing
     environment: the same hallway and lighting continuity
     segments:
       - id: S020_C001
         action: The adult turns slightly toward a closed office door, then settles into a still pose.
-        seed_offset: 1
+        expected_seconds: 1.0625
+        seed_offset: 34
 
 bridges:
   - id: B010
     shot_id: S010
-    # This explicit technical smoke uses the declared base source for both endpoints.
-    # For a story bridge, replace it with first_image and last_image selected from QC output.
-    base_source_image: inputs/anchor.png
+    strategy: flf2v
+    purpose: technical_smoke
+    # This explicit technical smoke uses the declared anchor for both endpoints.
+    # Story bridges must use accepted tail/head QC candidates instead.
+    base_source_image: inputs/s010_anchor.png
     frames: 33
 
 # Project assembly does not infer chronology from attempt folders.
 assembly_order:
   - shot_id: S010
     segment_id: S010_C001
+  - shot_id: S010
+    segment_id: S010_C002
   - shot_id: S010
     segment_id: B010
   - shot_id: S020

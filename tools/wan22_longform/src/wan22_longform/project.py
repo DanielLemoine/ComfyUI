@@ -8,6 +8,8 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Any, Callable, Mapping
 
+import yaml
+
 from .config import ProjectConfig
 from .hashing import sha256_file
 
@@ -40,6 +42,20 @@ class Attempt:
     parent_attempt: Path | None = None
 
 
+@dataclass(frozen=True)
+class QcCandidate:
+    path: Path
+    sha256: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class SelectedInput:
+    path: Path
+    sha256: str
+    details: Mapping[str, Any]
+
+
 _TRANSITIONS: Mapping[AttemptState, frozenset[AttemptState]] = {
     AttemptState.PLANNED: frozenset({AttemptState.RENDERING}),
     AttemptState.RENDERING: frozenset({AttemptState.RENDERED}),
@@ -65,6 +81,7 @@ def create_attempt(
     shot_id: str,
     segment_id: str,
     *,
+    selected_inputs: Mapping[str, Mapping[str, Any]] | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Attempt:
     """Create a new append-only attempt directory with local provenance snapshots."""
@@ -114,15 +131,15 @@ def create_attempt(
             "state": attempt.state,
         },
     )
-    _write_json(
-        attempt_path / "provenance.json",
-        {
-            "inputs": {name: sha256_file(path) for name, path in _input_paths(project).items()},
-            "request": sha256_file(request_snapshot),
-            "source_manifest": sha256_file(manifest_snapshot),
-            "workflow": sha256_file(workflow_snapshot),
-        },
-    )
+    provenance = {
+        "inputs": {name: sha256_file(path) for name, path in _input_paths(project).items()},
+        "request": sha256_file(request_snapshot),
+        "source_manifest": sha256_file(manifest_snapshot),
+        "workflow": sha256_file(workflow_snapshot),
+    }
+    if selected_inputs is not None:
+        provenance["selected_inputs"] = _selected_inputs_payload(selected_inputs)
+    _write_json(attempt_path / "provenance.json", provenance)
     return attempt
 
 
@@ -191,6 +208,92 @@ def needs_render(attempt: Attempt) -> bool:
     return load_attempt(attempt.path).state is AttemptState.PLANNED
 
 
+def selected_tail_frame(attempt: Attempt) -> QcCandidate:
+    """Read the immutable tail selection recorded with one accepted attempt."""
+    persisted, decision_paths = _load_attempt(attempt.path)
+    if persisted.state is not AttemptState.ACCEPTED:
+        raise ProjectStateError("continuation source attempt is not accepted")
+    if persisted.attempt_id != attempt.attempt_id:
+        raise ProjectStateError("continuation source attempt identity does not match")
+    acceptance = []
+    for path in decision_paths:
+        decision = _read_json(path)
+        if decision.get("to") == AttemptState.ACCEPTED:
+            acceptance.append(decision)
+    if len(acceptance) != 1:
+        raise ProjectStateError("accepted attempt has no unambiguous acceptance decision")
+    selected = acceptance[0].get("selected_continuation_frame")
+    if not isinstance(selected, Mapping):
+        raise ProjectStateError("accepted attempt has no selected tail continuation frame")
+    raw_path = selected.get("path")
+    expected_hash = selected.get("sha256")
+    if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
+        raise ProjectStateError("accepted tail continuation selection is invalid")
+    candidate = accepted_qc_candidate(persisted, Path(raw_path), "tail")
+    if candidate.sha256 != expected_hash:
+        raise ProjectStateError("selected tail continuation frame hash changed")
+    return candidate
+
+
+def accepted_qc_candidate(attempt: Attempt, path: Path, kind: str) -> QcCandidate:
+    """Return one hash-verified head or tail candidate from an accepted attempt."""
+    if kind not in {"head", "tail"}:
+        raise ProjectStateError("QC candidate kind must be head or tail")
+    persisted = load_attempt(attempt.path)
+    if persisted.state is not AttemptState.ACCEPTED:
+        raise ProjectStateError("QC candidate source attempt is not accepted")
+    qc = _read_qc(attempt.path / "qc.yaml")
+    candidates = qc.get("candidate_frames")
+    if not isinstance(candidates, Mapping):
+        raise ProjectStateError("QC record has no candidate_frames mapping")
+    entries = candidates.get(kind)
+    if not isinstance(entries, list):
+        raise ProjectStateError(f"QC record has no {kind} candidate list")
+    wanted = path.resolve()
+    matches: list[QcCandidate] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ProjectStateError("QC candidate entry is invalid")
+        raw_path = entry.get("path")
+        expected_hash = entry.get("sha256")
+        if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
+            raise ProjectStateError("QC candidate entry has invalid provenance")
+        candidate_path = Path(raw_path).resolve()
+        if candidate_path != wanted:
+            continue
+        if not candidate_path.is_file():
+            raise ProjectStateError(f"QC candidate frame does not exist: {candidate_path}")
+        actual_hash = sha256_file(candidate_path)
+        if actual_hash != expected_hash:
+            raise ProjectStateError(f"QC candidate frame hash changed: {candidate_path}")
+        matches.append(QcCandidate(candidate_path, actual_hash, kind))
+    if len(matches) != 1:
+        raise ProjectStateError(f"accepted attempt has no unambiguous {kind} QC candidate")
+    return matches[0]
+
+
+def selected_input(attempt: Attempt, name: str) -> SelectedInput:
+    """Read one hash-verified input selected before an immutable attempt was created."""
+    record = _read_json(attempt.path / "provenance.json")
+    selected = record.get("selected_inputs")
+    if not isinstance(selected, Mapping):
+        raise ProjectStateError("attempt has no selected input provenance")
+    entry = selected.get(name)
+    if not isinstance(entry, Mapping):
+        raise ProjectStateError(f"attempt has no selected provenance for {name}")
+    raw_path = entry.get("path")
+    expected_hash = entry.get("sha256")
+    if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
+        raise ProjectStateError(f"attempt selected provenance is invalid for {name}")
+    path = Path(raw_path).resolve()
+    if not path.is_file():
+        raise ProjectStateError(f"attempt selected input does not exist: {path}")
+    actual_hash = sha256_file(path)
+    if actual_hash != expected_hash:
+        raise ProjectStateError(f"attempt selected input hash changed: {path}")
+    return SelectedInput(path, actual_hash, dict(entry))
+
+
 def _attempts_root(project: ProjectConfig) -> Path:
     configured = project.source.get("attempts_dir", project.path.parent / "attempts")
     root = Path(configured)
@@ -231,6 +334,32 @@ def _input_paths(project: ProjectConfig) -> dict[str, Path]:
             path = project.path.parent / path
         paths[name] = path
     return paths
+
+
+def _selected_inputs_payload(
+    selected_inputs: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    payload: dict[str, dict[str, Any]] = {}
+    for name, entry in selected_inputs.items():
+        if not isinstance(name, str) or not name:
+            raise ProjectStateError("selected input names must be non-empty strings")
+        if not isinstance(entry, Mapping):
+            raise ProjectStateError(f"selected input {name} must be a mapping")
+        raw_path = entry.get("path")
+        expected_hash = entry.get("sha256")
+        if not isinstance(raw_path, (str, Path)) or not isinstance(expected_hash, str):
+            raise ProjectStateError(f"selected input {name} has invalid provenance")
+        path = Path(raw_path).resolve()
+        if not path.is_file():
+            raise ProjectStateError(f"selected input does not exist: {path}")
+        actual_hash = sha256_file(path)
+        if actual_hash != expected_hash:
+            raise ProjectStateError(f"selected input hash changed: {path}")
+        copied = {str(key): _json_ready(value) for key, value in entry.items()}
+        copied["path"] = str(path)
+        copied["sha256"] = actual_hash
+        payload[name] = copied
+    return payload
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -304,6 +433,16 @@ def _read_json(path: Path) -> Mapping[str, Any]:
         raise ProjectStateError(f"invalid attempt record: {path}") from error
     if not isinstance(value, Mapping):
         raise ProjectStateError(f"attempt record must be a JSON object: {path}")
+    return value
+
+
+def _read_qc(path: Path) -> Mapping[str, Any]:
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ProjectStateError(f"invalid QC record: {path}") from error
+    if not isinstance(value, Mapping):
+        raise ProjectStateError(f"QC record must be a mapping: {path}")
     return value
 
 

@@ -207,6 +207,7 @@ def _handle_validate_project(args: argparse.Namespace) -> int:
 
 def _handle_render_segment(args: argparse.Namespace) -> int:
     project = load_project(args.project)
+    validate_project(project)
     attempt = render_segment(
         project,
         args.shot_id,
@@ -219,6 +220,7 @@ def _handle_render_segment(args: argparse.Namespace) -> int:
 
 def _handle_render_bridge(args: argparse.Namespace) -> int:
     project = load_project(args.project)
+    validate_project(project)
     attempt = render_bridge(project, args.bridge_id, _client(args))
     _print_json(_attempt_payload(attempt))
     return 0
@@ -226,10 +228,18 @@ def _handle_render_bridge(args: argparse.Namespace) -> int:
 
 def _handle_render_shot(args: argparse.Namespace) -> int:
     project = load_project(args.project)
+    validate_project(project)
     shot = _find_shot(project, args.shot_id)
     segments = shot.get("segments")
     if not isinstance(segments, (list, tuple)) or not segments:
         raise ValueError(f"shot has no renderable segments: {args.shot_id}")
+    if any(
+        isinstance(segment, Mapping) and segment.get("continue_from") is not None
+        for segment in segments
+    ):
+        raise ValueError(
+            "render-shot refuses dependent continuations; accept an upstream tail and use render-segment"
+        )
     client = _client(args)
     rendered: list[dict[str, str]] = []
     for segment in segments:
@@ -357,12 +367,14 @@ def _find_shot(project: ProjectConfig, shot_id: str) -> Mapping[str, Any]:
     return shot
 
 
-def _qc_candidate_paths(qc: Mapping[str, Any]) -> list[Path]:
+def _qc_candidate_paths(
+    qc: Mapping[str, Any], *, locations: tuple[str, ...] = ("head", "tail")
+) -> list[Path]:
     candidates = qc.get("candidate_frames")
     if not isinstance(candidates, Mapping):
         raise ValueError("QC record has no candidate_frames mapping")
     frames: list[Path] = []
-    for location in ("head", "tail"):
+    for location in locations:
         entries = candidates.get(location)
         if not isinstance(entries, list):
             raise ValueError(f"QC record has no {location} candidate list")
@@ -381,9 +393,9 @@ def _qc_candidate_paths(qc: Mapping[str, Any]) -> list[Path]:
 def _validated_continuation_frame(attempt_path: Path, selected: Path) -> Path:
     if not selected.is_file():
         raise ValueError(f"selected continuation frame does not exist: {selected}")
-    candidates = _qc_candidate_paths(read_qc(attempt_path / "qc.yaml"))
+    candidates = _qc_candidate_paths(read_qc(attempt_path / "qc.yaml"), locations=("tail",))
     if selected not in candidates:
-        raise ValueError("selected continuation frame is not a hash-verified QC candidate")
+        raise ValueError("selected continuation frame is not a hash-verified QC tail candidate")
     return selected
 
 

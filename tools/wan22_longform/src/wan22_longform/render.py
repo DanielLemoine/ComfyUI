@@ -14,12 +14,23 @@ from .config import (
     load_project,
     load_presets,
     resolve_preset,
+    validate_project_contract,
     validate_lora_policy,
 )
 from .frames import create_contact_sheet, extract_candidate_frames
 from .hashing import sha256_file
 from .metadata import RenderMetadata, write_metadata
-from .project import Attempt, AttemptState, create_attempt, load_attempt, transition_attempt
+from .project import (
+    Attempt,
+    AttemptState,
+    ProjectStateError,
+    accepted_qc_candidate,
+    create_attempt,
+    load_attempt,
+    selected_input,
+    selected_tail_frame,
+    transition_attempt,
+)
 from .qc import initialize_qc
 from .workflow import (
     ApiGraph,
@@ -37,6 +48,27 @@ class RenderError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class InputSelection:
+    path: Path
+    sha256: str
+    source: str
+    upstream_attempt: Path | None = None
+    candidate_kind: str | None = None
+
+    def provenance(self) -> dict[str, str]:
+        payload = {
+            "path": str(self.path),
+            "sha256": self.sha256,
+            "source": self.source,
+        }
+        if self.upstream_attempt is not None:
+            payload["upstream_attempt"] = str(self.upstream_attempt)
+        if self.candidate_kind is not None:
+            payload["candidate_kind"] = self.candidate_kind
+        return payload
+
+
+@dataclass(frozen=True)
 class SegmentRequest:
     positive: str
     negative: str
@@ -44,7 +76,7 @@ class SegmentRequest:
     width: int
     height: int
     frames: int
-    opening_frame: Path
+    opening: InputSelection
 
 
 @dataclass(frozen=True)
@@ -57,8 +89,8 @@ class BridgeRequest:
     width: int
     height: int
     frames: int
-    first_image: Path
-    last_image: Path
+    first_image: InputSelection
+    last_image: InputSelection
 
 
 class RenderClient(Protocol):
@@ -79,21 +111,31 @@ def render_segment(
     *,
     attempt: Attempt | None = None,
 ) -> Attempt:
-    attempt = _new_or_planned_attempt(project, shot_id, segment_id, attempt)
+    if attempt is None:
+        segment = _segment_request(project, shot_id, segment_id)
+        attempt = _new_or_planned_attempt(
+            project,
+            shot_id,
+            segment_id,
+            None,
+            selected_inputs={"opening_frame": segment.opening.provenance()},
+        )
+    else:
+        attempt = _new_or_planned_attempt(project, shot_id, segment_id, attempt)
+        segment = _segment_request(
+            project,
+            shot_id,
+            segment_id,
+            opening=_stored_input_selection(attempt, "opening_frame"),
+        )
     base_graph = _read_graph(attempt.path / "workflow-api.json")
     resolved, available_files = _resolved_submission_config(project)
     graph = build_api_graph(base_graph, resolved, available_files)
-    segment = _segment_request(project, shot_id, segment_id)
     _write_json_exclusive(
         attempt.path / "input-upload.json",
-        {
-            "opening_frame": {
-                "path": str(segment.opening_frame),
-                "sha256": sha256_file(segment.opening_frame),
-            }
-        },
+        {"opening_frame": segment.opening.provenance()},
     )
-    uploaded_opening = _safe_uploaded_name(client.upload_image(segment.opening_frame))
+    uploaded_opening = _safe_uploaded_name(client.upload_image(segment.opening.path))
     _patch_segment_graph(graph, segment, uploaded_opening)
     _validate_submission_graph(project, graph)
     _write_json_exclusive(attempt.path / "configured-workflow-api.json", graph)
@@ -165,6 +207,7 @@ def render_segment(
                     "type": history_output.type,
                 },
                 "prompt_id": prompt_id,
+                "input_provenance": {"opening_frame": segment.opening.provenance()},
                 "submission_request": {
                     "path": str(submission_path),
                     "sha256": sha256_file(submission_path),
@@ -192,29 +235,41 @@ def render_bridge(
     attempt: Attempt | None = None,
 ) -> Attempt:
     """Render a native FLF bridge from explicitly selected endpoint images."""
-    bridge = _bridge_request(project, bridge_id)
     bridge_project = _project_with_bridge_workflow(project)
-    attempt = _new_or_planned_attempt(
-        bridge_project, bridge.shot_id, bridge.bridge_id, attempt
-    )
+    if attempt is None:
+        bridge = _bridge_request(project, bridge_id)
+        attempt = _new_or_planned_attempt(
+            bridge_project,
+            bridge.shot_id,
+            bridge.bridge_id,
+            None,
+            selected_inputs={
+                "first_image": bridge.first_image.provenance(),
+                "last_image": bridge.last_image.provenance(),
+            },
+        )
+    else:
+        bridge = _bridge_request(
+            project,
+            bridge_id,
+            first_image=_stored_input_selection(attempt, "first_image"),
+            last_image=_stored_input_selection(attempt, "last_image"),
+        )
+        attempt = _new_or_planned_attempt(
+            bridge_project, bridge.shot_id, bridge.bridge_id, attempt
+        )
     base_graph = _read_graph(attempt.path / "workflow-api.json")
     resolved, available_files = _resolved_submission_config(bridge_project)
     graph = build_api_graph(base_graph, resolved, available_files)
     _write_json_exclusive(
         attempt.path / "input-upload.json",
         {
-            "first_image": {
-                "path": str(bridge.first_image),
-                "sha256": sha256_file(bridge.first_image),
-            },
-            "last_image": {
-                "path": str(bridge.last_image),
-                "sha256": sha256_file(bridge.last_image),
-            },
+            "first_image": bridge.first_image.provenance(),
+            "last_image": bridge.last_image.provenance(),
         },
     )
-    uploaded_first = _safe_uploaded_name(client.upload_image(bridge.first_image))
-    uploaded_last = _safe_uploaded_name(client.upload_image(bridge.last_image))
+    uploaded_first = _safe_uploaded_name(client.upload_image(bridge.first_image.path))
+    uploaded_last = _safe_uploaded_name(client.upload_image(bridge.last_image.path))
     _patch_bridge_graph(graph, bridge, uploaded_first, uploaded_last)
     _validate_submission_graph(bridge_project, graph)
     _write_json_exclusive(attempt.path / "configured-workflow-api.json", graph)
@@ -286,6 +341,10 @@ def render_bridge(
                     "type": history_output.type,
                 },
                 "prompt_id": prompt_id,
+                "input_provenance": {
+                    "first_image": bridge.first_image.provenance(),
+                    "last_image": bridge.last_image.provenance(),
+                },
                 "submission_request": {
                     "path": str(submission_path),
                     "sha256": sha256_file(submission_path),
@@ -339,9 +398,11 @@ def _new_or_planned_attempt(
     shot_id: str,
     segment_id: str,
     supplied: Attempt | None,
+    *,
+    selected_inputs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Attempt:
     if supplied is None:
-        return create_attempt(project, shot_id, segment_id)
+        return create_attempt(project, shot_id, segment_id, selected_inputs=selected_inputs)
     persisted = load_attempt(supplied.path)
     if persisted.shot_id != shot_id or persisted.segment_id != segment_id:
         raise RenderError("planned attempt identity does not match the requested render")
@@ -390,6 +451,9 @@ def _validate_submission_graph(project: ProjectConfig, graph: ApiGraph) -> None:
 
 def validate_project(project: ProjectConfig) -> dict[str, int]:
     """Validate local render inputs and both native graph types without mutation."""
+    validate_project_contract(project)
+    _validate_workflow_hashes(project)
+    _validate_declared_input_files(project)
     resolved, available_files = _resolved_submission_config(project)
     base_graph = _project_workflow_graph(project)
     graph = build_api_graph(base_graph, resolved, available_files)
@@ -407,7 +471,8 @@ def validate_project(project: ProjectConfig) -> dict[str, int]:
         for segment in segments:
             if not isinstance(segment, Mapping) or not isinstance(segment.get("id"), str):
                 raise RenderError(f"configured shot has an invalid segment: {shot['id']}")
-            _segment_request(project, shot["id"], segment["id"])
+            if segment.get("continue_from") is None:
+                _segment_request(project, shot["id"], segment["id"])
             segment_count += 1
 
     bridge_count = 0
@@ -423,9 +488,57 @@ def validate_project(project: ProjectConfig) -> dict[str, int]:
         for bridge in bridges:
             if not isinstance(bridge, Mapping) or not isinstance(bridge.get("id"), str):
                 raise RenderError("each bridge requires a string id")
-            _bridge_request(project, bridge["id"])
             bridge_count += 1
     return {"bridges": bridge_count, "segments": segment_count}
+
+
+def _validate_workflow_hashes(project: ProjectConfig) -> None:
+    expected = _mapping(project.source.get("workflow_hashes"), "workflow_hashes")
+    for workflow_key, hash_key in (
+        ("workflow_api", "segment_api"),
+        ("bridge_workflow_api", "bridge_api"),
+    ):
+        path = _local_path(project, project.source.get(workflow_key))
+        if not path.is_file():
+            raise RenderError(f"{workflow_key} does not exist: {path}")
+        if sha256_file(path) != expected.get(hash_key):
+            raise RenderError(f"{workflow_key} hash does not match workflow_hashes.{hash_key}")
+
+
+def _validate_declared_input_files(project: ProjectConfig) -> None:
+    inputs = _mapping(project.source.get("inputs", {}), "inputs")
+    opening = inputs.get("opening_frame")
+    if isinstance(opening, Mapping):
+        opening = opening.get("path")
+    if opening is not None:
+        _existing_local_path(project, opening, "project opening frame")
+    shots = project.source.get("shots")
+    if not isinstance(shots, (list, tuple)):
+        raise RenderError("shots must be a list")
+    for shot in shots:
+        if not isinstance(shot, Mapping):
+            raise RenderError("each shot must be a mapping")
+        anchor = shot.get("anchor_image")
+        if anchor is not None:
+            _existing_local_path(project, anchor, "shot anchor image")
+        segments = shot.get("segments")
+        if not isinstance(segments, (list, tuple)):
+            raise RenderError("shot segments must be a list")
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                raise RenderError("segment must be a mapping")
+            for key in ("opening_image", "opening_frame"):
+                if key in segment:
+                    _existing_local_path(project, segment[key], f"segment {key}")
+    bridges = project.source.get("bridges", ())
+    if not isinstance(bridges, (list, tuple)):
+        raise RenderError("bridges must be a list")
+    for bridge in bridges:
+        if not isinstance(bridge, Mapping):
+            raise RenderError("bridge must be a mapping")
+        base = bridge.get("base_source_image")
+        if base is not None:
+            _existing_local_path(project, base, "bridge base_source_image")
 
 
 def _project_workflow_graph(project: ProjectConfig) -> ApiGraph:
@@ -436,7 +549,11 @@ def _project_workflow_graph(project: ProjectConfig) -> ApiGraph:
 
 
 def _segment_request(
-    project: ProjectConfig, shot_id: str, segment_id: str
+    project: ProjectConfig,
+    shot_id: str,
+    segment_id: str,
+    *,
+    opening: InputSelection | None = None,
 ) -> SegmentRequest:
     request = _mapping(project.source.get("request", {}), "request")
     render = _mapping(project.source.get("render", {}), "render")
@@ -475,11 +592,17 @@ def _segment_request(
         width=width,
         height=height,
         frames=frames,
-        opening_frame=_opening_frame(project),
+        opening=opening or _opening_selection(project, shot_id, shot, segment),
     )
 
 
-def _bridge_request(project: ProjectConfig, bridge_id: str) -> BridgeRequest:
+def _bridge_request(
+    project: ProjectConfig,
+    bridge_id: str,
+    *,
+    first_image: InputSelection | None = None,
+    last_image: InputSelection | None = None,
+) -> BridgeRequest:
     bridges = project.source.get("bridges")
     if not isinstance(bridges, (list, tuple)):
         raise RenderError("bridges must be a list")
@@ -493,6 +616,9 @@ def _bridge_request(project: ProjectConfig, bridge_id: str) -> BridgeRequest:
     )
     if bridge is None:
         raise RenderError(f"configured bridge was not found: {bridge_id}")
+    strategy = bridge.get("strategy", "flf2v")
+    if strategy != "flf2v":
+        raise RenderError("render-bridge only handles bridges with strategy flf2v")
     request = _mapping(project.source.get("request", {}), "request")
     render = _mapping(project.source.get("render", {}), "render")
     prompt_blocks = _mapping(project.source.get("prompt_blocks", {}), "prompt_blocks")
@@ -505,7 +631,10 @@ def _bridge_request(project: ProjectConfig, bridge_id: str) -> BridgeRequest:
     shot_id = bridge.get("shot_id")
     if not isinstance(shot_id, str) or not shot_id:
         raise RenderError("bridge shot_id is required for immutable attempt paths")
-    first_image, last_image = _bridge_endpoints(project, bridge)
+    if (first_image is None) != (last_image is None):
+        raise RenderError("bridge replay must preserve both endpoint selections")
+    if first_image is None:
+        first_image, last_image = _bridge_endpoints(project, bridge)
     return BridgeRequest(
         bridge_id=bridge_id,
         shot_id=shot_id,
@@ -540,7 +669,7 @@ def _bridge_request(project: ProjectConfig, bridge_id: str) -> BridgeRequest:
 
 def _bridge_endpoints(
     project: ProjectConfig, bridge: Mapping[str, Any]
-) -> tuple[Path, Path]:
+) -> tuple[InputSelection, InputSelection]:
     first = bridge.get("first_image")
     last = bridge.get("last_image")
     base = bridge.get("base_source_image")
@@ -549,15 +678,19 @@ def _bridge_endpoints(
             raise RenderError(
                 "bridge base_source_image cannot be combined with first_image or last_image"
             )
-        path = _existing_local_path(project, base, "bridge base_source_image")
-        return path, path
+        selection = _local_input_selection(
+            project, base, "bridge base_source_image", "technical_smoke_base"
+        )
+        return selection, selection
     if first is None or last is None:
         raise RenderError(
             "bridge requires explicit first_image and last_image, or one base_source_image"
         )
+    first_path = _existing_local_path(project, first, "bridge first_image")
+    last_path = _existing_local_path(project, last, "bridge last_image")
     return (
-        _existing_local_path(project, first, "bridge first_image"),
-        _existing_local_path(project, last, "bridge last_image"),
+        _accepted_bridge_endpoint(project, first_path, "tail"),
+        _accepted_bridge_endpoint(project, last_path, "head"),
     )
 
 
@@ -638,28 +771,171 @@ def _prompt_value(
 def _segment_seed(
     segment: Mapping[str, Any], request: Mapping[str, Any], render: Mapping[str, Any]
 ) -> int:
-    explicit = _first_value(segment, request, keys=("seed",))
+    explicit = segment.get("seed")
     if explicit is not None:
         return _non_negative_int(explicit, "segment seed")
     base = render.get("seed_base")
-    if base is None:
+    offset = _non_negative_int(segment.get("seed_offset", 0), "segment seed_offset")
+    if base is not None:
+        return _non_negative_int(base, "render seed_base") + offset
+    request_seed = request.get("seed")
+    if request_seed is None:
         raise RenderError("segment seed or render.seed_base is required")
-    return _non_negative_int(base, "render seed_base") + _non_negative_int(
-        segment.get("seed_offset", 0), "segment seed_offset"
+    return _non_negative_int(request_seed, "request seed") + offset
+
+
+def _opening_selection(
+    project: ProjectConfig,
+    shot_id: str,
+    shot: Mapping[str, Any],
+    segment: Mapping[str, Any],
+) -> InputSelection:
+    continuation = segment.get("continue_from")
+    if continuation is not None:
+        if "opening_image" in segment or "opening_frame" in segment:
+            raise RenderError("continued segment cannot combine continue_from with an opening override")
+        return _continuation_selection(project, shot_id, shot, segment, continuation)
+    for key in ("opening_image", "opening_frame"):
+        if key in segment:
+            return _local_input_selection(
+                project, segment[key], f"segment {key}", "segment_override"
+            )
+    anchor = shot.get("anchor_image")
+    if anchor is not None:
+        return _local_input_selection(project, anchor, "shot anchor image", "shot_anchor")
+    return _project_fallback_selection(project)
+
+
+def _continuation_selection(
+    project: ProjectConfig,
+    shot_id: str,
+    shot: Mapping[str, Any],
+    segment: Mapping[str, Any],
+    reference: object,
+) -> InputSelection:
+    if not isinstance(reference, str) or not reference:
+        raise RenderError("continue_from must be a non-empty same-shot segment id")
+    segments = shot.get("segments")
+    if not isinstance(segments, (list, tuple)):
+        raise RenderError(f"configured shot has no segments: {shot_id}")
+    segment_id = segment.get("id")
+    current_index = next(
+        (
+            index
+            for index, item in enumerate(segments)
+            if isinstance(item, Mapping) and item.get("id") == segment_id
+        ),
+        None,
+    )
+    reference_index = next(
+        (
+            index
+            for index, item in enumerate(segments)
+            if isinstance(item, Mapping) and item.get("id") == reference
+        ),
+        None,
+    )
+    if current_index is None or reference_index is None:
+        raise RenderError("continue_from must reference a same-shot segment")
+    if reference_index >= current_index:
+        raise RenderError("continue_from must reference an earlier same-shot segment")
+    accepted = [
+        attempt
+        for attempt in _project_attempts(project)
+        if attempt.shot_id == shot_id
+        and attempt.segment_id == reference
+        and attempt.state is AttemptState.ACCEPTED
+    ]
+    if len(accepted) != 1:
+        raise RenderError("continue_from requires exactly one accepted upstream attempt")
+    try:
+        candidate = selected_tail_frame(accepted[0])
+    except ProjectStateError as error:
+        raise RenderError(f"continue_from cannot use the selected upstream tail: {error}") from error
+    return InputSelection(
+        path=candidate.path,
+        sha256=candidate.sha256,
+        source="accepted_tail",
+        upstream_attempt=accepted[0].path,
+        candidate_kind="tail",
     )
 
 
-def _opening_frame(project: ProjectConfig) -> Path:
+def _accepted_bridge_endpoint(
+    project: ProjectConfig, path: Path, kind: str
+) -> InputSelection:
+    matches = []
+    for attempt in _project_attempts(project):
+        if attempt.state is not AttemptState.ACCEPTED:
+            continue
+        try:
+            candidate = accepted_qc_candidate(attempt, path, kind)
+        except ProjectStateError as error:
+            if "hash changed" in str(error):
+                raise RenderError(f"bridge {kind} endpoint hash changed: {path}") from error
+            continue
+        matches.append((attempt, candidate))
+    if len(matches) != 1:
+        raise RenderError(
+            "bridge endpoints require accepted hash-verified tail and head QC candidates"
+        )
+    attempt, candidate = matches[0]
+    return InputSelection(
+        path=candidate.path,
+        sha256=candidate.sha256,
+        source="accepted_qc_candidate",
+        upstream_attempt=attempt.path,
+        candidate_kind=kind,
+    )
+
+
+def _project_attempts(project: ProjectConfig) -> tuple[Attempt, ...]:
+    root = project.source.get("attempts_dir", project.path.parent / "attempts")
+    if not isinstance(root, (str, Path)):
+        raise RenderError("attempts_dir must be a local path")
+    attempts_root = Path(root)
+    if not attempts_root.is_absolute():
+        attempts_root = project.path.parent / attempts_root
+    if not attempts_root.is_dir():
+        return ()
+    try:
+        attempts = [load_attempt(path.parent) for path in attempts_root.rglob("attempt.json")]
+    except ProjectStateError as error:
+        raise RenderError(f"invalid immutable attempt record: {error}") from error
+    return tuple(sorted(attempts, key=lambda attempt: str(attempt.path)))
+
+
+def _stored_input_selection(attempt: Attempt, name: str) -> InputSelection:
+    try:
+        stored = selected_input(attempt, name)
+    except ProjectStateError as error:
+        raise RenderError(f"planned attempt cannot resume without {name} provenance: {error}") from error
+    source = stored.details.get("source")
+    if not isinstance(source, str) or not source:
+        raise RenderError(f"planned attempt {name} provenance has no source")
+    upstream_raw = stored.details.get("upstream_attempt")
+    upstream = Path(upstream_raw) if isinstance(upstream_raw, str) else None
+    candidate_kind = stored.details.get("candidate_kind")
+    if candidate_kind is not None and not isinstance(candidate_kind, str):
+        raise RenderError(f"planned attempt {name} provenance has invalid candidate kind")
+    return InputSelection(stored.path, stored.sha256, source, upstream, candidate_kind)
+
+
+def _local_input_selection(
+    project: ProjectConfig, value: object, label: str, source: str
+) -> InputSelection:
+    path = _existing_local_path(project, value, label).resolve()
+    return InputSelection(path, sha256_file(path), source)
+
+
+def _project_fallback_selection(project: ProjectConfig) -> InputSelection:
     inputs = _mapping(project.source.get("inputs", {}), "inputs")
     value = inputs.get("opening_frame")
     if isinstance(value, Mapping):
         value = value.get("path")
     if value is None:
         raise RenderError("inputs.opening_frame is required")
-    path = _local_path(project, value)
-    if not path.is_file():
-        raise RenderError(f"opening_frame does not exist: {path}")
-    return path
+    return _local_input_selection(project, value, "project opening frame", "project_fallback")
 
 
 def _existing_local_path(project: ProjectConfig, value: object, label: str) -> Path:

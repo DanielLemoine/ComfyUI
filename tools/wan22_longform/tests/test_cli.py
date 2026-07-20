@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import sys
@@ -124,30 +125,105 @@ class CliTests(unittest.TestCase):
         opening.write_bytes(b"opening")
         manifest = root / "project.yaml"
         source = {
+            "schema_version": 1,
+            "project_id": "cli_fixture",
+            "title": "CLI fixture",
+            "mode": "cinematic",
+            "target_seconds": 2,
+            "output_root": str(root / "outputs"),
+            "outputs": {
+                "review_mp4": str(root / "outputs" / "review.mp4"),
+                "edit_master_ffv1": str(root / "outputs" / "master.mkv"),
+                "edit_master_prores": str(root / "outputs" / "master.mov"),
+            },
             "preset": "P0_IDENTITY_BASELINE",
-            "models": {"high": "high.safetensors", "low": "low.safetensors"},
-            "model_files": ["high.safetensors", "low.safetensors"],
+            "models": {
+                "high": "high.safetensors",
+                "low": "low.safetensors",
+                "vae": "vae.safetensors",
+                "text_encoder": "text-encoder.safetensors",
+            },
+            "model_files": [
+                "high.safetensors",
+                "low.safetensors",
+                "vae.safetensors",
+                "text-encoder.safetensors",
+            ],
             "workflow_api": str(PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"),
             "bridge_workflow_api": str(PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"),
+            "workflow_hashes": {
+                "segment_api": hashlib.sha256(
+                    (PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json").read_bytes()
+                ).hexdigest(),
+                "bridge_api": hashlib.sha256(
+                    (PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json").read_bytes()
+                ).hexdigest(),
+            },
+            "environment_snapshot": {
+                "captured_at": "2026-07-19T00:00:00Z",
+                "platform": "fixture",
+                "python": "3.11.6",
+                "gpu": "fixture",
+            },
+            "render": {
+                "workflow": "wan22_segment_i2v_native_api.json",
+                "width": 640,
+                "height": 640,
+                "frames": 17,
+                "generation_fps": 16,
+                "review_mp4_codec": "h264",
+                "master_codec": "ffv1",
+                "seed_base": 1,
+                "seed_increment": 17,
+            },
             "request": {
                 "positive": "neutral fully clothed adult",
                 "negative": "low quality",
-                "seed": 1,
                 "width": 640,
                 "height": 640,
                 "frames": 17,
             },
             "inputs": {"opening_frame": str(opening)},
             "attempts_dir": str(root / "attempts"),
-            "shots": [{"id": "S010", "segments": [{"id": "S010_C001"}]}],
+            "policy": {"automatic_continuation": False},
+            "continuation": {"strategy": "selected_tail", "reset_limit": 2},
+            "qc": {"candidate_count": 2, "retry_limit": 1},
+            "loras": {
+                "identity": {"mode": "none"},
+                "vbvr": {"enabled": False},
+                "motion": {"enabled": False},
+                "corrective": {"enabled": False},
+                "permissiveness": {
+                    "mystic": {"enabled": False},
+                    "wan_general": {"enabled": False},
+                },
+            },
+            "shots": [
+                {
+                    "id": "S010",
+                    "target_seconds": 2,
+                    "anchor_image": str(opening),
+                    "segments": [
+                        {
+                            "id": "S010_C001",
+                            "action": "A neutral adult pauses naturally.",
+                            "expected_seconds": 1,
+                            "seed_offset": 0,
+                        }
+                    ],
+                }
+            ],
             "bridges": [
                 {
                     "id": "B010",
                     "shot_id": "S010",
+                    "strategy": "flf2v",
+                    "purpose": "technical_smoke",
                     "base_source_image": str(opening),
                     "frames": 33,
                 }
             ],
+            "assembly_order": [{"shot_id": "S010", "segment_id": "S010_C001"}],
         }
         manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
         return manifest

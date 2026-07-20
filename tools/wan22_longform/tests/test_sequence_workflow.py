@@ -109,6 +109,24 @@ class SequenceWorkflowTests(unittest.TestCase):
         stored = json.loads(SEQUENCE_WORKFLOW.read_text(encoding="utf-8"))
         self.assertEqual(stored, workflow)
 
+    def test_sequence_nodes_have_clear_non_overlapping_layout(self) -> None:
+        native = json.loads(NATIVE_WORKFLOW.read_text(encoding="utf-8"))
+        nodes = build_sequence_workflow(native)["nodes"]
+        overlaps: list[tuple[str, str]] = []
+
+        for index, left in enumerate(nodes):
+            left_x, left_y = left["pos"]
+            left_width, left_height = left["size"]
+            for right in nodes[index + 1 :]:
+                right_x, right_y = right["pos"]
+                right_width, right_height = right["size"]
+                horizontal_gap = max(left_x, right_x) - min(left_x + left_width, right_x + right_width)
+                vertical_gap = max(left_y, right_y) - min(left_y + left_height, right_y + right_height)
+                if horizontal_gap < 24 and vertical_gap < 24:
+                    overlaps.append((left["title"], right["title"]))
+
+        self.assertEqual(overlaps, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -163,9 +163,10 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
     active_frames_slot = 0
     segment_template = templates[0]
     segment_group_x = 500
+    segment_group_width = 900
 
     for index in range(1, 7):
-        x = segment_group_x + (index - 1) * 760
+        x = segment_group_x + (index - 1) * segment_group_width
         enable_id = 1000 + index
         segment_id = 1100 + index
         append_id = 1200 + index
@@ -194,7 +195,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 use_existing_id,
                 "PrimitiveBoolean",
                 f"USE_EXISTING_SEGMENT_{index:02}",
-                (x, 110),
+                (x, 160),
                 [],
                 [_output("BOOLEAN", "BOOLEAN")],
                 [False],
@@ -205,7 +206,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 cached_video_id,
                 "VHS_LoadVideo",
                 f"CACHED_SEGMENT_{index:02} (upload MP4 when reusing)",
-                (x, 180),
+                (x, 320),
                 [],
                 [
                     _output("IMAGE", "IMAGE"),
@@ -222,7 +223,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 cached_append_id,
                 "ImageFromBatch",
                 f"CACHED_APPEND_FRAMES_{index:02} (skip repeated first frame)",
-                (x, 470),
+                (x, 620),
                 [
                     _input("image", "IMAGE"),
                     _input("batch_index", "INT", widget=True),
@@ -246,7 +247,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                     use_previous_id,
                     "PrimitiveBoolean",
                     f"USE_PREVIOUS_TAIL_{index:02}",
-                    (x + 380, 110),
+                    (x + 400, 0),
                     [],
                     [_output("BOOLEAN", "BOOLEAN")],
                     [True],
@@ -257,7 +258,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                     resume_tail_id,
                     "WanVideoTailFrames",
                     f"RESUME_VIDEO_{index:02} (paste MP4 path)",
-                    (x, 180),
+                    (x + 400, 170),
                     [],
                     [_output("tail_frames", "IMAGE")],
                     [r"D:\\AI\\outputs\\video\\your_saved_segment.mp4", 2, 16.0],
@@ -269,7 +270,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                     resume_last_id,
                     "ImageFromBatch",
                     f"RESUME_LAST_FRAME_{index:02}",
-                    (x, 360),
+                    (x + 400, 350),
                     [
                         _input("image", "IMAGE"),
                         _input("batch_index", "INT", widget=True),
@@ -284,7 +285,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 _switch(
                     start_switch_id,
                     f"START_SOURCE_{index:02}: previous tail (true) / resume video (false)",
-                    (x + 380, 240),
+                    (x + 400, 520),
                     "IMAGE",
                 )
             )
@@ -293,7 +294,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             connect(use_previous["id"], 0, start_switch["id"], 2, "BOOLEAN")
             start_source_id, start_source_slot = start_switch["id"], 0
 
-        segment = add(_segment_instance(segment_template, segment_id, index, (x + 40, 660)))
+        segment = add(_segment_instance(segment_template, segment_id, index, (x, 800)))
         connect(start_source_id, start_source_slot, segment["id"], 0, "IMAGE")
 
         append = add(
@@ -301,7 +302,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 append_id,
                 "ImageFromBatch",
                 f"APPEND_FRAMES_{index:02} (skip repeated first frame)",
-                (x + 470, 660),
+                (x + 460, 800),
                 [
                     _input("image", "IMAGE"),
                     _input("batch_index", "INT", widget=True),
@@ -317,7 +318,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 content_switch_id,
                 f"CONTENT_FOR_SEGMENT_{index:02}: generated (false) / cached (true)",
-                (x + 470, 820),
+                (x + 460, 970),
                 "IMAGE",
             )
         )
@@ -330,7 +331,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 1900 + index,
                 "ImageBatch",
                 f"MERGE_ACTIVE_WITH_SEGMENT_{index:02}",
-                (x + 470, 1010),
+                (x + 460, 1150),
                 [_input("image1", "IMAGE"), _input("image2", "IMAGE")],
                 [_output("IMAGE", "IMAGE")],
             )
@@ -342,7 +343,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 active_switch_id,
                 f"ACTIVE_FRAMES_AFTER_SEGMENT_{index:02}",
-                (x + 470, 1200),
+                (x + 460, 1330),
                 "IMAGE",
             )
         )
@@ -354,7 +355,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 generated_save_switch_id,
                 f"GENERATED_VIDEO_FOR_SEGMENT_{index:02}_SAVE",
-                (x + 470, 1390),
+                (x + 460, 1530),
                 "VIDEO",
             )
         )
@@ -365,7 +366,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 save_switch_id,
                 f"VIDEO_FOR_SEGMENT_{index:02}_SAVE",
-                (x + 470, 1570),
+                (x + 460, 1730),
                 "VIDEO",
             )
         )
@@ -378,7 +379,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 saver_id,
                 "Wan22ConditionalSaveVideo",
                 f"SAVE_SEGMENT_{index:02} (enabled only)",
-                (x + 470, 1750),
+                (x + 460, 1930),
                 [
                     _input("enabled", "BOOLEAN"),
                     _input("video", "VIDEO"),
@@ -398,7 +399,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             {
                 "id": index,
                 "title": f"Segment {index:02}: generate, reuse, continue, and save",
-                "bounding": [x - 35, -70, 730, 2060],
+                "bounding": [x - 35, -70, 800, 2250],
                 "color": "#3f789e",
                 "font_size": 24,
                 "flags": {},
@@ -411,7 +412,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             2001,
             "CreateVideo",
             "ASSEMBLE_ENABLED_SEGMENTS",
-            (segment_group_x + 6 * 760, 760),
+            (segment_group_x + 6 * segment_group_width, 1080),
             [
                 _input("images", "IMAGE"),
                 _input("audio", "AUDIO"),
@@ -427,7 +428,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             2002,
             "SaveVideo",
             "SAVE_FINAL_VIDEO",
-            (segment_group_x + 6 * 760, 970),
+            (segment_group_x + 6 * segment_group_width, 1280),
             [
                 _input("video", "VIDEO"),
                 _input("filename_prefix", "STRING", widget=True),
@@ -456,7 +457,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
         {
             "id": 101,
             "title": "Final merged video",
-            "bounding": [segment_group_x + 6 * 760 - 40, 680, 440, 560],
+            "bounding": [segment_group_x + 6 * segment_group_width - 40, 1000, 440, 560],
             "color": "#5b7f3e",
             "font_size": 24,
             "flags": {},

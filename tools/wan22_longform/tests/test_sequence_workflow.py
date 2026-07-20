@@ -81,7 +81,14 @@ class SequenceWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(by_title["SAVE_FINAL_VIDEO"]["type"], "SaveVideo")
 
-        links = {link["id"]: link for link in workflow["links"]}
+        self.assertTrue(
+            all(
+                isinstance(link, list) and len(link) == 6
+                for link in workflow["links"]
+            ),
+            "LiteGraph root links must use [id, origin, origin_slot, target, target_slot, type] arrays",
+        )
+        links = {link[0]: link for link in workflow["links"]}
         for node in nodes:
             if node["type"] != "ComfySwitchNode":
                 continue
@@ -93,8 +100,8 @@ class SequenceWorkflowTests(unittest.TestCase):
 
         by_id = {node["id"]: node for node in nodes}
         for link_id, link in links.items():
-            origin = by_id[link["origin_id"]]["outputs"][link["origin_slot"]]
-            target = by_id[link["target_id"]]["inputs"][link["target_slot"]]
+            origin = by_id[link[1]]["outputs"][link[2]]
+            target = by_id[link[3]]["inputs"][link[4]]
             self.assertIsInstance(origin["links"], list)
             self.assertIn(link_id, origin["links"])
             self.assertEqual(target["link"], link_id)

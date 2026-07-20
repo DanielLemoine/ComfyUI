@@ -126,14 +126,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             origin_links.append(link_id)
         node_by_id[target_id]["inputs"][target_slot]["link"] = link_id
         links.append(
-            {
-                "id": link_id,
-                "origin_id": origin_id,
-                "origin_slot": origin_slot,
-                "target_id": target_id,
-                "target_slot": target_slot,
-                "type": value_type,
-            }
+            [link_id, origin_id, origin_slot, target_id, target_slot, value_type]
         )
         return link_id
 

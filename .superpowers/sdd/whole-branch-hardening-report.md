@@ -255,3 +255,43 @@ git diff --check
 ```
 
 Implementation commit: this Task 2 follow-up commit on `codex/wan22-longform-v1`.
+
+## Supplement: Gate 5 Story-FLF Binding and Final Review Corrections
+
+### Manifest-stable story endpoints
+
+The prior story-FLF contract required literal QC file paths in `first_image` and `last_image`. Those paths do not exist until the source attempts render, while changing the manifest afterward changes its source hash and invalidates the source attempts' lineage.
+
+Story bridges now support the immutable semantic pair:
+
+```yaml
+first_image: accepted_selected_tail
+last_image: accepted_selected_head
+```
+
+The pair resolves only the declared `from_segment` tail and `to_segment` head, requires exactly one accepted current-lineage source attempt for each, rehashes their full accepted evidence, and writes the resolved path, SHA-256, upstream attempt, and immutable acceptance-decision evidence into the bridge attempt. `accept --head-frame <QC-head>` seals the chosen destination head alongside the existing tail selection. Accepted bridge and assembly verification rechecks that upstream relationship transitively.
+
+Regression coverage proves that the original manifest bytes remain unchanged through two source acceptances and a 33-frame semantic FLF render; that the bridge can enter the accepted shot timeline; and that tampered, multiple, wrong-kind, or wrong-lineage sources fail before upload/submission.
+
+### Independent-review corrections
+
+- Preflight now reads frozen manifest model mappings through `Mapping`, so a normal `load_project()` object supplies all four model roles instead of creating a false `BLOCKED` result.
+- Only `extra_model_paths.yaml` is implicitly trusted. Backup/glob lookalikes are ignored, and every CLI-supplied active config must exist or preflight fails closed.
+- Recovery is now idempotent across the metadata/QC boundary. An interrupted rendering attempt with sealed metadata advances without re-polling or rewriting it; an interrupted rendered attempt reuses/verifies existing QC and completes only the review transition. CLI resume admits those verified incomplete states without resubmitting the prompt.
+- Accepted-submission tampering coverage now includes the `input_upload` referenced hash as well as request, source manifest, base workflow, and configured workflow hashes.
+
+### Verification
+
+RED coverage was observed before the semantic selector implementation (missing `--head-frame` and selector lifecycle support) and before the final-review fixes (frozen mappings, stale configs, and metadata/QC resume all failed).
+
+Final focused checks:
+
+```text
+Ran 62 inventory/render tests
+OK
+
+Ran 85 continuity/project/render/CLI tests
+OK (skipped=1)
+```
+
+Full suite completed successfully with 230 collected tests and one intentional skip. `compileall`, Ruff, and `git diff --check` also passed. All validation remained local/static/unit-test only; no ComfyUI, GPU, network service, or runtime artifact was touched.

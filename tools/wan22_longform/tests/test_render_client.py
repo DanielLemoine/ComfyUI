@@ -619,7 +619,13 @@ class RenderSegmentTests(unittest.TestCase):
                         encoding="utf-8",
                     ),
                 )
-                for name in ("request", "source_manifest", "base_workflow", "workflow")
+                for name in (
+                    "input_upload",
+                    "request",
+                    "source_manifest",
+                    "base_workflow",
+                    "workflow",
+                )
             },
         }
         continuation_shot = {
@@ -788,6 +794,98 @@ class RenderSegmentTests(unittest.TestCase):
                     self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
                     self.assertEqual(len(client.submitted), 1)
                     self.assertEqual(client.waited, ["fixture-prompt", "fixture-prompt"])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_finishes_after_metadata_write_interruption_without_repolling(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(f"{where}-{index}".encode("utf-8"))
+                frames.append(frame)
+            return frames
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        client = FakeRenderClient(self.video)
+        original_transition = render_module.transition_attempt
+
+        def interrupt_after_metadata(attempt, target, note, **kwargs):
+            if target is AttemptState.RENDERED:
+                raise RuntimeError("fixture interruption after metadata")
+            return original_transition(attempt, target, note, **kwargs)
+
+        with patch(
+            "wan22_longform.render.transition_attempt",
+            side_effect=interrupt_after_metadata,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "after metadata"):
+                render_segment(self.project, "S010", "S010_C001", client)
+
+        failed = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        self.assertEqual(failed.state, AttemptState.RENDERING)
+        self.assertTrue((failed.path / "render-metadata.json").is_file())
+        self.assertTrue(cli._is_safely_resumable_attempt(self.project, failed))
+
+        resumed = resume_attempt(self.project, failed, client)
+
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(len(client.submitted), 1)
+        self.assertEqual(client.waited, ["fixture-prompt"])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_finishes_after_qc_write_interruption_without_repolling(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(f"{where}-{index}".encode("utf-8"))
+                frames.append(frame)
+            return frames
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        client = FakeRenderClient(self.video)
+        original_transition = render_module.transition_attempt
+
+        def interrupt_after_qc(attempt, target, note, **kwargs):
+            if target is AttemptState.NEEDS_REVIEW:
+                raise RuntimeError("fixture interruption after QC")
+            return original_transition(attempt, target, note, **kwargs)
+
+        with patch(
+            "wan22_longform.render.transition_attempt",
+            side_effect=interrupt_after_qc,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "after QC"):
+                render_segment(self.project, "S010", "S010_C001", client)
+
+        failed = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        self.assertEqual(failed.state, AttemptState.RENDERED)
+        self.assertTrue((failed.path / "qc.yaml").is_file())
+        self.assertTrue(cli._is_safely_resumable_attempt(self.project, failed))
+
+        resumed = resume_attempt(self.project, failed, client)
+
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(len(client.submitted), 1)
+        self.assertEqual(client.waited, ["fixture-prompt"])
 
     def test_resume_rejects_a_planned_attempt_from_another_project(self) -> None:
         planned = create_attempt(

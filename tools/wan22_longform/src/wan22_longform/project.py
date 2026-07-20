@@ -203,6 +203,7 @@ def transition_attempt(
     note: str | None,
     *,
     selected_continuation_frame: Path | None = None,
+    selected_head_frame: Path | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Attempt:
     """Append one validated state decision and return the new immutable value."""
@@ -230,6 +231,12 @@ def transition_attempt(
             "path": str(selected_continuation_frame),
             "sha256": sha256_file(selected_continuation_frame),
         }
+    head = None
+    if selected_head_frame is not None:
+        head = {
+            "path": str(selected_head_frame),
+            "sha256": sha256_file(selected_head_frame),
+        }
     payload = {
         "attempt_id": persisted.attempt_id,
         "from": persisted.state,
@@ -237,6 +244,7 @@ def transition_attempt(
         "parent_attempt": str(persisted.parent_attempt) if persisted.parent_attempt else None,
         "retry_of": str(persisted.parent_attempt) if persisted.parent_attempt else None,
         "selected_continuation_frame": continuation,
+        "selected_head_frame": head,
         "timestamp": _utc_timestamp(timestamp),
         "to": target,
     }
@@ -275,6 +283,31 @@ def needs_render(attempt: Attempt) -> bool:
 
 def selected_tail_frame(attempt: Attempt) -> QcCandidate:
     """Read the immutable tail selection recorded with one accepted attempt."""
+    return _selected_acceptance_candidate(
+        attempt,
+        field="selected_continuation_frame",
+        kind="tail",
+        label="tail continuation",
+    )
+
+
+def selected_head_frame(attempt: Attempt) -> QcCandidate:
+    """Read the immutable head selection recorded with one accepted attempt."""
+    return _selected_acceptance_candidate(
+        attempt,
+        field="selected_head_frame",
+        kind="head",
+        label="head",
+    )
+
+
+def _selected_acceptance_candidate(
+    attempt: Attempt,
+    *,
+    field: str,
+    kind: str,
+    label: str,
+) -> QcCandidate:
     persisted, decision_paths = _load_attempt(attempt.path)
     if persisted.state is not AttemptState.ACCEPTED:
         raise ProjectStateError("continuation source attempt is not accepted")
@@ -287,16 +320,16 @@ def selected_tail_frame(attempt: Attempt) -> QcCandidate:
             acceptance.append(decision)
     if len(acceptance) != 1:
         raise ProjectStateError("accepted attempt has no unambiguous acceptance decision")
-    selected = acceptance[0].get("selected_continuation_frame")
+    selected = acceptance[0].get(field)
     if not isinstance(selected, Mapping):
-        raise ProjectStateError("accepted attempt has no selected tail continuation frame")
+        raise ProjectStateError(f"accepted attempt has no selected {label} frame")
     raw_path = selected.get("path")
     expected_hash = selected.get("sha256")
     if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
-        raise ProjectStateError("accepted tail continuation selection is invalid")
-    candidate = accepted_qc_candidate(persisted, Path(raw_path), "tail")
+        raise ProjectStateError(f"accepted selected {label} frame is invalid")
+    candidate = accepted_qc_candidate(persisted, Path(raw_path), kind)
     if candidate.sha256 != expected_hash:
-        raise ProjectStateError("selected tail continuation frame hash changed")
+        raise ProjectStateError(f"selected {label} frame hash changed")
     return candidate
 
 
@@ -392,6 +425,18 @@ def verify_submission_attempt_evidence(
     return _submission_evidence(persisted, planned, require_queue=require_queue)
 
 
+def verify_rendered_attempt_evidence(
+    project: ProjectConfig,
+    attempt: Attempt,
+    *,
+    require_qc: bool = False,
+) -> dict[str, Any]:
+    """Rehash immutable rendered evidence, optionally including initialized QC."""
+    persisted = load_attempt(attempt.path)
+    submitted = verify_submission_attempt_evidence(project, persisted, require_queue=True)
+    return _rendered_evidence(persisted, submitted, require_qc=require_qc)
+
+
 def _verify_attempt_snapshot_evidence(
     project: ProjectConfig, attempt: Attempt
 ) -> dict[str, Any]:
@@ -410,7 +455,83 @@ def _verify_attempt_snapshot_evidence(
         current_inputs[name] = sha256_file(path)
     if _json_ready(recorded_inputs) != current_inputs:
         raise ProjectStateError("planned attempt project input provenance changed")
+    _verify_selected_input_sources(project, attempt, verified["selected_inputs"])
     return verified
+
+
+def _verify_selected_input_sources(
+    project: ProjectConfig,
+    attempt: Attempt,
+    selected_inputs: Mapping[str, Any],
+) -> None:
+    """Require accepted-source selections to retain their own trusted provenance."""
+    accepted_sources = {
+        "accepted_tail",
+        "accepted_qc_candidate",
+        "accepted_selected_tail",
+        "accepted_selected_head",
+    }
+    for name, raw_details in selected_inputs.items():
+        if not isinstance(raw_details, Mapping):
+            raise ProjectStateError(f"attempt selected input provenance is invalid for {name}")
+        source = raw_details.get("source")
+        if source not in accepted_sources:
+            continue
+        upstream_raw = raw_details.get("upstream_attempt")
+        candidate_kind = raw_details.get("candidate_kind")
+        if not isinstance(upstream_raw, str) or not isinstance(candidate_kind, str):
+            raise ProjectStateError(
+                f"attempt selected {name} accepted provenance is incomplete"
+            )
+        upstream = load_attempt(Path(upstream_raw))
+        if upstream.path.resolve() == attempt.path.resolve():
+            raise ProjectStateError(
+                f"attempt selected {name} accepted provenance cannot reference itself"
+            )
+        evidence = accepted_attempt_evidence(project, upstream)
+        if source in {"accepted_tail", "accepted_selected_tail"}:
+            if candidate_kind != "tail":
+                raise ProjectStateError(
+                    f"attempt selected {name} accepted tail provenance has the wrong kind"
+                )
+            candidate = selected_tail_frame(upstream)
+        elif source == "accepted_selected_head":
+            if candidate_kind != "head":
+                raise ProjectStateError(
+                    f"attempt selected {name} accepted head provenance has the wrong kind"
+                )
+            candidate = selected_head_frame(upstream)
+        else:
+            if candidate_kind not in {"head", "tail"}:
+                raise ProjectStateError(
+                    f"attempt selected {name} accepted QC provenance has the wrong kind"
+                )
+            raw_path = raw_details.get("path")
+            if not isinstance(raw_path, str):
+                raise ProjectStateError(
+                    f"attempt selected {name} accepted QC provenance has no path"
+                )
+            candidate = accepted_qc_candidate(upstream, Path(raw_path), candidate_kind)
+        if (
+            candidate.path.resolve() != Path(raw_details.get("path", "")).resolve()
+            or candidate.sha256 != raw_details.get("sha256")
+        ):
+            raise ProjectStateError(
+                f"attempt selected {name} accepted candidate path or hash changed"
+            )
+        decision = raw_details.get("upstream_acceptance_decision")
+        if source in {"accepted_selected_tail", "accepted_selected_head"} and not isinstance(
+            decision, Mapping
+        ):
+            raise ProjectStateError(
+                f"attempt selected {name} semantic accepted provenance has no acceptance decision evidence"
+            )
+        if decision is not None and _json_ready(decision) != _json_ready(
+            evidence.get("acceptance_decision")
+        ):
+            raise ProjectStateError(
+                f"attempt selected {name} acceptance decision evidence changed"
+            )
 
 
 def _snapshot_attempt_evidence(attempt: Attempt) -> dict[str, Any]:
@@ -500,13 +621,25 @@ def inspect_attempt_integrity(
             _verify_attempt_snapshot_evidence(project, persisted)
             return _planned_integrity_status(persisted)
         if persisted.state is AttemptState.RENDERING:
-            verify_submission_attempt_evidence(project, persisted, require_queue=True)
+            submission = verify_submission_attempt_evidence(
+                project, persisted, require_queue=True
+            )
+            if (persisted.path / "render-metadata.json").is_file():
+                _rendered_evidence(persisted, submission, require_qc=False)
+                return "incomplete", (
+                    "attempt has rendered evidence awaiting lifecycle transition",
+                )
             return "incomplete", ("attempt is rendering with a persisted queue identity",)
         if persisted.state is AttemptState.RENDERED:
             submission = verify_submission_attempt_evidence(
                 project, persisted, require_queue=True
             )
             _rendered_evidence(persisted, submission, require_qc=False)
+            if (persisted.path / "qc.yaml").is_file():
+                _rendered_evidence(persisted, submission, require_qc=True)
+                return "incomplete", (
+                    "attempt has initialized QC and awaits review transition",
+                )
             return "incomplete", ("attempt is rendered and awaiting QC initialization",)
         if persisted.state in {
             AttemptState.NEEDS_REVIEW,

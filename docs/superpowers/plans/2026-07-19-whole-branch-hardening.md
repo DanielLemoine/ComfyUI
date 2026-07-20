@@ -100,3 +100,9 @@ Run one final-review fix implementer against this complete task, then perform a 
 - [x] Parse ComfyUI extra-model path YAML with `yaml.safe_load`, including block scalars and active config files; combine configured and default roots with correct role kinds.
 - [x] Make `preflight` a true gate: structured status/blockers output and nonzero exit for BLOCKED.
 - [x] Re-run focused tests, full suite, compileall, Ruff, and `git diff --check`; commit a coherent follow-up and append the hardening report.
+
+### Post-review Gate 5 completion corrections
+
+- [x] Replace runtime-path-only story FLF endpoints with a manifest-stable accepted-tail/accepted-head selector pair, seal the chosen head at acceptance, and preserve the resolved upstream decision evidence in the bridge attempt.
+- [x] Fail closed for frozen project mappings and stale/missing extra-model-path configuration evidence.
+- [x] Make metadata/QC-stage rendering recovery idempotent, including CLI reattachment of safely rendered attempts.

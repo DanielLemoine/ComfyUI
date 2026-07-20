@@ -11,6 +11,8 @@ import yaml
 PERMISSIVENESS_MODES = frozenset({"none", "mystic", "wan_general"})
 PROJECT_SCHEMA_VERSION = 1
 BRIDGE_STRATEGIES = frozenset({"direct", "flf2v", "intentional_cut", "external_control"})
+ACCEPTED_SELECTED_TAIL = "accepted_selected_tail"
+ACCEPTED_SELECTED_HEAD = "accepted_selected_head"
 
 
 class ConfigError(ValueError):
@@ -421,8 +423,24 @@ def _bridges_contract(
             elif first is None or last is None:
                 raise ConfigError(f"bridge {bridge_id} requires both explicit endpoints")
             else:
-                _string(first, f"bridge {bridge_id} first_image")
-                _string(last, f"bridge {bridge_id} last_image")
+                has_semantic_selector = any(
+                    isinstance(value, str)
+                    and value in {ACCEPTED_SELECTED_TAIL, ACCEPTED_SELECTED_HEAD}
+                    for value in (first, last)
+                )
+                if has_semantic_selector:
+                    if first != ACCEPTED_SELECTED_TAIL or last != ACCEPTED_SELECTED_HEAD:
+                        raise ConfigError(
+                            f"bridge {bridge_id} semantic endpoint selectors must be "
+                            "accepted_selected_tail then accepted_selected_head"
+                        )
+                    if purpose == "technical_smoke":
+                        raise ConfigError(
+                            f"technical_smoke bridge {bridge_id} cannot use accepted endpoint selectors"
+                        )
+                else:
+                    _string(first, f"bridge {bridge_id} first_image")
+                    _string(last, f"bridge {bridge_id} last_image")
             if purpose == "technical_smoke":
                 if bridge.get("from_segment") is not None or bridge.get("to_segment") is not None:
                     raise ConfigError(

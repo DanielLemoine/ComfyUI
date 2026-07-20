@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from wan22_longform.errors import PreflightError
 from wan22_longform import inventory
-from wan22_longform.config import ProjectConfig
+from wan22_longform.config import ProjectConfig, load_project
 from wan22_longform.inventory import collect_preflight
 
 
@@ -600,6 +600,31 @@ class CollectPreflightTests(unittest.TestCase):
             any("model vae is absent" in blocker for blocker in blockers)
         )
 
+    def test_required_model_roles_support_the_frozen_manifest_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest = Path(temporary_directory) / "project.yaml"
+            manifest.write_text(
+                """models:
+  high: high.safetensors
+  low: low.safetensors
+  vae: vae.safetensors
+  text_encoder: text.safetensors
+""",
+                encoding="utf-8",
+            )
+
+            roles = inventory._required_model_roles(load_project(manifest))
+
+        self.assertEqual(
+            roles,
+            {
+                "high": "high.safetensors",
+                "low": "low.safetensors",
+                "vae": "vae.safetensors",
+                "text_encoder": "text.safetensors",
+            },
+        )
+
     def test_preflight_rejects_models_found_only_in_wrong_root_kinds(self) -> None:
         project = ProjectConfig(
             path=Path("project.yaml"),
@@ -697,6 +722,36 @@ class CollectPreflightTests(unittest.TestCase):
             self.assertIn(("text_encoders", default_root.resolve()), roots)
             self.assertIn(("diffusion_models", primary_root.resolve()), roots)
             self.assertIn(("vae", secondary_root.resolve()), roots)
+
+    def test_model_inventory_ignores_stale_extra_model_path_backups(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            comfy_root = root / "ComfyUI"
+            (comfy_root / "models" / "vae").mkdir(parents=True)
+            stale_root = root / "stale-diffusion"
+            stale_root.mkdir()
+            (comfy_root / "extra_model_paths.backup.yaml").write_text(
+                f"""stale:
+  base_path: {root}
+  diffusion_models: {stale_root.name}
+""",
+                encoding="utf-8",
+            )
+
+            roots = inventory._configured_model_roots(comfy_root)
+
+        self.assertNotIn(("diffusion_models", stale_root.resolve()), roots)
+
+    def test_model_inventory_rejects_missing_explicit_active_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            comfy_root = Path(temporary_directory) / "ComfyUI"
+            comfy_root.mkdir()
+            missing = Path(temporary_directory) / "active-extra-model-paths.yaml"
+
+            with self.assertRaisesRegex(PreflightError, "explicit extra_model_paths config"):
+                inventory._configured_model_roots(
+                    comfy_root, extra_model_path_configs=(missing,)
+                )
 
     @patch("wan22_longform.inventory.subprocess.run")
     def test_preflight_blocks_without_a_trustworthy_comfy_runtime(self, run) -> None:

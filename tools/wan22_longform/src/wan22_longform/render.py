@@ -9,6 +9,8 @@ from typing import Any, Mapping, Protocol
 
 from .comfy_client import HistoryOutput, HistoryResult
 from .config import (
+    ACCEPTED_SELECTED_HEAD,
+    ACCEPTED_SELECTED_TAIL,
     ModelFiles,
     ProjectConfig,
     load_project,
@@ -28,10 +30,12 @@ from .project import (
     accepted_qc_candidate,
     create_attempt,
     load_attempt,
+    selected_head_frame,
     selected_input,
     selected_tail_frame,
     transition_attempt,
     verify_planned_attempt_evidence,
+    verify_rendered_attempt_evidence,
     verify_submission_attempt_evidence,
 )
 from .qc import initialize_qc
@@ -57,8 +61,9 @@ class InputSelection:
     source: str
     upstream_attempt: Path | None = None
     candidate_kind: str | None = None
+    upstream_acceptance_decision: Mapping[str, str] | None = None
 
-    def provenance(self) -> dict[str, str]:
+    def provenance(self) -> dict[str, Any]:
         payload = {
             "path": str(self.path),
             "sha256": self.sha256,
@@ -68,6 +73,10 @@ class InputSelection:
             payload["upstream_attempt"] = str(self.upstream_attempt)
         if self.candidate_kind is not None:
             payload["candidate_kind"] = self.candidate_kind
+        if self.upstream_acceptance_decision is not None:
+            payload["upstream_acceptance_decision"] = dict(
+                self.upstream_acceptance_decision
+            )
         return payload
 
 
@@ -336,12 +345,14 @@ def _new_or_resumable_attempt(
             verify_planned_attempt_evidence(project, persisted)
         elif persisted.state is AttemptState.RENDERING:
             verify_submission_attempt_evidence(project, persisted, require_queue=True)
+        elif persisted.state is AttemptState.RENDERED:
+            verify_rendered_attempt_evidence(project, persisted, require_qc=False)
         else:
             raise RenderError(
-                f"attempt is not planned or rendering and cannot be resumed: {persisted.path}"
+                f"attempt is not planned, rendering, or rendered and cannot be resumed: {persisted.path}"
             )
     except ProjectStateError as error:
-        phase = "planned" if persisted.state is AttemptState.PLANNED else "rendering"
+        phase = str(persisted.state)
         raise RenderError(f"{phase} attempt evidence is invalid: {error}") from error
     return persisted
 
@@ -411,7 +422,7 @@ def _complete_render(
     *,
     prompt_id: str,
     kind: str,
-    input_provenance: Mapping[str, Mapping[str, str]],
+    input_provenance: Mapping[str, Mapping[str, Any]],
     extra_details: Mapping[str, Any],
     rendered_note: str,
 ) -> Attempt:
@@ -428,8 +439,19 @@ def _complete_render(
     persisted = load_attempt(attempt.path)
     if persisted.state is AttemptState.PLANNED:
         persisted = transition_attempt(persisted, AttemptState.RENDERING, "reattached queue")
+    if persisted.state is AttemptState.RENDERED:
+        return _finish_rendered_attempt(project, persisted, kind=kind)
     if persisted.state is not AttemptState.RENDERING:
         raise RenderError(f"queued attempt has invalid state: {persisted.state}")
+    if (persisted.path / "render-metadata.json").is_file():
+        try:
+            verify_rendered_attempt_evidence(project, persisted, require_qc=False)
+        except ProjectStateError as error:
+            raise RenderError(
+                f"interrupted rendered attempt evidence is invalid: {error}"
+            ) from error
+        rendered = transition_attempt(persisted, AttemptState.RENDERED, rendered_note)
+        return _finish_rendered_attempt(project, rendered, kind=kind)
     history = client.wait(prompt_id)
     if history.prompt_id != prompt_id:
         raise RenderError("ComfyUI history prompt ID does not match the persisted queue identity")
@@ -488,15 +510,84 @@ def _complete_render(
         ),
     )
     rendered = transition_attempt(persisted, AttemptState.RENDERED, rendered_note)
-    initialize_qc(
-        rendered,
-        video=video,
-        head_frames=head_frames,
-        tail_frames=tail_frames,
-        contact_sheet=contact_sheet,
-        automatic_continuation_authorized=_automatic_continuation(project),
+    return _finish_rendered_attempt(project, rendered, kind=kind)
+
+
+def _finish_rendered_attempt(
+    project: ProjectConfig, attempt: Attempt, *, kind: str
+) -> Attempt:
+    """Initialize QC once and finish an interrupted rendered lifecycle transition."""
+    persisted = load_attempt(attempt.path)
+    if persisted.state is not AttemptState.RENDERED:
+        raise RenderError(f"rendered attempt has invalid state: {persisted.state}")
+    try:
+        verify_rendered_attempt_evidence(project, persisted, require_qc=False)
+    except ProjectStateError as error:
+        raise RenderError(f"rendered attempt evidence is invalid: {error}") from error
+    qc_path = persisted.path / "qc.yaml"
+    if not qc_path.is_file():
+        video, head_frames, tail_frames, contact_sheet = _metadata_qc_outputs(
+            project, persisted, kind=kind
+        )
+        initialize_qc(
+            persisted,
+            video=video,
+            head_frames=head_frames,
+            tail_frames=tail_frames,
+            contact_sheet=contact_sheet,
+            automatic_continuation_authorized=_automatic_continuation(project),
+        )
+    try:
+        verify_rendered_attempt_evidence(project, persisted, require_qc=True)
+    except ProjectStateError as error:
+        raise RenderError(f"rendered QC evidence is invalid: {error}") from error
+    return transition_attempt(persisted, AttemptState.NEEDS_REVIEW, None)
+
+
+def _metadata_qc_outputs(
+    project: ProjectConfig, attempt: Attempt, *, kind: str
+) -> tuple[Path, list[Path], list[Path], Path]:
+    """Read and rehash the exact candidate outputs already sealed in metadata."""
+    metadata_path = attempt.path / "render-metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RenderError(f"render metadata is unreadable: {metadata_path}") from error
+    if metadata.get("attempt_id") != attempt.attempt_id:
+        raise RenderError("render metadata belongs to a different attempt")
+    outputs = metadata.get("outputs")
+    if not isinstance(outputs, Mapping):
+        raise RenderError("render metadata has no outputs mapping")
+
+    def output(name: str) -> Path:
+        evidence = outputs.get(name)
+        if not isinstance(evidence, Mapping):
+            raise RenderError(f"render metadata has no {name} output evidence")
+        raw_path = evidence.get("path")
+        expected_hash = evidence.get("sha256")
+        if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
+            raise RenderError(f"render metadata {name} output evidence is invalid")
+        path = Path(raw_path)
+        if not path.is_file() or sha256_file(path) != expected_hash:
+            raise RenderError(f"render metadata {name} output hash changed")
+        return path
+
+    def candidates(prefix: str) -> list[Path]:
+        names = sorted(
+            name
+            for name in outputs
+            if isinstance(name, str) and name.startswith(f"{prefix}_")
+        )
+        if not names:
+            raise RenderError(f"render metadata has no {prefix} candidate output evidence")
+        return [output(name) for name in names]
+
+    return (
+        output(kind),
+        candidates("head"),
+        candidates("tail"),
+        output("contact_sheet"),
     )
-    return transition_attempt(rendered, AttemptState.NEEDS_REVIEW, None)
 
 
 def _snapshot_project(project: ProjectConfig, attempt: Attempt) -> ProjectConfig:
@@ -777,12 +868,88 @@ def _bridge_endpoints(
         raise RenderError(
             "bridge requires explicit first_image and last_image, or one base_source_image"
         )
+    if any(
+        isinstance(value, str)
+        and value in {ACCEPTED_SELECTED_TAIL, ACCEPTED_SELECTED_HEAD}
+        for value in (first, last)
+    ):
+        if first != ACCEPTED_SELECTED_TAIL or last != ACCEPTED_SELECTED_HEAD:
+            raise RenderError(
+                "semantic bridge endpoint selectors must be accepted_selected_tail "
+                "then accepted_selected_head"
+            )
+        return _selected_story_bridge_endpoints(project, bridge)
     first_path = _existing_local_path(project, first, "bridge first_image")
     last_path = _existing_local_path(project, last, "bridge last_image")
     first_selection = _accepted_bridge_endpoint(project, first_path, "tail")
     last_selection = _accepted_bridge_endpoint(project, last_path, "head")
     _validate_story_bridge_endpoint_sources(bridge, first_selection, last_selection)
     return first_selection, last_selection
+
+
+def _selected_story_bridge_endpoints(
+    project: ProjectConfig, bridge: Mapping[str, Any]
+) -> tuple[InputSelection, InputSelection]:
+    """Resolve manifest-stable selectors into sealed accepted-QC endpoint evidence."""
+    shot_id = bridge.get("shot_id")
+    from_segment = bridge.get("from_segment")
+    to_segment = bridge.get("to_segment")
+    if not all(isinstance(value, str) and value for value in (shot_id, from_segment, to_segment)):
+        raise RenderError(
+            "semantic story bridge selectors require non-empty shot_id, from_segment, and to_segment"
+        )
+    first = _selected_story_bridge_endpoint(project, shot_id, from_segment, "tail")
+    last = _selected_story_bridge_endpoint(project, shot_id, to_segment, "head")
+    _validate_story_bridge_endpoint_sources(bridge, first, last)
+    return first, last
+
+
+def _selected_story_bridge_endpoint(
+    project: ProjectConfig,
+    shot_id: str,
+    segment_id: str,
+    kind: str,
+) -> InputSelection:
+    accepted = [
+        attempt
+        for attempt in _project_attempts(project)
+        if attempt.state is AttemptState.ACCEPTED
+        and attempt.shot_id == shot_id
+        and attempt.segment_id == segment_id
+    ]
+    if len(accepted) != 1:
+        raise RenderError(
+            f"bridge selected {kind} endpoint requires exactly one accepted "
+            f"source attempt for {shot_id}/{segment_id}"
+        )
+    attempt = accepted[0]
+    try:
+        evidence = accepted_attempt_evidence(project, attempt)
+        candidate = selected_tail_frame(attempt) if kind == "tail" else selected_head_frame(attempt)
+    except ProjectStateError as error:
+        raise RenderError(
+            f"bridge selected {kind} endpoint accepted evidence is invalid: {error}"
+        ) from error
+    decision = _acceptance_decision_evidence(evidence)
+    return InputSelection(
+        path=candidate.path,
+        sha256=candidate.sha256,
+        source=f"accepted_selected_{kind}",
+        upstream_attempt=attempt.path,
+        candidate_kind=kind,
+        upstream_acceptance_decision=decision,
+    )
+
+
+def _acceptance_decision_evidence(evidence: Mapping[str, Any]) -> dict[str, str]:
+    decision = evidence.get("acceptance_decision")
+    if not isinstance(decision, Mapping):
+        raise RenderError("accepted endpoint has no immutable acceptance decision evidence")
+    path = decision.get("path")
+    digest = decision.get("sha256")
+    if not isinstance(path, str) or not isinstance(digest, str):
+        raise RenderError("accepted endpoint acceptance decision evidence is invalid")
+    return {"path": path, "sha256": digest}
 
 
 def _validate_story_bridge_endpoint_sources(
@@ -994,7 +1161,7 @@ def _accepted_bridge_endpoint(
         if attempt.state is not AttemptState.ACCEPTED:
             continue
         try:
-            accepted_attempt_evidence(project, attempt)
+            evidence = accepted_attempt_evidence(project, attempt)
             candidate = accepted_qc_candidate(attempt, path, kind)
         except ProjectStateError as error:
             if "unambiguous" not in str(error):
@@ -1002,18 +1169,19 @@ def _accepted_bridge_endpoint(
                     f"bridge {kind} endpoint accepted evidence is invalid: {error}"
                 ) from error
             continue
-        matches.append((attempt, candidate))
+        matches.append((attempt, candidate, _acceptance_decision_evidence(evidence)))
     if len(matches) != 1:
         raise RenderError(
             "bridge endpoints require accepted hash-verified tail and head QC candidates"
         )
-    attempt, candidate = matches[0]
+    attempt, candidate, decision = matches[0]
     return InputSelection(
         path=candidate.path,
         sha256=candidate.sha256,
         source="accepted_qc_candidate",
         upstream_attempt=attempt.path,
         candidate_kind=kind,
+        upstream_acceptance_decision=decision,
     )
 
 
@@ -1048,10 +1216,26 @@ def _stored_input_selection(
     candidate_kind = stored.details.get("candidate_kind")
     if candidate_kind is not None and not isinstance(candidate_kind, str):
         raise RenderError(f"planned attempt {name} provenance has invalid candidate kind")
+    raw_decision = stored.details.get("upstream_acceptance_decision")
+    decision = None
+    if raw_decision is not None:
+        if not isinstance(raw_decision, Mapping):
+            raise RenderError(
+                f"planned attempt {name} accepted provenance has invalid acceptance decision evidence"
+            )
+        decision = _acceptance_decision_evidence(
+            {"acceptance_decision": raw_decision}
+        )
     selection = InputSelection(
-        stored.path, stored.sha256, source, upstream, candidate_kind
+        stored.path, stored.sha256, source, upstream, candidate_kind, decision
     )
-    if source not in {"accepted_tail", "accepted_qc_candidate"}:
+    accepted_sources = {
+        "accepted_tail",
+        "accepted_qc_candidate",
+        "accepted_selected_tail",
+        "accepted_selected_head",
+    }
+    if source not in accepted_sources:
         return selection
     if upstream is None:
         raise RenderError(
@@ -1059,13 +1243,28 @@ def _stored_input_selection(
         )
     try:
         upstream_attempt = load_attempt(upstream)
-        accepted_attempt_evidence(project, upstream_attempt)
-        if source == "accepted_tail":
+        evidence = accepted_attempt_evidence(project, upstream_attempt)
+        if source in {"accepted_selected_tail", "accepted_selected_head"}:
+            if decision is None:
+                raise ProjectStateError(
+                    "semantic accepted endpoint provenance has no acceptance decision evidence"
+                )
+            if decision != _acceptance_decision_evidence(evidence):
+                raise ProjectStateError(
+                    "semantic accepted endpoint acceptance decision evidence changed"
+                )
+        if source in {"accepted_tail", "accepted_selected_tail"}:
             if candidate_kind != "tail":
                 raise ProjectStateError(
                     "accepted tail provenance must name candidate kind tail"
                 )
             candidate = selected_tail_frame(upstream_attempt)
+        elif source == "accepted_selected_head":
+            if candidate_kind != "head":
+                raise ProjectStateError(
+                    "accepted selected head provenance must name candidate kind head"
+                )
+            candidate = selected_head_frame(upstream_attempt)
         else:
             if candidate_kind not in {"head", "tail"}:
                 raise ProjectStateError(

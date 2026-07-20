@@ -16,7 +16,7 @@ import yaml
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from wan22_longform.cli import _handle_render_shot, main  # noqa: E402
+from wan22_longform.cli import _accepted_shot_attempts, _handle_render_shot, main  # noqa: E402
 from wan22_longform.comfy_client import HistoryOutput, HistoryResult  # noqa: E402
 from wan22_longform.config import (  # noqa: E402
     ConfigError,
@@ -27,6 +27,7 @@ from wan22_longform.config import (  # noqa: E402
 from wan22_longform.project import (  # noqa: E402
     Attempt,
     AttemptState,
+    accepted_attempt_evidence,
     create_attempt,
     transition_attempt,
 )
@@ -176,6 +177,46 @@ class ContinuityContractTests(unittest.TestCase):
         self.assertEqual(review.state, AttemptState.NEEDS_REVIEW)
         self.assertFalse((review.path / "decisions" / "0004.json").exists())
 
+    def test_accept_seals_explicit_head_and_tail_candidates(self) -> None:
+        review, head, tail = self._review_attempt("S010", "S010_C001")
+
+        self.assertEqual(
+            main(
+                [
+                    "accept",
+                    str(review.path),
+                    "--note",
+                    "approved endpoint selections",
+                    "--continuation-frame",
+                    str(tail),
+                    "--head-frame",
+                    str(head),
+                ]
+            ),
+            0,
+        )
+
+        decision = json.loads((review.path / "decisions" / "0004.json").read_text(encoding="utf-8"))
+        self.assertEqual(decision["selected_continuation_frame"]["path"], str(tail))
+        self.assertEqual(decision["selected_head_frame"]["path"], str(head))
+
+    def test_accept_rejects_a_tail_candidate_as_selected_head(self) -> None:
+        review, _head, tail = self._review_attempt("S010", "S010_C001")
+
+        with self.assertRaisesRegex(ValueError, "head"):
+            main(
+                [
+                    "accept",
+                    str(review.path),
+                    "--note",
+                    "tail cannot be the selected head",
+                    "--head-frame",
+                    str(tail),
+                ]
+            )
+
+        self.assertFalse((review.path / "decisions" / "0004.json").exists())
+
     def test_story_bridge_requires_accepted_tail_and_head_provenance(self) -> None:
         source = copy.deepcopy(self.source)
         source["bridges"] = [
@@ -243,6 +284,118 @@ class ContinuityContractTests(unittest.TestCase):
         self.assertEqual(selected["last_image"]["candidate_kind"], "head")
         self.assertEqual(selected["first_image"]["upstream_attempt"], str(upstream.path))
         self.assertEqual(selected["last_image"]["upstream_attempt"], str(destination.path))
+
+    def test_story_bridge_semantic_selectors_preserve_manifest_lineage(self) -> None:
+        source = copy.deepcopy(self.source)
+        self._configure_semantic_story_bridge(source)
+        project = self._project(source)
+        manifest_before = self.manifest.read_bytes()
+        upstream, _head, tail = self._accepted_attempt("S010", "S010_C001", project)
+        destination, head, _tail = self._accepted_attempt("S010", "S010_C002", project)
+        client = FakeRenderClient(self.video)
+
+        with self._render_artifact_patches():
+            bridge = render_bridge(project, "B010", client)
+
+        self.assertEqual(self.manifest.read_bytes(), manifest_before)
+        self.assertEqual(client.uploaded, [tail, head])
+        selected = json.loads((bridge.path / "provenance.json").read_text(encoding="utf-8"))["selected_inputs"]
+        self.assertEqual(selected["first_image"]["source"], "accepted_selected_tail")
+        self.assertEqual(selected["last_image"]["source"], "accepted_selected_head")
+        self.assertEqual(selected["first_image"]["path"], str(tail))
+        self.assertEqual(selected["last_image"]["path"], str(head))
+        self.assertEqual(selected["first_image"]["sha256"], hashlib.sha256(tail.read_bytes()).hexdigest())
+        self.assertEqual(selected["last_image"]["sha256"], hashlib.sha256(head.read_bytes()).hexdigest())
+        self.assertEqual(
+            selected["first_image"]["upstream_acceptance_decision"],
+            accepted_attempt_evidence(project, upstream)["acceptance_decision"],
+        )
+        self.assertEqual(
+            selected["last_image"]["upstream_acceptance_decision"],
+            accepted_attempt_evidence(project, destination)["acceptance_decision"],
+        )
+        accepted_bridge = transition_attempt(
+            bridge,
+            AttemptState.ACCEPTED,
+            "accepted semantic bridge fixture",
+        )
+        self.assertEqual(
+            [attempt.segment_id for attempt in _accepted_shot_attempts(project, "S010")],
+            ["S010_C001", "B010", "S010_C002"],
+        )
+        self.assertEqual(accepted_bridge.state, AttemptState.ACCEPTED)
+
+    def test_story_bridge_semantic_selectors_reject_tampered_upstream_before_upload(self) -> None:
+        source = copy.deepcopy(self.source)
+        self._configure_semantic_story_bridge(source)
+        project = self._project(source)
+        upstream, _head, _tail = self._accepted_attempt("S010", "S010_C001", project)
+        self._accepted_attempt("S010", "S010_C002", project)
+        (upstream.path / "render-metadata.json").write_bytes(
+            (upstream.path / "render-metadata.json").read_bytes() + b"\n"
+        )
+        client = FakeRenderClient(self.video)
+
+        with self._render_artifact_patches():
+            with self.assertRaisesRegex(RenderError, "accepted evidence is invalid"):
+                render_bridge(project, "B010", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
+
+    def test_story_bridge_semantic_selectors_reject_multiple_sources_before_upload(self) -> None:
+        source = copy.deepcopy(self.source)
+        self._configure_semantic_story_bridge(source)
+        project = self._project(source)
+        self._accepted_attempt("S010", "S010_C001", project)
+        self._accepted_attempt("S010", "S010_C001", project)
+        self._accepted_attempt("S010", "S010_C002", project)
+        client = FakeRenderClient(self.video)
+
+        with self._render_artifact_patches():
+            with self.assertRaisesRegex(RenderError, "exactly one accepted"):
+                render_bridge(project, "B010", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
+
+    def test_story_bridge_semantic_selectors_reject_wrong_kind_before_upload(self) -> None:
+        source = copy.deepcopy(self.source)
+        self._configure_semantic_story_bridge(source)
+        project = self._project(source)
+        self._accepted_attempt("S010", "S010_C001", project)
+        review, _head, tail = self._review_attempt("S010", "S010_C002", project)
+        transition_attempt(
+            review,
+            AttemptState.ACCEPTED,
+            "intentionally wrong head fixture",
+            selected_continuation_frame=tail,
+            selected_head_frame=tail,
+        )
+        client = FakeRenderClient(self.video)
+
+        with self._render_artifact_patches():
+            with self.assertRaisesRegex(RenderError, "selected head endpoint"):
+                render_bridge(project, "B010", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
+
+    def test_story_bridge_semantic_selectors_reject_wrong_lineage_before_upload(self) -> None:
+        old_project = self._project(copy.deepcopy(self.source))
+        self._accepted_attempt("S010", "S010_C001", old_project)
+        self._accepted_attempt("S010", "S010_C002", old_project)
+        source = copy.deepcopy(self.source)
+        self._configure_semantic_story_bridge(source)
+        project = self._project(source)
+        client = FakeRenderClient(self.video)
+
+        with self._render_artifact_patches():
+            with self.assertRaisesRegex(RenderError, "accepted evidence is invalid"):
+                render_bridge(project, "B010", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
 
     def test_story_bridge_rejects_accepted_endpoints_from_the_wrong_declared_segments(self) -> None:
         _source, source_head, source_tail = self._accepted_attempt("S010", "S010_C001")
@@ -386,6 +539,30 @@ class ContinuityContractTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ConfigError, "from_segment"):
+            validate_project_contract(self._project(source))
+
+    def test_strict_manifest_requires_the_complete_semantic_selector_pair(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "first_image": "accepted_selected_tail",
+                "last_image": str(self.second_anchor),
+                "from_segment": "S010_C001",
+                "to_segment": "S010_C002",
+                "frames": 33,
+            }
+        ]
+        source["assembly_order"] = [
+            {"shot_id": "S010", "segment_id": "S010_C001"},
+            {"shot_id": "S010", "segment_id": "B010"},
+            {"shot_id": "S010", "segment_id": "S010_C002"},
+            {"shot_id": "S020", "segment_id": "S020_C001"},
+        ]
+
+        with self.assertRaisesRegex(ConfigError, "semantic endpoint selectors"):
             validate_project_contract(self._project(source))
 
     def test_strict_manifest_requires_story_flf_bridge_directly_between_declared_segments(self) -> None:
@@ -713,8 +890,30 @@ class ContinuityContractTests(unittest.TestCase):
             AttemptState.ACCEPTED,
             "accepted fixture tail",
             selected_continuation_frame=tail,
+            selected_head_frame=head,
         )
         return accepted, head, tail
+
+    @staticmethod
+    def _configure_semantic_story_bridge(source: dict[str, object]) -> None:
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "first_image": "accepted_selected_tail",
+                "last_image": "accepted_selected_head",
+                "from_segment": "S010_C001",
+                "to_segment": "S010_C002",
+                "frames": 33,
+            }
+        ]
+        source["assembly_order"] = [
+            {"shot_id": "S010", "segment_id": "S010_C001"},
+            {"shot_id": "S010", "segment_id": "B010"},
+            {"shot_id": "S010", "segment_id": "S010_C002"},
+            {"shot_id": "S020", "segment_id": "S020_C001"},
+        ]
 
     def _missing_upstream(self, _project: ProjectConfig) -> None:
         return None

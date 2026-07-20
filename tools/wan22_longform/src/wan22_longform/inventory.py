@@ -379,7 +379,7 @@ def _required_model_roles(project: ProjectConfig | None) -> dict[str, str]:
     if project is None:
         return {}
     models = project.source.get("models")
-    if not isinstance(models, dict):
+    if not isinstance(models, Mapping):
         return {}
     return {
         role: value
@@ -435,11 +435,19 @@ def _configured_model_roots(
     *,
     extra_model_path_configs: Sequence[Path] = (),
 ) -> list[tuple[str, Path]]:
-    discovered_configs = sorted(comfy_root.glob("extra_model_paths*.yaml"))
+    default_config = comfy_root / "extra_model_paths.yaml"
+    explicit_configs = tuple(Path(path) for path in extra_model_path_configs)
+    missing_explicit = [path for path in explicit_configs if not path.is_file()]
+    if missing_explicit:
+        raise PreflightError(
+            "explicit extra_model_paths config does not exist: "
+            + ", ".join(str(path) for path in missing_explicit)
+        )
+    configured_paths = (default_config, *explicit_configs)
     configured = [
         root
-        for path in (*discovered_configs, *extra_model_path_configs)
-        for root in _parse_extra_model_paths(Path(path))
+        for path in configured_paths
+        for root in _parse_extra_model_paths(path)
     ]
     defaults = [
         (child.name, child)

@@ -112,6 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
         outcome.add_argument("--note", required=True)
         if state is AttemptState.ACCEPTED:
             outcome.add_argument("--continuation-frame", type=Path)
+            outcome.add_argument(
+                "--head-frame",
+                type=Path,
+                help="hash-verified QC head candidate for a later semantic story bridge",
+            )
         outcome.set_defaults(handler=_outcome_handler(state))
 
     assemble = subparsers.add_parser(
@@ -333,12 +338,21 @@ def _handle_qc_contact_sheet(args: argparse.Namespace) -> int:
 def _outcome_handler(state: AttemptState) -> Callable[[argparse.Namespace], int]:
     def handle(args: argparse.Namespace) -> int:
         attempt = load_attempt(args.attempt.resolve())
-        selected = None
+        selected_tail = None
+        selected_head = None
         if state is AttemptState.ACCEPTED and args.continuation_frame is not None:
-            selected = _validated_continuation_frame(
+            selected_tail = _validated_continuation_frame(
                 attempt.path, args.continuation_frame.resolve()
             )
-        updated = transition_attempt(attempt, state, args.note, selected_continuation_frame=selected)
+        if state is AttemptState.ACCEPTED and args.head_frame is not None:
+            selected_head = _validated_head_frame(attempt.path, args.head_frame.resolve())
+        updated = transition_attempt(
+            attempt,
+            state,
+            args.note,
+            selected_continuation_frame=selected_tail,
+            selected_head_frame=selected_head,
+        )
         _print_json(_attempt_payload(updated))
         return 0
 
@@ -442,6 +456,12 @@ def _is_safely_resumable_attempt(project: ProjectConfig, attempt: Attempt) -> bo
     status, _failures = inspect_attempt_integrity(project, attempt)
     if attempt.state is AttemptState.RENDERING:
         return status == "incomplete" and (attempt.path / "queue.json").is_file()
+    if attempt.state is AttemptState.RENDERED:
+        return (
+            status == "incomplete"
+            and (attempt.path / "queue.json").is_file()
+            and (attempt.path / "render-metadata.json").is_file()
+        )
     if attempt.state is not AttemptState.PLANNED:
         return False
     if status == "verified":
@@ -514,6 +534,15 @@ def _validated_continuation_frame(attempt_path: Path, selected: Path) -> Path:
     candidates = _qc_candidate_paths(read_qc(attempt_path / "qc.yaml"), locations=("tail",))
     if selected not in candidates:
         raise ValueError("selected continuation frame is not a hash-verified QC tail candidate")
+    return selected
+
+
+def _validated_head_frame(attempt_path: Path, selected: Path) -> Path:
+    if not selected.is_file():
+        raise ValueError(f"selected head frame does not exist: {selected}")
+    candidates = _qc_candidate_paths(read_qc(attempt_path / "qc.yaml"), locations=("head",))
+    if selected not in candidates:
+        raise ValueError("selected head frame is not a hash-verified QC head candidate")
     return selected
 
 

@@ -58,7 +58,7 @@ Important fields:
 - `shots[].segments[]` is the explicit I2V render plan. A normal opening image resolves in this order: `segment.opening_image`, then `shot.anchor_image`, then the optional project fallback `inputs.opening_frame`.
 - A `continue_from` segment is different: it can only use exactly one accepted same-shot upstream attempt's selected, hash-verified **tail** candidate. The attempt must match the current project id and source-manifest SHA-256, and its sealed provenance/render metadata/QC/acceptance evidence must still match. It cannot combine an opening-image override with continuation.
 - Strict-manifest seed families use `render.seed_base + segment.seed_offset`; an explicit `segment.seed` is the only override. A legacy top-level request seed is only a low-level compatibility fallback.
-- A story `flf2v` bridge requires explicit `first_image`/`last_image` paths backed by accepted, hash-verified QC provenance: first is a tail candidate and last is a head candidate. `base_source_image` is allowed only with `purpose: technical_smoke`, never as a story-bridge fallback.
+- A story `flf2v` bridge may use literal accepted-QC paths, but new immutable projects should use the manifest-stable pair `first_image: accepted_selected_tail` and `last_image: accepted_selected_head`. At render time those selectors require exactly one current-lineage accepted `from_segment`/`to_segment` attempt and resolve its sealed tail/head selections. The bridge attempt records the resolved literal paths, hashes, upstream attempts, and acceptance-decision evidence. `base_source_image` is allowed only with `purpose: technical_smoke`, never as a story-bridge fallback.
 - A story `flf2v` bridge also requires `from_segment` and `to_segment` in its own shot. Its entry in `assembly_order` must sit directly between those exact segment entries. The runner verifies that its selected tail/head inputs come from those declared accepted attempts.
 - `direct` and `intentional_cut` are non-rendered transition policies. Each declares same-shot `from_segment` and `to_segment`; those two segment entries must be adjacent in `assembly_order`. They do not create a bridge attempt or an assembly media item.
 - `external_control` follows the same adjacent-segment policy contract. This runner neither renders nor imports external-control media; an external clip needs a future explicit imported-output and provenance contract, so it must not be represented as a synthetic bridge item today.
@@ -66,7 +66,14 @@ Important fields:
 - `assembly_order` is mandatory for project and shot assembly; it contains production segment media and rendered story FLF bridges only. A shot must include every one of those media items exactly once, so a declared story FLF bridge cannot silently become a direct cut while a policy transition cannot become a phantom clip.
 - `output_root` and the three `outputs` paths are immutable output-role templates. Each declared role must live inside `output_root`; the runner records their resolved root and role filenames, then writes to a unique record-local directory by default (or an explicit `--output-dir`). It never writes directly into the declared root. `--rife-review-mp4` is honored only with `--request-rife`.
 
-The first bridge in the example is deliberately a `technical_smoke` configuration. Before a story bridge, replace it with the two exact accepted-QC endpoint paths.
+The first bridge in the example is deliberately a `technical_smoke` configuration. For a new story bridge, declare the semantic selector pair in the original manifest before rendering either source segment; do not edit the manifest after acceptance just to insert runtime attempt paths.
+
+```yaml
+first_image: accepted_selected_tail
+last_image: accepted_selected_head
+from_segment: S010_C001
+to_segment: S010_C002
+```
 
 ## Operator flow
 
@@ -79,16 +86,21 @@ python -m wan22_longform.cli render-segment .\project.yaml S010 S010_C001
 # render-shot is only for independent segments. It refuses a shot with continue_from entries.
 python -m wan22_longform.cli render-shot .\project.yaml S020
 
-# FLF: only explicit endpoints; 17, 33, 49, 65, or 81 frames are legal.
+# FLF: semantic accepted selectors or literal accepted-QC endpoints; 17, 33, 49, 65, or 81 frames are legal.
 python -m wan22_longform.cli render-bridge .\project.yaml B010 --timeout 1800
 
-# Review and record a human decision. A continuation frame must be a hash-verified QC candidate.
+# Review and record human selections. The continuation is a tail candidate; --head-frame seals the head used by a later semantic FLF bridge.
 python -m wan22_longform.cli qc-contact-sheet .\attempts\S010\S010_C001\attempt-...
 python -m wan22_longform.cli accept .\attempts\S010\S010_C001\attempt-... `
   --note "clean motion and stable anatomy" `
-  --continuation-frame .\attempts\...\candidate-frames\tail\frame-000016.png
+  --continuation-frame .\attempts\...\candidate-frames\tail\frame-000016.png `
+  --head-frame .\attempts\...\candidate-frames\head\frame-000000.png
 # This accepted tail is now the immutable input for the dependent segment.
 python -m wan22_longform.cli render-segment .\project.yaml S010 S010_C002
+# Accept S010_C002 with --head-frame before its semantic story bridge is rendered.
+python -m wan22_longform.cli accept .\attempts\S010\S010_C002\attempt-... `
+  --note "clean entry frame for FLF bridge" `
+  --head-frame .\attempts\...\candidate-frames\head\frame-000000.png
 python -m wan22_longform.cli reject .\attempts\... --note "camera jump at frame 8"
 python -m wan22_longform.cli retry .\attempts\... --note "retry with lower motion control"
 
@@ -113,7 +125,7 @@ python -m wan22_longform.cli assemble-project project.yaml --qc-approved --appro
 
 This approval preserves both frames; it cannot authorize trimming. Only a full-fidelity, reverified exact duplicate can trim a frame automatically.
 
-`render-shot` deliberately refuses any dependent continuation before submitting anything. Review and accept the upstream tail, then submit the dependent segment with `render-segment`. It never chooses a frame or silently creates a bridge. Submit `render-bridge` only after explicitly recording the accepted QC endpoint paths in the manifest.
+`render-shot` deliberately refuses any dependent continuation before submitting anything. Review and accept the upstream tail, then submit the dependent segment with `render-segment`. It never chooses a frame or silently creates a bridge. For semantic story bridges, keep the selector pair in the manifest from the beginning, accept the declared source tail and destination head, then submit `render-bridge` without rewriting the manifest.
 
 The `--timeout` default is 1800 seconds because a cold two-UNET Wan load can take longer than a short HTTP timeout on smart-offload hardware. The CLI still permits only loopback ComfyUI URLs.
 

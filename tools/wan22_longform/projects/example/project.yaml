@@ -1,0 +1,84 @@
+preset: P0_IDENTITY_BASELINE
+presets: ../../config/presets.yaml
+
+models:
+  high: wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+  low: wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+
+# Replace this portable inventory with model_roots for live disk discovery if desired.
+model_files:
+  - wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+  - wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+
+workflow_api: ../../workflows/api/wan22_segment_i2v_native_api.json
+bridge_workflow_api: ../../workflows/api/wan22_bridge_flf2v_native_api.json
+
+inputs:
+  # Supply one neutral, fully clothed adult anchor image before rendering.
+  opening_frame: inputs/anchor.png
+
+attempts_dir: attempts
+candidate_count: 5
+policy:
+  automatic_continuation: false
+
+loras:
+  identity:
+    mode: none
+  vbvr:
+    enabled: false
+  motion:
+    enabled: false
+  corrective:
+    enabled: false
+  permissiveness:
+    mystic:
+      enabled: false
+    wan_general:
+      enabled: false
+
+request:
+  positive: >-
+    A fully clothed adult woman in a charcoal overshirt and dark trousers, natural skin texture,
+    calm neutral expression, realistic indoor daylight, coherent anatomy, cinematic but restrained
+    camera movement, no text or logos.
+  negative: >-
+    low quality, overexposure, still image, subtitles, watermark, distorted anatomy, extra fingers,
+    malformed hands, duplicate limbs, unstable face, abrupt camera jump, crowded background.
+  seed: 240719
+  width: 640
+  height: 640
+  frames: 17
+
+shots:
+  - id: S010
+    camera: slow forward dolly, eye-level framing
+    environment: quiet modern hallway with soft window light
+    segments:
+      - id: S010_C001
+        action: The adult walks three measured steps down the hallway and pauses naturally.
+        seed_offset: 0
+  - id: S020
+    camera: gentle lateral move, eye-level framing
+    environment: the same hallway and lighting continuity
+    segments:
+      - id: S020_C001
+        action: The adult turns slightly toward a closed office door, then settles into a still pose.
+        seed_offset: 1
+
+bridges:
+  - id: B010
+    shot_id: S010
+    # This explicit technical smoke uses the declared base source for both endpoints.
+    # For a story bridge, replace it with first_image and last_image selected from QC output.
+    base_source_image: inputs/anchor.png
+    frames: 33
+
+# Project assembly does not infer chronology from attempt folders.
+assembly_order:
+  - shot_id: S010
+    segment_id: S010_C001
+  - shot_id: S010
+    segment_id: B010
+  - shot_id: S020
+    segment_id: S020_C001

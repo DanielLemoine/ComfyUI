@@ -23,9 +23,9 @@ from wan22_longform.comfy_client import (  # noqa: E402
     HistoryResult,
 )
 from wan22_longform.config import ProjectConfig  # noqa: E402
-from wan22_longform.project import AttemptState  # noqa: E402
+from wan22_longform.project import AttemptState, create_attempt  # noqa: E402
 from wan22_longform.qc import read_qc  # noqa: E402
-from wan22_longform.render import render_segment  # noqa: E402
+from wan22_longform.render import render_bridge, render_segment, resume_attempt  # noqa: E402
 
 
 class FakeTransport:
@@ -371,6 +371,185 @@ class RenderSegmentTests(unittest.TestCase):
         self.assertNotEqual(first.path, retry.path)
         self.assertEqual((first.path / "qc.yaml").read_bytes(), first_qc)
         self.assertEqual(retry.parent_attempt, first.path)
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_renders_the_existing_planned_attempt_without_creating_another(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(b"frame")
+                frames.append(frame)
+            return frames
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        planned = create_attempt(self.project, "S040", "S040_C001")
+        client = FakeRenderClient(self.video)
+
+        resumed = resume_attempt(self.project, planned, client)
+
+        self.assertEqual(resumed.path, planned.path)
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(len(list(planned.path.parent.iterdir())), 1)
+
+    @staticmethod
+    def _write_sheet(destination: Path) -> Path:
+        destination.write_bytes(b"sheet")
+        return destination
+
+
+class RenderBridgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.video = self.root / "history-video.mp4"
+        self.video.write_bytes(b"fixture-video")
+        self.first = self.root / "first.png"
+        self.first.write_bytes(b"first-frame")
+        self.last = self.root / "last.png"
+        self.last.write_bytes(b"last-frame")
+        self.workflow = PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"
+        self.manifest = self.root / "project.yaml"
+        self.source = {
+            "preset": "P0_IDENTITY_BASELINE",
+            "models": {
+                "high": "configured-high.safetensors",
+                "low": "configured-low.safetensors",
+            },
+            "workflow_api": str(PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"),
+            "bridge_workflow_api": str(self.workflow),
+            "request": {
+                "positive": "configured positive prompt",
+                "negative": "configured negative prompt",
+                "seed": 424242,
+                "width": 832,
+                "height": 480,
+            },
+            "inputs": {
+                "opening_frame": str(self.first),
+                "bridge_first": str(self.first),
+                "bridge_last": str(self.last),
+            },
+            "bridges": [
+                {
+                    "id": "B010",
+                    "shot_id": "S010",
+                    "first_image": str(self.first),
+                    "last_image": str(self.last),
+                    "frames": 33,
+                }
+            ],
+            "attempts_dir": str(self.root / "attempts"),
+            "model_files": [
+                "configured-high.safetensors",
+                "configured-low.safetensors",
+            ],
+            "candidate_count": 2,
+        }
+        self.manifest.write_text(yaml.safe_dump(self.source, sort_keys=True), encoding="utf-8")
+        self.project = ProjectConfig(path=self.manifest, source=self.source)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_bridge_uploads_both_explicit_endpoints_and_patches_native_flf_graph(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(f"{where}-{index}".encode("utf-8"))
+                frames.append(frame)
+            return frames
+
+        def fake_contact_sheet(_frames: list[Path], destination: Path) -> Path:
+            destination.write_bytes(b"contact-sheet")
+            return destination
+
+        class EndpointClient(FakeRenderClient):
+            def upload_image(self, path: Path) -> str:
+                self.uploaded.append(path)
+                return f"uploaded-{path.name}"
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = fake_contact_sheet
+        client = EndpointClient(self.video)
+
+        attempt = render_bridge(self.project, "B010", client)
+
+        self.assertEqual(attempt.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(client.uploaded, [self.first, self.last])
+        self.assertEqual(len(client.submitted), 1)
+        graph = client.submitted[0]
+        self.assertEqual(graph["9"]["inputs"]["image"], "uploaded-first.png")
+        self.assertEqual(graph["10"]["inputs"]["image"], "uploaded-last.png")
+        self.assertEqual(graph["11"]["inputs"]["width"], 832)
+        self.assertEqual(graph["11"]["inputs"]["height"], 480)
+        self.assertEqual(graph["11"]["inputs"]["length"], 33)
+        self.assertEqual(graph["12"]["inputs"]["noise_seed"], 424242)
+        self.assertEqual(graph["13"]["inputs"]["noise_seed"], 424242)
+        uploaded = json.loads((attempt.path / "input-upload.json").read_text(encoding="utf-8"))
+        self.assertEqual(uploaded["first_image"]["sha256"], hashlib.sha256(b"first-frame").hexdigest())
+        self.assertEqual(uploaded["last_image"]["sha256"], hashlib.sha256(b"last-frame").hexdigest())
+
+    def test_bridge_rejects_an_illegal_length_before_uploading_or_submitting(self) -> None:
+        source = dict(self.source)
+        source["bridges"] = [dict(self.source["bridges"][0], frames=18)]
+        client = FakeRenderClient(self.video)
+
+        with self.assertRaisesRegex(RuntimeError, "17, 33, 49, 65, or 81"):
+            render_bridge(ProjectConfig(path=self.manifest, source=source), "B010", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
+
+    def test_bridge_base_source_image_is_an_explicit_two_endpoint_choice(self) -> None:
+        source = dict(self.source)
+        source["bridges"] = [
+            {
+                "id": "B011",
+                "shot_id": "S010",
+                "base_source_image": str(self.first),
+                "frames": 33,
+            }
+        ]
+        client = FakeRenderClient(self.video)
+
+        with patch("wan22_longform.render.create_contact_sheet") as contact_sheet, patch(
+            "wan22_longform.render.extract_candidate_frames"
+        ) as extract:
+            extract.side_effect = lambda _video, count, where, destination: [
+                self._candidate(destination, where, index) for index in range(count)
+            ]
+            contact_sheet.side_effect = lambda _frames, destination: self._sheet(destination)
+            render_bridge(ProjectConfig(path=self.manifest, source=source), "B011", client)
+
+        self.assertEqual(client.uploaded, [self.first, self.first])
+
+    @staticmethod
+    def _candidate(destination: Path, where: str, index: int) -> Path:
+        destination.mkdir(parents=True, exist_ok=True)
+        path = destination / f"{where}-{index}.png"
+        path.write_bytes(b"candidate")
+        return path
+
+    @staticmethod
+    def _sheet(destination: Path) -> Path:
+        destination.write_bytes(b"sheet")
+        return destination
 
 
 if __name__ == "__main__":

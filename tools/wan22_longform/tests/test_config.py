@@ -10,7 +10,6 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from wan22_longform.config import (  # noqa: E402
-    ConfigError,
     ModelFiles,
     ProjectConfig,
     load_presets,

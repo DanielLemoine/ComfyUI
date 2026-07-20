@@ -450,6 +450,80 @@ class WorkflowPatchTests(unittest.TestCase):
             <= segment_titles
         )
 
+    def test_persisted_ui_output_links_are_iterable_arrays(self) -> None:
+        """ComfyUI's graph loader requires every connected output links field to be a list."""
+        for workflow_name in (
+            "wan22_segment_i2v_native.json",
+            "wan22_bridge_flf2v_native.json",
+        ):
+            with self.subTest(workflow=workflow_name):
+                ui = json.loads(
+                    (PROJECT_DIR / "workflows" / "ui" / workflow_name).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                node_scopes = {
+                    "top-level": ui["nodes"],
+                    "subgraph": ui["definitions"]["subgraphs"][0]["nodes"],
+                }
+                for scope, nodes in node_scopes.items():
+                    for node in nodes:
+                        for output in node.get("outputs", []):
+                            links = output.get("links")
+                            self.assertTrue(
+                                links is None or isinstance(links, list),
+                                f"{workflow_name} {scope} node {node['id']} output "
+                                f"{output['name']} must serialize links as a list or null",
+                            )
+
+    def test_persisted_ui_workflows_are_manual_render_canvases(self) -> None:
+        """UI workflows must include image inputs and a native video saver around the subgraph."""
+        expected_load_images = {
+            "wan22_segment_i2v_native.json": 1,
+            "wan22_bridge_flf2v_native.json": 2,
+        }
+        for workflow_name, image_count in expected_load_images.items():
+            with self.subTest(workflow=workflow_name):
+                ui = json.loads(
+                    (PROJECT_DIR / "workflows" / "ui" / workflow_name).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                top_level_nodes = ui["nodes"]
+                self.assertEqual(
+                    sum(node["type"] == "LoadImage" for node in top_level_nodes),
+                    image_count,
+                )
+                self.assertEqual(
+                    sum(node["type"] == "SaveVideo" for node in top_level_nodes),
+                    1,
+                )
+                self.assertTrue(ui["links"])
+
+                links_by_id = {link[0]: link for link in ui["links"]}
+                subgraph_id = ui["definitions"]["subgraphs"][0]["id"]
+                subgraph_node = next(
+                    node for node in top_level_nodes if node["type"] == subgraph_id
+                )
+                save_node = next(
+                    node for node in top_level_nodes if node["type"] == "SaveVideo"
+                )
+
+                for image_node in (
+                    node for node in top_level_nodes if node["type"] == "LoadImage"
+                ):
+                    image_link = image_node["outputs"][0]["links"][0]
+                    self.assertEqual(links_by_id[image_link][1], image_node["id"])
+                    self.assertEqual(links_by_id[image_link][3], subgraph_node["id"])
+                    self.assertEqual(links_by_id[image_link][5], "IMAGE")
+
+                video_link = subgraph_node["outputs"][0]["links"][0]
+                self.assertEqual(links_by_id[video_link][1], subgraph_node["id"])
+                self.assertEqual(links_by_id[video_link][3], save_node["id"])
+                self.assertEqual(save_node["inputs"][0]["link"], video_link)
+                self.assertGreaterEqual(ui["last_link_id"], max(links_by_id))
+
+
     def test_quality_graphs_use_their_verified_normal_template_baselines(self) -> None:
         for fixture_name, high_sampler, low_sampler, shift, cfg in (
             ("native_segment_api.json", "SAMPLER_HIGH", "SAMPLER_LOW", 5.0, 3.5),
@@ -650,7 +724,10 @@ class WorkflowPatchTests(unittest.TestCase):
             "6eea9b627b10fcfaf3e75a43aad2c58d8daabdbf72b32ede1602c668cac376bb"
         )
 
-        self.assertEqual(ui["nodes"][0]["type"], canonical_id)
+        self.assertEqual(
+            sum(node["type"] == canonical_id for node in ui["nodes"]),
+            1,
+        )
         self.assertEqual(provenance["source_template_id"], "video_wan2_2_14B_i2v")
         self.assertEqual(provenance["source_template_sha256"], canonical_hash)
         self.assertEqual(provenance["source_subgraph_id"], canonical_id)

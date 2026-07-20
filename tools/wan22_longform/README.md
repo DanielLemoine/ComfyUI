@@ -45,6 +45,27 @@ Use `--force` only to replace the package's matching files in that target. It pr
 
 The persisted I2V graph uses stable executable titles: `PROMPT_POSITIVE`, `PROMPT_NEGATIVE`, `START_IMAGE`, and `VIDEO_PREVIEW`. These are the runner's patch points; do not rename them in a deployed copy.
 
+### Manual ComfyUI execution
+
+The two deployed UI workflows are complete manual canvases: their `LoadImage` and
+`SaveVideo` nodes are already wired to the native Wan subgraph. Open them from
+ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
+`.NOT_BUILT` marker.
+
+- **`wan22_segment_i2v_native`**: choose/upload the opening frame in
+  `START_IMAGE`, write the action in `PROMPT_POSITIVE`, and leave the verified
+  model selections at their defaults unless changing them deliberately. The
+  default is 640x640 for 5 seconds. Click **Run**; the MP4 is saved below
+  `D:\AI\outputs\wan22_longform\segment_`.
+- **`wan22_bridge_flf2v_native`**: choose the start and end frames in
+  `BRIDGE_FIRST_IMAGE` and `BRIDGE_LAST_IMAGE`, set `PROMPT_POSITIVE`, then
+  click **Run**. Its default is 640x640 and 81 frames; the MP4 is saved below
+  `D:\AI\outputs\wan22_longform\bridge_`.
+
+If ComfyUI was already open when deploying an update, use the **Refresh** button
+in the Workflows sidebar and reopen the workflow. A missing-image warning before
+you choose an input image is expected; it is not a graph-load error.
+
 ## Project manifest
 
 Start at `projects/example/project.yaml`. It is deliberately identity-disabled and uses an adult, fully clothed, neutral subject. Add the two user-owned anchor files named in its `shots[].anchor_image` fields before validation or rendering.

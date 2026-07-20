@@ -1,18 +1,52 @@
 {
-  "last_node_id": 1,
-  "last_link_id": 0,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [80, -300],
+      "size": [420, 314],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "slot_index": 0, "links": [1]},
+        {"name": "MASK", "type": "MASK", "slot_index": 1, "links": null}
+      ],
+      "properties": {"cnr_id": "comfy-core", "ver": "0.3.45"},
+      "widgets_values": ["wan22_bridge_first.png", "image"],
+      "title": "BRIDGE_FIRST_IMAGE"
+    },
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [80, 220],
+      "size": [420, 314],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "slot_index": 0, "links": [2]},
+        {"name": "MASK", "type": "MASK", "slot_index": 1, "links": null}
+      ],
+      "properties": {"cnr_id": "comfy-core", "ver": "0.3.45"},
+      "widgets_values": ["wan22_bridge_last.png", "image"],
+      "title": "BRIDGE_LAST_IMAGE"
+    },
     {
       "id": 1,
       "type": "02a6890c-0ff2-4c63-ac45-1eb3bded7c7b",
-      "pos": [80, 80],
+      "pos": [600, -80],
       "size": [420, 500],
       "flags": {"collapsed": false},
-      "order": 0,
+      "order": 2,
       "mode": 0,
       "inputs": [
-        {"name": "BRIDGE_FIRST_IMAGE", "type": "IMAGE", "link": null},
-        {"name": "BRIDGE_LAST_IMAGE", "type": "IMAGE", "link": null},
+        {"name": "BRIDGE_FIRST_IMAGE", "type": "IMAGE", "link": 1},
+        {"name": "BRIDGE_LAST_IMAGE", "type": "IMAGE", "link": 2},
         {"name": "PROMPT_POSITIVE", "type": "STRING", "widget": {"name": "PROMPT_POSITIVE"}, "link": null},
         {"name": "WIDTH", "type": "INT", "widget": {"name": "WIDTH"}, "link": null},
         {"name": "HEIGHT", "type": "INT", "widget": {"name": "HEIGHT"}, "link": null},
@@ -22,12 +56,32 @@
         {"name": "TEXT_ENCODER", "type": "COMBO", "widget": {"name": "TEXT_ENCODER"}, "link": null},
         {"name": "VAE", "type": "COMBO", "widget": {"name": "VAE"}, "link": null}
       ],
-      "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": null}],
+      "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [3]}],
       "widgets_values": ["", 640, 640, 81, "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors", "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "wan_2.1_vae.safetensors"],
       "title": "WAN22_BRIDGE_FLF2V_NATIVE"
+    },
+    {
+      "id": 4,
+      "type": "SaveVideo",
+      "pos": [1100, -80],
+      "size": [420, 230],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "video", "type": "VIDEO", "link": 3}
+      ],
+      "outputs": [],
+      "properties": {"cnr_id": "comfy-core", "ver": "0.3.49"},
+      "widgets_values": ["wan22_longform/bridge", "auto", "auto"],
+      "title": "BRIDGE_SAVE_VIDEO"
     }
   ],
-  "links": [],
+  "links": [
+    [1, 2, 0, 1, 0, "IMAGE"],
+    [2, 3, 0, 1, 1, "IMAGE"],
+    [3, 1, 0, 4, 0, "VIDEO"]
+  ],
   "groups": [],
   "config": {},
   "extra": {"workflowRendererVersion": "LG"},

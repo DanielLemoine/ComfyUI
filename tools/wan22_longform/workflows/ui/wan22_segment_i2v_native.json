@@ -566,7 +566,9 @@
                 "name": "latent",
                 "type": "LATENT",
                 "slot_index": 2,
-                "links": [174]
+                "links": [
+                  174
+                ]
               }
             ],
             "properties": {
@@ -637,7 +639,9 @@
                 "localized_name": "VIDEO",
                 "name": "VIDEO",
                 "type": "VIDEO",
-                "links": [197]
+                "links": [
+                  197
+                ]
               }
             ],
             "properties": {
@@ -681,7 +685,7 @@
                 "localized_name": "model",
                 "name": "model",
                 "type": "MODEL",
-                "link": 268
+                "link": 216
               }
             ],
             "outputs": [
@@ -690,7 +694,9 @@
                 "name": "MODEL",
                 "type": "MODEL",
                 "slot_index": 0,
-                "links": [195]
+                "links": [
+                  195
+                ]
               }
             ],
             "properties": {
@@ -743,7 +749,9 @@
                 "name": "CONDITIONING",
                 "type": "CONDITIONING",
                 "slot_index": 0,
-                "links": [184]
+                "links": [
+                  184
+                ]
               }
             ],
             "title": "PROMPT_NEGATIVE",
@@ -790,7 +798,11 @@
                 "localized_name": "INT",
                 "name": "INT",
                 "type": "INT",
-                "links": [234]
+                "links": [
+                  234,
+                  274,
+                  275
+                ]
               }
             ],
             "title": "Int (Steps)",
@@ -850,7 +862,9 @@
                 "name": "IMAGE",
                 "type": "IMAGE",
                 "slot_index": 0,
-                "links": [182]
+                "links": [
+                  182
+                ]
               }
             ],
             "properties": {
@@ -910,7 +924,9 @@
                 "name": "CONDITIONING",
                 "type": "CONDITIONING",
                 "slot_index": 0,
-                "links": [183]
+                "links": [
+                  183
+                ]
               }
             ],
             "title": "PROMPT_POSITIVE",
@@ -936,67 +952,6 @@
             ],
             "color": "#232",
             "bgcolor": "#353"
-          },
-          {
-            "id": 131,
-            "type": "PrimitiveBoolean",
-            "pos": [
-              1039.9993817599054,
-              1059.9995569144005
-            ],
-            "size": [
-              330,
-              110
-            ],
-            "flags": {},
-            "order": 27,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "value",
-                "name": "value",
-                "type": "BOOLEAN",
-                "widget": {
-                  "name": "value"
-                },
-                "link": null
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "BOOLEAN",
-                "name": "BOOLEAN",
-                "type": "BOOLEAN",
-                "links": [
-                  248,
-                  249,
-                  250,
-                  251,
-                  252
-                ]
-              }
-            ],
-            "title": "ENABLE_4STEPS_LORA",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.13.0",
-              "Node name for S&R": "PrimitiveBoolean",
-              "enableTabs": false,
-              "tabWidth": 65,
-              "tabXOffset": 10,
-              "hasSecondTab": false,
-              "secondTabText": "Send Back",
-              "secondTabOffset": 80,
-              "secondTabWidth": 65,
-              "ue_properties": {
-                "widget_ue_connectable": {},
-                "version": "7.7",
-                "input_ue_unconnectable": {}
-              }
-            },
-            "widgets_values": [
-              false
-            ]
           },
           {
             "id": 90,
@@ -1163,7 +1118,9 @@
                 "name": "MODEL",
                 "type": "MODEL",
                 "slot_index": 0,
-                "links": [220]
+                "links": [
+                  220
+                ]
               }
             ],
             "properties": {
@@ -1227,7 +1184,9 @@
                 "name": "MODEL",
                 "type": "MODEL",
                 "slot_index": 0,
-                "links": [216]
+                "links": [
+                  216
+                ]
               }
             ],
             "properties": {
@@ -1280,7 +1239,10 @@
                 "localized_name": "INT",
                 "name": "INT",
                 "type": "INT",
-                "links": [232]
+                "links": [
+                  232,
+                  273
+                ]
               }
             ],
             "title": "Int (split_step)",
@@ -1326,7 +1288,10 @@
                 "localized_name": "FLOAT",
                 "name": "FLOAT",
                 "type": "FLOAT",
-                "links": [233]
+                "links": [
+                  233,
+                  276
+                ]
               }
             ],
             "title": "Float (CFG)",
@@ -1407,7 +1372,7 @@
                 "widget": {
                   "name": "steps"
                 },
-                "link": 270
+                "link": 234
               },
               {
                 "localized_name": "cfg",
@@ -1416,7 +1381,7 @@
                 "widget": {
                   "name": "cfg"
                 },
-                "link": 271
+                "link": 233
               },
               {
                 "localized_name": "end_at_step",
@@ -1425,7 +1390,7 @@
                 "widget": {
                   "name": "end_at_step"
                 },
-                "link": 272
+                "link": 232
               }
             ],
             "outputs": [
@@ -1433,7 +1398,9 @@
                 "localized_name": "LATENT",
                 "name": "LATENT",
                 "type": "LATENT",
-                "links": [170]
+                "links": [
+                  170
+                ]
               }
             ],
             "properties": {
@@ -1548,7 +1515,9 @@
                 "localized_name": "LATENT",
                 "name": "LATENT",
                 "type": "LATENT",
-                "links": [175]
+                "links": [
+                  175
+                ]
               }
             ],
             "properties": {
@@ -1583,284 +1552,6 @@
             "title": "SAMPLER_LOW"
           },
           {
-            "id": 116,
-            "type": "ComfySwitchNode",
-            "pos": [
-              1549.99925475348,
-              -250.00010210106615
-            ],
-            "size": [
-              270,
-              130
-            ],
-            "flags": {},
-            "order": 22,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "on_false",
-                "name": "on_false",
-                "type": "MODEL",
-                "link": 216
-              },
-              {
-                "localized_name": "on_true",
-                "name": "on_true",
-                "type": "MODEL",
-                "link": null
-              },
-              {
-                "localized_name": "switch",
-                "name": "switch",
-                "type": "BOOLEAN",
-                "widget": {
-                  "name": "switch"
-                },
-                "link": 249
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "output",
-                "name": "output",
-                "type": "MODEL",
-                "links": [268]
-              }
-            ],
-            "title": "Switch (Model)",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.13.0",
-              "Node name for S&R": "ComfySwitchNode",
-              "enableTabs": false,
-              "tabWidth": 65,
-              "tabXOffset": 10,
-              "hasSecondTab": false,
-              "secondTabText": "Send Back",
-              "secondTabOffset": 80,
-              "secondTabWidth": 65,
-              "ue_properties": {
-                "widget_ue_connectable": {},
-                "version": "7.7",
-                "input_ue_unconnectable": {}
-              }
-            },
-            "widgets_values": [
-              false
-            ]
-          },
-          {
-            "id": 125,
-            "type": "ComfySwitchNode",
-            "pos": [
-              1549.99925475348,
-              479.99973085776514
-            ],
-            "size": [
-              270,
-              130
-            ],
-            "flags": {},
-            "order": 26,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "on_false",
-                "name": "on_false",
-                "type": "INT",
-                "link": 232
-              },
-              {
-                "localized_name": "on_true",
-                "name": "on_true",
-                "type": "INT",
-                "link": null
-              },
-              {
-                "localized_name": "switch",
-                "name": "switch",
-                "type": "BOOLEAN",
-                "widget": {
-                  "name": "switch"
-                },
-                "link": 248
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "output",
-                "name": "output",
-                "type": "INT",
-                "links": [
-                  272,
-                  273
-                ]
-              }
-            ],
-            "title": "Switch (Split Step)",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.13.0",
-              "Node name for S&R": "ComfySwitchNode",
-              "enableTabs": false,
-              "tabWidth": 65,
-              "tabXOffset": 10,
-              "hasSecondTab": false,
-              "secondTabText": "Send Back",
-              "secondTabOffset": 80,
-              "secondTabWidth": 65,
-              "ue_properties": {
-                "widget_ue_connectable": {},
-                "version": "7.7",
-                "input_ue_unconnectable": {}
-              }
-            },
-            "widgets_values": [
-              false
-            ]
-          },
-          {
-            "id": 119,
-            "type": "ComfySwitchNode",
-            "pos": [
-              1549.99925475348,
-              109.99990729878107
-            ],
-            "size": [
-              270,
-              130
-            ],
-            "flags": {},
-            "order": 24,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "on_false",
-                "name": "on_false",
-                "type": "INT",
-                "link": 234
-              },
-              {
-                "localized_name": "on_true",
-                "name": "on_true",
-                "type": "INT",
-                "link": null
-              },
-              {
-                "localized_name": "switch",
-                "name": "switch",
-                "type": "BOOLEAN",
-                "widget": {
-                  "name": "switch"
-                },
-                "link": 251
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "output",
-                "name": "output",
-                "type": "INT",
-                "links": [
-                  270,
-                  274,
-                  275
-                ]
-              }
-            ],
-            "title": "Switch (Steps)",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.13.0",
-              "Node name for S&R": "ComfySwitchNode",
-              "enableTabs": false,
-              "tabWidth": 65,
-              "tabXOffset": 10,
-              "hasSecondTab": false,
-              "secondTabText": "Send Back",
-              "secondTabOffset": 80,
-              "secondTabWidth": 65,
-              "ue_properties": {
-                "widget_ue_connectable": {},
-                "version": "7.7",
-                "input_ue_unconnectable": {}
-              }
-            },
-            "widgets_values": [
-              false
-            ]
-          },
-          {
-            "id": 120,
-            "type": "ComfySwitchNode",
-            "pos": [
-              1549.99925475348,
-              289.9998582580289
-            ],
-            "size": [
-              270,
-              130
-            ],
-            "flags": {},
-            "order": 25,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "on_false",
-                "name": "on_false",
-                "type": "FLOAT",
-                "link": 233
-              },
-              {
-                "localized_name": "on_true",
-                "name": "on_true",
-                "type": "FLOAT",
-                "link": null
-              },
-              {
-                "localized_name": "switch",
-                "name": "switch",
-                "type": "BOOLEAN",
-                "widget": {
-                  "name": "switch"
-                },
-                "link": 252
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "output",
-                "name": "output",
-                "type": "FLOAT",
-                "links": [
-                  271,
-                  276
-                ]
-              }
-            ],
-            "title": "Switch (CFG)",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.13.0",
-              "Node name for S&R": "ComfySwitchNode",
-              "enableTabs": false,
-              "tabWidth": 65,
-              "tabXOffset": 10,
-              "hasSecondTab": false,
-              "secondTabText": "Send Back",
-              "secondTabOffset": 80,
-              "secondTabWidth": 65,
-              "ue_properties": {
-                "widget_ue_connectable": {},
-                "version": "7.7",
-                "input_ue_unconnectable": {}
-              }
-            },
-            "widgets_values": [
-              false
-            ]
-          },
-          {
             "id": 103,
             "type": "ModelSamplingSD3",
             "pos": [
@@ -1881,7 +1572,7 @@
                 "localized_name": "model",
                 "name": "model",
                 "type": "MODEL",
-                "link": 269
+                "link": 220
               }
             ],
             "outputs": [
@@ -1890,7 +1581,9 @@
                 "name": "MODEL",
                 "type": "MODEL",
                 "slot_index": 0,
-                "links": [192]
+                "links": [
+                  192
+                ]
               }
             ],
             "properties": {
@@ -1914,73 +1607,6 @@
               5.000000000000001
             ],
             "title": "MODEL_SAMPLING_LOW"
-          },
-          {
-            "id": 117,
-            "type": "ComfySwitchNode",
-            "pos": [
-              1549.99925475348,
-              -70.00011531470113
-            ],
-            "size": [
-              270,
-              130
-            ],
-            "flags": {},
-            "order": 23,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "on_false",
-                "name": "on_false",
-                "type": "MODEL",
-                "link": 220
-              },
-              {
-                "localized_name": "on_true",
-                "name": "on_true",
-                "type": "MODEL",
-                "link": null
-              },
-              {
-                "localized_name": "switch",
-                "name": "switch",
-                "type": "BOOLEAN",
-                "widget": {
-                  "name": "switch"
-                },
-                "link": 250
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "output",
-                "name": "output",
-                "type": "MODEL",
-                "links": [269]
-              }
-            ],
-            "title": "Switch (Model)",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.13.0",
-              "Node name for S&R": "ComfySwitchNode",
-              "enableTabs": false,
-              "tabWidth": 65,
-              "tabXOffset": 10,
-              "hasSecondTab": false,
-              "secondTabText": "Send Back",
-              "secondTabOffset": 80,
-              "secondTabWidth": 65,
-              "ue_properties": {
-                "widget_ue_connectable": {},
-                "version": "7.7",
-                "input_ue_unconnectable": {}
-              }
-            },
-            "widgets_values": [
-              false
-            ]
           },
           {
             "id": 161,
@@ -2012,7 +1638,9 @@
                 "localized_name": "FLOAT",
                 "name": "FLOAT",
                 "type": "FLOAT",
-                "links": [279]
+                "links": [
+                  279
+                ]
               }
             ],
             "title": "DURATION",
@@ -2119,7 +1747,9 @@
                 "localized_name": "INT",
                 "name": "INT",
                 "type": "INT",
-                "links": [281]
+                "links": [
+                  281
+                ]
               }
             ],
             "properties": {
@@ -2228,7 +1858,7 @@
             "id": 220,
             "origin_id": 96,
             "origin_slot": 0,
-            "target_id": 117,
+            "target_id": 103,
             "target_slot": 0,
             "type": "MODEL"
           },
@@ -2236,16 +1866,16 @@
             "id": 233,
             "origin_id": 126,
             "origin_slot": 0,
-            "target_id": 120,
-            "target_slot": 0,
+            "target_id": 86,
+            "target_slot": 6,
             "type": "FLOAT"
           },
           {
             "id": 232,
             "origin_id": 127,
             "origin_slot": 0,
-            "target_id": 125,
-            "target_slot": 0,
+            "target_id": 86,
+            "target_slot": 7,
             "type": "INT"
           },
           {
@@ -2284,8 +1914,8 @@
             "id": 234,
             "origin_id": 128,
             "origin_slot": 0,
-            "target_id": 119,
-            "target_slot": 0,
+            "target_id": 86,
+            "target_slot": 5,
             "type": "INT"
           },
           {
@@ -2324,7 +1954,7 @@
             "id": 216,
             "origin_id": 95,
             "origin_slot": 0,
-            "target_id": 116,
+            "target_id": 104,
             "target_slot": 0,
             "type": "MODEL"
           },
@@ -2401,88 +2031,8 @@
             "type": "STRING"
           },
           {
-            "id": 248,
-            "origin_id": 131,
-            "origin_slot": 0,
-            "target_id": 125,
-            "target_slot": 2,
-            "type": "BOOLEAN"
-          },
-          {
-            "id": 249,
-            "origin_id": 131,
-            "origin_slot": 0,
-            "target_id": 116,
-            "target_slot": 2,
-            "type": "BOOLEAN"
-          },
-          {
-            "id": 250,
-            "origin_id": 131,
-            "origin_slot": 0,
-            "target_id": 117,
-            "target_slot": 2,
-            "type": "BOOLEAN"
-          },
-          {
-            "id": 251,
-            "origin_id": 131,
-            "origin_slot": 0,
-            "target_id": 119,
-            "target_slot": 2,
-            "type": "BOOLEAN"
-          },
-          {
-            "id": 252,
-            "origin_id": 131,
-            "origin_slot": 0,
-            "target_id": 120,
-            "target_slot": 2,
-            "type": "BOOLEAN"
-          },
-          {
-            "id": 268,
-            "origin_id": 116,
-            "origin_slot": 0,
-            "target_id": 104,
-            "target_slot": 0,
-            "type": "MODEL"
-          },
-          {
-            "id": 269,
-            "origin_id": 117,
-            "origin_slot": 0,
-            "target_id": 103,
-            "target_slot": 0,
-            "type": "MODEL"
-          },
-          {
-            "id": 270,
-            "origin_id": 119,
-            "origin_slot": 0,
-            "target_id": 86,
-            "target_slot": 5,
-            "type": "INT"
-          },
-          {
-            "id": 271,
-            "origin_id": 120,
-            "origin_slot": 0,
-            "target_id": 86,
-            "target_slot": 6,
-            "type": "FLOAT"
-          },
-          {
-            "id": 272,
-            "origin_id": 125,
-            "origin_slot": 0,
-            "target_id": 86,
-            "target_slot": 7,
-            "type": "INT"
-          },
-          {
             "id": 273,
-            "origin_id": 125,
+            "origin_id": 127,
             "origin_slot": 0,
             "target_id": 85,
             "target_slot": 6,
@@ -2490,7 +2040,7 @@
           },
           {
             "id": 274,
-            "origin_id": 119,
+            "origin_id": 128,
             "origin_slot": 0,
             "target_id": 85,
             "target_slot": 7,
@@ -2498,7 +2048,7 @@
           },
           {
             "id": 275,
-            "origin_id": 119,
+            "origin_id": 128,
             "origin_slot": 0,
             "target_id": 85,
             "target_slot": 4,
@@ -2506,7 +2056,7 @@
           },
           {
             "id": 276,
-            "origin_id": 120,
+            "origin_id": 126,
             "origin_slot": 0,
             "target_id": 85,
             "target_slot": 5,
@@ -2597,7 +2147,7 @@
           "workflowRendererVersion": "LG",
           "ue_links": []
         },
-        "description": "Canonical Wan2.2 I2V normal quality branch; the false-selected 4steps LoRA switches remain wired to the official normal 20-step path."
+        "description": "Canonical Wan2.2 I2V normal quality branch; the excluded 4steps lane is bypassed through direct normal model, steps, CFG, and split-step routes."
       }
     ]
   },
@@ -2623,7 +2173,7 @@
       "source_template_sha256": "6eea9b627b10fcfaf3e75a43aad2c58d8daabdbf72b32ede1602c668cac376bb",
       "source_subgraph_id": "84e2cf3f-de93-40ef-ab22-b9375296917b",
       "source_subgraph": "Image to Video (Wan2.2)",
-      "capture": "Canonical normal quality branch retained; Enable 4steps LoRA? remains false and wires the normal model, steps, CFG, and split-step paths. Lightning LoRA nodes and their true branches are intentionally excluded."
+      "capture": "Canonical normal quality branch retained with direct normal model, steps, CFG, and split-step routes. Lightning LoRA nodes, their true branches, and their now-unusable selector nodes are intentionally excluded."
     }
   },
   "version": 0.4

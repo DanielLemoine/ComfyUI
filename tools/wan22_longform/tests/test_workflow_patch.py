@@ -739,7 +739,7 @@ class WorkflowPatchTests(unittest.TestCase):
         node_by_id = {node["id"]: node for node in subgraph["nodes"]}
         links = subgraph["links"]
 
-        self.assertEqual(node_by_id[131]["widgets_values"], [False])
+        self.assertNotIn(131, node_by_id)
         self.assertEqual(node_by_id[161]["widgets_values"], [5])
         self.assertEqual(node_by_id[162]["widgets_values"], [16])
         self.assertEqual(node_by_id[163]["widgets_values"], ["floor (a * b + 1)"])
@@ -760,12 +760,32 @@ class WorkflowPatchTests(unittest.TestCase):
         self.assertTrue(has_link(162, 0, 163, 1))
         self.assertTrue(has_link(163, 1, 98, 7))
         self.assertTrue(has_link(162, 0, 94, 2))
-        for normal_source, switch_id in ((95, 116), (96, 117), (127, 125), (128, 119), (126, 120)):
-            with self.subTest(normal_source=normal_source, switch_id=switch_id):
-                self.assertTrue(has_link(normal_source, 0, switch_id, 0))
-                self.assertTrue(has_link(131, 0, switch_id, 2))
 
-        forbidden_types = {"LoraLoaderModelOnly", "Note", "MarkdownNote"}
+        normal_routes = (
+            (95, 104, 0),
+            (96, 103, 0),
+            (128, 86, 5),
+            (126, 86, 6),
+            (127, 86, 7),
+            (128, 85, 4),
+            (126, 85, 5),
+            (127, 85, 6),
+            (128, 85, 7),
+        )
+        for normal_source, target_id, target_slot in normal_routes:
+            with self.subTest(
+                normal_source=normal_source,
+                target_id=target_id,
+                target_slot=target_slot,
+            ):
+                self.assertTrue(has_link(normal_source, 0, target_id, target_slot))
+
+        forbidden_types = {
+            "ComfySwitchNode",
+            "LoraLoaderModelOnly",
+            "Note",
+            "MarkdownNote",
+        }
         self.assertTrue(
             forbidden_types.isdisjoint({node["type"] for node in subgraph["nodes"]})
         )

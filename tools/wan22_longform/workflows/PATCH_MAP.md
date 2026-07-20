@@ -56,6 +56,18 @@ The bridge base remains free of `LoraLoaderModelOnly` nodes. `build_api_graph(ba
 
 The UI bridge is a native LiteGraph subgraph adapted from that official template’s normal branch. Its API counterpart contains only executable core nodes; frontend-only notes are not included in the API graph.
 
+## Qwen planned-end keyframe author UI
+
+`wan22_keyframe_author_qwen_edit.json` is a focused, manual image-edit canvas
+for preparing the second endpoint of an FLF render. It retains the installed
+official `image_qwen_image_edit_2509.json` subgraph and removes that template's
+unrelated raw-latent branch. The visible root route is exactly
+`KEYFRAME_SOURCE_IMAGE` → `QWEN_EDIT_PLANNED_END_KEYFRAME` →
+`SAVE_PLANNED_END_KEYFRAME`, with a separate text instruction input. It uses
+the installed Qwen Edit 2509 UNET, Qwen 2.5 VL 7B encoder, Qwen Image VAE, and
+the optional Qwen Edit Lightning LoRA. The Wan `sgfw` adapter is intentionally
+absent: it is a video-model LoRA and is not compatible with Qwen Image Edit.
+
 ## Six-segment manual sequence UI
 
 `wan22_six_segment_sequence_native.json` reuses the canonical I2V subgraph six

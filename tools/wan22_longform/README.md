@@ -1,10 +1,11 @@
 # Wan2.2 long-form operator package
 
-This package supplies two native ComfyUI API/UI render workflows, one last-frame utility workflow, one six-segment manual sequence workflow, and a local-only operator runner:
+This package supplies two native ComfyUI API/UI render workflows, two keyframe utility workflows, one six-segment manual sequence workflow, and a local-only operator runner:
 
 - `wan22_segment_i2v_native`: a quality-first Wan 2.2 image-to-video segment.
 - `wan22_bridge_flf2v_native`: a native first/last-frame bridge with two explicit endpoint images.
 - `wan22_extract_last_frame`: saves the exact final frame from a completed MP4 for use as a later shot's start image.
+- `wan22_keyframe_author_qwen_edit`: uses the installed Qwen Image Edit model to author a planned FLF end keyframe from a supplied source image.
 - `wan22_six_segment_sequence_native`: six optionally rendered or reused I2V sections with one assembled final MP4.
 - `wan22_longform.cli`: immutable attempts, QC evidence, accepted-only assembly records, and copy-only workflow deployment.
 
@@ -72,6 +73,16 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
   one PNG below `D:\AI\outputs\wan22_longform\flf_last_frame_`. Upload that
   PNG into the next FLF clip's first-image loader. This utility does not render
   video and is intentionally a separate workflow.
+- **`wan22_keyframe_author_qwen_edit`**: choose/upload the current shot's
+  opening frame (or the previous shot's extracted final frame) in
+  `KEYFRAME_SOURCE_IMAGE`, then describe only the desired final action/pose in
+  `END_KEYFRAME_EDIT_INSTRUCTION`. The official Qwen Edit 2509 path preserves
+  the source image's framing while producing a planned endpoint PNG below
+  `D:\AI\outputs\wan22_longform\flf_planned_end_`. Use that PNG in
+  `BRIDGE_LAST_IMAGE` of `wan22_bridge_flf2v_native`. Its Lightning mode is on
+  by default (4 steps, CFG 1); turn `Enable Lightning LoRA` off inside the
+  Qwen subgraph for the normal 20-step, CFG 4 route. Do not load the Wan-only
+  `sgfw` video LoRA into this image-edit graph.
 
 An FLF end image is a planned keyframe, not something that can be extracted
 from an as-yet-unrendered clip. Create or edit that future endpoint first, then

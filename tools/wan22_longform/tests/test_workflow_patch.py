@@ -545,6 +545,61 @@ class WorkflowPatchTests(unittest.TestCase):
         link = workflow["links"][0]
         self.assertEqual(link[1:6], [extractor["id"], 0, saver["id"], 0, "IMAGE"])
 
+    def test_qwen_keyframe_author_uses_the_official_image_edit_path(self) -> None:
+        workflow_path = (
+            PROJECT_DIR / "workflows" / "ui" / "wan22_keyframe_author_qwen_edit.json"
+        )
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        nodes = {node["title"]: node for node in workflow["nodes"]}
+
+        source = nodes["KEYFRAME_SOURCE_IMAGE"]
+        prompt = nodes["END_KEYFRAME_EDIT_INSTRUCTION"]
+        author = nodes["QWEN_EDIT_PLANNED_END_KEYFRAME"]
+        saver = nodes["SAVE_PLANNED_END_KEYFRAME"]
+        self.assertEqual(source["type"], "LoadImage")
+        self.assertEqual(prompt["type"], "PrimitiveStringMultiline")
+        self.assertEqual(saver["type"], "SaveImage")
+        self.assertIn("Preserve the exact same adult woman's facial identity", prompt["widgets_values"][0])
+        self.assertEqual(saver["widgets_values"][0], "wan22_longform/flf_planned_end")
+
+        links = {link[0]: link for link in workflow["links"]}
+        self.assertEqual(
+            links[source["outputs"][0]["links"][0]][1:6],
+            [source["id"], 0, author["id"], 0, "IMAGE"],
+        )
+        self.assertEqual(
+            links[prompt["outputs"][0]["links"][0]][1:6],
+            [prompt["id"], 0, author["id"], 3, "STRING"],
+        )
+        self.assertEqual(
+            links[author["outputs"][0]["links"][0]][1:6],
+            [author["id"], 0, saver["id"], 0, "IMAGE"],
+        )
+
+        subgraph = workflow["definitions"]["subgraphs"][0]
+        self.assertEqual(author["type"], subgraph["id"])
+        subgraph_text = json.dumps(subgraph)
+        for expected in (
+            "TextEncodeQwenImageEditPlus",
+            "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+            "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+            "qwen_image_vae.safetensors",
+            "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+        ):
+            self.assertIn(expected, subgraph_text)
+        self.assertNotIn("wan22_i2v_a14b_sgfw", subgraph_text)
+
+        self.assertGreaterEqual(
+            author["pos"][0] - (source["pos"][0] + source["size"][0]),
+            24,
+            "source and author nodes must not overlap",
+        )
+        self.assertGreaterEqual(
+            saver["pos"][0] - (author["pos"][0] + author["size"][0]),
+            24,
+            "author and saver nodes must not overlap",
+        )
+
 
     def test_quality_graphs_use_their_verified_normal_template_baselines(self) -> None:
         for fixture_name, high_sampler, low_sampler, shift, cfg in (

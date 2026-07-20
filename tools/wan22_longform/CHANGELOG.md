@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 - 2026-07-19
+
+- Replaced source-attempt assembly states with separate immutable assembly records containing accepted source hashes, requested targets, plans, boundary evidence, output hashes, and recoverable success/failure decisions.
+- Made `status` and `resume` report assembly-record state without automatically restarting FFmpeg work or re-rendering accepted segments.
+- Made project and shot assembly validate the strict manifest before selecting sources, and made arbitrary-file `assemble` explicitly diagnostic-only.
+- Rejected same-shot bridge/segment id collisions, required declared source/destination metadata and timeline adjacency for story FLF bridges, and prohibited technical-smoke bridges from production assembly order.
+
 ## 0.1.1 - 2026-07-19
 
 - Added strict v1 project-manifest validation, including workflow hashes and environment snapshots.

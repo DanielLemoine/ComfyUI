@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from shutil import copyfile
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
@@ -22,9 +22,16 @@ class AttemptState(StrEnum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     RETRY_REQUESTED = "retry_requested"
+
+
+class AssemblyState(StrEnum):
+    """Lifecycle for one immutable output assembly record."""
+
+    PLANNED = "planned"
     ASSEMBLING = "assembling"
     ASSEMBLED = "assembled"
     FINAL = "final"
+    FAILED = "failed"
 
 
 class ProjectStateError(ValueError):
@@ -40,6 +47,15 @@ class Attempt:
     state: AttemptState
     created_at: datetime
     parent_attempt: Path | None = None
+
+
+@dataclass(frozen=True)
+class AssemblyRecord:
+    path: Path
+    assembly_id: str
+    scope: str
+    state: AssemblyState
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -63,12 +79,17 @@ _TRANSITIONS: Mapping[AttemptState, frozenset[AttemptState]] = {
     AttemptState.NEEDS_REVIEW: frozenset(
         {AttemptState.ACCEPTED, AttemptState.REJECTED, AttemptState.RETRY_REQUESTED}
     ),
-    AttemptState.ACCEPTED: frozenset({AttemptState.ASSEMBLING}),
+    AttemptState.ACCEPTED: frozenset(),
     AttemptState.REJECTED: frozenset(),
     AttemptState.RETRY_REQUESTED: frozenset(),
-    AttemptState.ASSEMBLING: frozenset({AttemptState.ASSEMBLED}),
-    AttemptState.ASSEMBLED: frozenset({AttemptState.FINAL}),
-    AttemptState.FINAL: frozenset(),
+}
+
+_ASSEMBLY_TRANSITIONS: Mapping[AssemblyState, frozenset[AssemblyState]] = {
+    AssemblyState.PLANNED: frozenset({AssemblyState.ASSEMBLING, AssemblyState.FAILED}),
+    AssemblyState.ASSEMBLING: frozenset({AssemblyState.ASSEMBLED, AssemblyState.FAILED}),
+    AssemblyState.ASSEMBLED: frozenset({AssemblyState.FINAL}),
+    AssemblyState.FINAL: frozenset(),
+    AssemblyState.FAILED: frozenset(),
 }
 
 _OPERATOR_OUTCOMES = frozenset(
@@ -294,12 +315,212 @@ def selected_input(attempt: Attempt, name: str) -> SelectedInput:
     return SelectedInput(path, actual_hash, dict(entry))
 
 
+def create_assembly_record(
+    project: ProjectConfig,
+    scope: str,
+    *,
+    inputs: Sequence[Mapping[str, Any]],
+    requested: Mapping[str, Any],
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> AssemblyRecord:
+    """Create one append-only record without changing accepted render attempts."""
+    _validate_identifier(scope, "assembly scope")
+    if not inputs:
+        raise ProjectStateError("assembly record requires at least one accepted input")
+    if not isinstance(requested, Mapping):
+        raise ProjectStateError("assembly record requested details must be a mapping")
+    input_payload = _assembly_inputs_payload(inputs)
+    requested_payload = _json_ready(requested)
+    created_at = _as_utc(now())
+    root = _assembly_records_root(project) / scope
+    root.mkdir(parents=True, exist_ok=True)
+    existing = sorted(path for path in root.iterdir() if path.is_dir())
+    record_number = len(existing) + 1
+    timestamp = _utc_timestamp(created_at).replace(":", "").replace("-", "")
+    while True:
+        assembly_id = f"assembly-{record_number:04d}-{timestamp}"
+        record_path = root / assembly_id
+        try:
+            record_path.mkdir()
+            break
+        except FileExistsError:
+            record_number += 1
+
+    record = AssemblyRecord(
+        path=record_path,
+        assembly_id=assembly_id,
+        scope=scope,
+        state=AssemblyState.PLANNED,
+        created_at=created_at,
+    )
+    _write_json(
+        record.path / "assembly.json",
+        {
+            "assembly_id": record.assembly_id,
+            "created_at": _utc_timestamp(created_at),
+            "inputs": input_payload,
+            "requested": requested_payload,
+            "scope": scope,
+            "state": record.state,
+        },
+    )
+    return record
+
+
+def transition_assembly_record(
+    record: AssemblyRecord,
+    target: AssemblyState,
+    note: str | None,
+    *,
+    details: Mapping[str, Any] | None = None,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> AssemblyRecord:
+    """Append a lifecycle decision to one immutable assembly record."""
+    persisted, decision_paths = _load_assembly_record(record.path)
+    if record.assembly_id != persisted.assembly_id:
+        raise ProjectStateError("assembly record identity does not match its persisted record")
+    if record.state is not persisted.state:
+        raise ProjectStateError(
+            f"stale assembly record state: supplied {record.state}, persisted {persisted.state}"
+        )
+    if target not in _ASSEMBLY_TRANSITIONS[persisted.state]:
+        raise ProjectStateError(
+            f"invalid assembly transition: {persisted.state} -> {target}"
+        )
+    if target is AssemblyState.FAILED and not _has_operator_note(note):
+        raise ProjectStateError("failed assembly record requires a non-empty failure note")
+    if _assembly_decision_paths(record.path) != decision_paths:
+        raise ProjectStateError("assembly record decision chain changed before transition")
+    if details is not None and not isinstance(details, Mapping):
+        raise ProjectStateError("assembly record decision details must be a mapping")
+
+    decision_dir = record.path / "decisions"
+    decision_dir.mkdir(exist_ok=True)
+    decision_number = len(decision_paths) + 1
+    decision_path = decision_dir / f"{decision_number:04d}.json"
+    payload = {
+        "assembly_id": persisted.assembly_id,
+        "details": _json_ready(details) if details is not None else None,
+        "from": persisted.state,
+        "note": note,
+        "timestamp": _utc_timestamp(_as_utc(now())),
+        "to": target,
+    }
+    try:
+        _write_json(decision_path, payload)
+    except FileExistsError as error:
+        current = load_assembly_record(record.path)
+        raise ProjectStateError(
+            f"assembly record decision claim lost; persisted state is {current.state}"
+        ) from error
+    return replace(persisted, state=target)
+
+
+def load_assembly_record(path: Path) -> AssemblyRecord:
+    """Reconstruct one immutable assembly lifecycle from its decision log."""
+    record, _ = _load_assembly_record(path)
+    return record
+
+
+def assembly_records(project: ProjectConfig) -> tuple[AssemblyRecord, ...]:
+    """Return every immutable assembly record associated with a project."""
+    root = _assembly_records_root(project)
+    if not root.is_dir():
+        return ()
+    records = [load_assembly_record(path.parent) for path in root.rglob("assembly.json")]
+    return tuple(sorted(records, key=lambda record: str(record.path)))
+
+
+def write_assembly_record_json(
+    record: AssemblyRecord,
+    name: str,
+    payload: Mapping[str, Any],
+) -> Path:
+    """Add one immutable JSON evidence artifact to an assembly record."""
+    if not name or Path(name).name != name or not name.endswith(".json"):
+        raise ProjectStateError("assembly record artifact name must be one JSON filename")
+    if not isinstance(payload, Mapping):
+        raise ProjectStateError("assembly record artifact payload must be a mapping")
+    persisted = load_assembly_record(record.path)
+    if persisted.assembly_id != record.assembly_id:
+        raise ProjectStateError("assembly record artifact identity does not match")
+    destination = record.path / name
+    _write_json(destination, payload)
+    return destination
+
+
+def verify_assembly_record_inputs(record: AssemblyRecord) -> tuple[dict[str, Any], ...]:
+    """Recheck accepted source identity and hashes immediately before assembly work."""
+    persisted = load_assembly_record(record.path)
+    if persisted.assembly_id != record.assembly_id:
+        raise ProjectStateError("assembly record input verification identity does not match")
+    payload = _read_json(record.path / "assembly.json")
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        raise ProjectStateError("assembly record requires an immutable input list")
+    return tuple(_assembly_inputs_payload(inputs))
+
+
 def _attempts_root(project: ProjectConfig) -> Path:
     configured = project.source.get("attempts_dir", project.path.parent / "attempts")
     root = Path(configured)
     if not root.is_absolute():
         root = project.path.parent / root
     return root
+
+
+def _assembly_records_root(project: ProjectConfig) -> Path:
+    configured = project.source.get("assembly_records_dir", project.path.parent / "assembly-records")
+    if not isinstance(configured, (str, Path)):
+        raise ProjectStateError("assembly_records_dir must be a local path")
+    root = Path(configured)
+    if not root.is_absolute():
+        root = project.path.parent / root
+    return root
+
+
+def _assembly_inputs_payload(
+    inputs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for entry in inputs:
+        if not isinstance(entry, Mapping):
+            raise ProjectStateError("assembly record input must be a mapping")
+        attempt_path_raw = entry.get("attempt_path")
+        if not isinstance(attempt_path_raw, (str, Path)):
+            raise ProjectStateError("assembly record input requires attempt_path")
+        attempt = load_attempt(Path(attempt_path_raw))
+        if attempt.state is not AttemptState.ACCEPTED:
+            raise ProjectStateError("assembly record input attempt is not accepted")
+        if entry.get("attempt_id") != attempt.attempt_id:
+            raise ProjectStateError("assembly record input attempt_id does not match")
+        if entry.get("shot_id") != attempt.shot_id or entry.get("segment_id") != attempt.segment_id:
+            raise ProjectStateError("assembly record input identity does not match")
+        output = entry.get("output")
+        if not isinstance(output, Mapping):
+            raise ProjectStateError("assembly record input requires output provenance")
+        raw_output_path = output.get("path")
+        expected_hash = output.get("sha256")
+        if not isinstance(raw_output_path, (str, Path)) or not isinstance(expected_hash, str):
+            raise ProjectStateError("assembly record input output provenance is invalid")
+        output_path = Path(raw_output_path).resolve()
+        if not output_path.is_file():
+            raise ProjectStateError(f"assembly record input output does not exist: {output_path}")
+        actual_hash = sha256_file(output_path)
+        if actual_hash != expected_hash:
+            raise ProjectStateError(
+                f"assembly record input output hash changed: {output_path}"
+            )
+        payload.append(
+            {
+                "attempt_id": attempt.attempt_id,
+                "attempt_path": str(attempt.path.resolve()),
+                "output": {"path": str(output_path), "sha256": actual_hash},
+                "segment_id": attempt.segment_id,
+                "shot_id": attempt.shot_id,
+            }
+        )
+    return payload
 
 
 def _write_workflow_snapshot(destination: Path, project: ProjectConfig) -> None:
@@ -410,12 +631,67 @@ def _load_attempt(path: Path) -> tuple[Attempt, tuple[Path, ...]]:
     return replace(attempt, state=state), decision_paths
 
 
+def _load_assembly_record(path: Path) -> tuple[AssemblyRecord, tuple[Path, ...]]:
+    payload = _read_json(path / "assembly.json")
+    assembly_id = _required_string(payload, "assembly_id", "assembly record")
+    scope = _required_string(payload, "scope", "assembly record")
+    _validate_identifier(scope, "assembly record scope")
+    initial_state = _assembly_state(payload.get("state"), "assembly record state")
+    if initial_state is not AssemblyState.PLANNED:
+        raise ProjectStateError("assembly record must begin in planned state")
+    created_at = _timestamp(payload.get("created_at"), "assembly record created_at")
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        raise ProjectStateError("assembly record requires an immutable input list")
+    if not isinstance(payload.get("requested"), Mapping):
+        raise ProjectStateError("assembly record requested details must be a mapping")
+    record = AssemblyRecord(
+        path=path,
+        assembly_id=assembly_id,
+        scope=scope,
+        state=AssemblyState.PLANNED,
+        created_at=created_at,
+    )
+    decision_paths = _assembly_decision_paths(path)
+    state = record.state
+    for expected_number, decision_path in enumerate(decision_paths, start=1):
+        if _decision_number(decision_path) != expected_number:
+            raise ProjectStateError("assembly record decision log is not sequential")
+        decision = _read_json(decision_path)
+        if decision.get("assembly_id") != assembly_id:
+            raise ProjectStateError("assembly record decision belongs to a different record")
+        source = _assembly_state(decision.get("from"), "assembly decision from state")
+        target = _assembly_state(decision.get("to"), "assembly decision target state")
+        if source is not state:
+            raise ProjectStateError("assembly record decision log has a stale source state")
+        if target not in _ASSEMBLY_TRANSITIONS[state]:
+            raise ProjectStateError(
+                f"invalid persisted assembly transition: {state} -> {target}"
+            )
+        if target is AssemblyState.FAILED and not _has_operator_note(decision.get("note")):
+            raise ProjectStateError("persisted failed assembly decision lacks a non-empty failure note")
+        if decision.get("details") is not None and not isinstance(decision.get("details"), Mapping):
+            raise ProjectStateError("assembly record decision details must be a mapping or null")
+        _timestamp(decision.get("timestamp"), "assembly decision timestamp")
+        state = target
+    return replace(record, state=state), decision_paths
+
+
 def _decision_paths(attempt_path: Path) -> tuple[Path, ...]:
     decision_dir = attempt_path / "decisions"
     if not decision_dir.exists():
         return ()
     if not decision_dir.is_dir():
         raise ProjectStateError("attempt decisions path is not a directory")
+    return tuple(sorted(decision_dir.glob("*.json"), key=lambda path: path.name))
+
+
+def _assembly_decision_paths(record_path: Path) -> tuple[Path, ...]:
+    decision_dir = record_path / "decisions"
+    if not decision_dir.exists():
+        return ()
+    if not decision_dir.is_dir():
+        raise ProjectStateError("assembly record decisions path is not a directory")
     return tuple(sorted(decision_dir.glob("*.json"), key=lambda path: path.name))
 
 
@@ -456,6 +732,13 @@ def _required_string(record: Mapping[str, Any], key: str, context: str) -> str:
 def _attempt_state(value: Any, context: str) -> AttemptState:
     try:
         return AttemptState(value)
+    except (TypeError, ValueError) as error:
+        raise ProjectStateError(f"{context} is invalid") from error
+
+
+def _assembly_state(value: Any, context: str) -> AssemblyState:
+    try:
+        return AssemblyState(value)
     except (TypeError, ValueError) as error:
         raise ProjectStateError(f"{context} is invalid") from error
 

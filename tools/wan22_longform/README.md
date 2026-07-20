@@ -4,9 +4,9 @@ This package supplies two native ComfyUI API/UI workflows and a local-only opera
 
 - `wan22_segment_i2v_native`: a quality-first Wan 2.2 image-to-video segment.
 - `wan22_bridge_flf2v_native`: a native first/last-frame bridge with two explicit endpoint images.
-- `wan22_longform.cli`: immutable attempts, QC evidence, accepted-only assembly, and copy-only workflow deployment.
+- `wan22_longform.cli`: immutable attempts, QC evidence, accepted-only assembly records, and copy-only workflow deployment.
 
-It is intentionally more than a single graph. The graphs create media; the runner preserves the evidence needed to choose continuation frames, retry safely, and assemble only reviewed outputs.
+It is intentionally more than a single graph. The graphs create media; the runner preserves the evidence needed to choose continuation frames, retry safely, and assemble only reviewed outputs. Each assembly is a separate immutable record, so accepting a segment never turns that reusable source attempt into an assembly state.
 
 ## Local setup
 
@@ -56,6 +56,8 @@ Important fields:
 - A `continue_from` segment is different: it can only use exactly one accepted same-shot upstream attempt's selected, hash-verified **tail** candidate. It cannot combine an opening-image override with continuation.
 - Strict-manifest seed families use `render.seed_base + segment.seed_offset`; an explicit `segment.seed` is the only override. A legacy top-level request seed is only a low-level compatibility fallback.
 - A story `flf2v` bridge requires explicit `first_image`/`last_image` paths backed by accepted, hash-verified QC provenance: first is a tail candidate and last is a head candidate. `base_source_image` is allowed only with `purpose: technical_smoke`, never as a story-bridge fallback.
+- A story `flf2v` bridge also requires `from_segment` and `to_segment` in its own shot. Its entry in `assembly_order` must sit directly between those exact segment entries. The runner verifies that its selected tail/head inputs come from those declared accepted attempts.
+- A bridge id may not reuse a segment id in the same shot. Technical-smoke bridges are never allowed in `assembly_order`.
 - `assembly_order` is mandatory for `assemble-project`; it prevents chronology from being inferred from filesystem timestamps.
 
 The first bridge in the example is deliberately a `technical_smoke` configuration. Before a story bridge, replace it with the two exact accepted-QC endpoint paths.
@@ -84,11 +86,12 @@ python -m wan22_longform.cli render-segment .\project.yaml S010 S010_C002
 python -m wan22_longform.cli reject .\attempts\... --note "camera jump at frame 8"
 python -m wan22_longform.cli retry .\attempts\... --note "retry with lower motion control"
 
-# Resume only existing immutable planned attempts; it never rerenders accepted work.
+# Resume only existing immutable planned render attempts; it never rerenders accepted work or runs FFmpeg assembly automatically.
 python -m wan22_longform.cli resume .\project.yaml --timeout 1800
 python -m wan22_longform.cli status .\project.yaml
 
 # Assemble only hash-verified accepted outputs. No timeline order is inferred for a project.
+# Each command creates a new immutable assembly record under assembly-records/.
 python -m wan22_longform.cli assemble-shot .\project.yaml S010 --qc-approved
 python -m wan22_longform.cli assemble-project .\project.yaml --qc-approved
 ```
@@ -96,6 +99,14 @@ python -m wan22_longform.cli assemble-project .\project.yaml --qc-approved
 `render-shot` deliberately refuses any dependent continuation before submitting anything. Review and accept the upstream tail, then submit the dependent segment with `render-segment`. It never chooses a frame or silently creates a bridge. Submit `render-bridge` only after explicitly recording the accepted QC endpoint paths in the manifest.
 
 The `--timeout` default is 1800 seconds because a cold two-UNET Wan load can take longer than a short HTTP timeout on smart-offload hardware. The CLI still permits only loopback ComfyUI URLs.
+
+### Assembly records and recovery
+
+`assemble-shot` and `assemble-project` first validate the strict manifest, re-hash every accepted source video, then create an append-only record in `assembly-records/<scope>/assembly-...`. The record captures the selected attempt ids and paths, source hashes, requested output policy, exact FFmpeg plan, boundary decisions, output hashes, and lifecycle decisions: `planned → assembling → assembled → final`. A failed plan or FFmpeg run is recorded as `failed` and its partial targets are never overwritten.
+
+Use `status project.yaml` to inspect every record. `resume project.yaml` reports incomplete or failed records but deliberately does not restart an assembly, overwrite a target, or re-render an accepted segment. Start a new reviewed assembly request with a new `--output-dir` when recovering from a partial explicit target; the default record-local output directory is already unique.
+
+The low-level `assemble` command accepts arbitrary files only for diagnostics and requires `--diagnostic-only`. It is not the reviewed project assembly path and does not produce an accepted-project assembly record.
 
 ## Preset escalation and identity
 

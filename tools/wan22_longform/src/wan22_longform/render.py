@@ -691,10 +691,43 @@ def _bridge_endpoints(
         )
     first_path = _existing_local_path(project, first, "bridge first_image")
     last_path = _existing_local_path(project, last, "bridge last_image")
-    return (
-        _accepted_bridge_endpoint(project, first_path, "tail"),
-        _accepted_bridge_endpoint(project, last_path, "head"),
-    )
+    first_selection = _accepted_bridge_endpoint(project, first_path, "tail")
+    last_selection = _accepted_bridge_endpoint(project, last_path, "head")
+    _validate_story_bridge_endpoint_sources(bridge, first_selection, last_selection)
+    return first_selection, last_selection
+
+
+def _validate_story_bridge_endpoint_sources(
+    bridge: Mapping[str, Any],
+    first_image: InputSelection,
+    last_image: InputSelection,
+) -> None:
+    """Bind story FLF endpoints to their declared accepted segment attempts."""
+    from_segment = bridge.get("from_segment")
+    to_segment = bridge.get("to_segment")
+    if from_segment is None and to_segment is None:
+        return
+    shot_id = bridge.get("shot_id")
+    if not isinstance(shot_id, str) or not isinstance(from_segment, str) or not isinstance(to_segment, str):
+        raise RenderError("story bridge has invalid declared source or destination")
+    if first_image.upstream_attempt is None or last_image.upstream_attempt is None:
+        raise RenderError("story bridge endpoints have no accepted source provenance")
+    try:
+        first_attempt = load_attempt(first_image.upstream_attempt)
+        last_attempt = load_attempt(last_image.upstream_attempt)
+    except ProjectStateError as error:
+        raise RenderError("story bridge endpoints have invalid accepted source provenance") from error
+    if (
+        first_attempt.state is not AttemptState.ACCEPTED
+        or first_attempt.shot_id != shot_id
+        or first_attempt.segment_id != from_segment
+        or last_attempt.state is not AttemptState.ACCEPTED
+        or last_attempt.shot_id != shot_id
+        or last_attempt.segment_id != to_segment
+    ):
+        raise RenderError(
+            "story bridge endpoints do not match the declared source and destination segments"
+        )
 
 
 def _project_with_bridge_workflow(project: ProjectConfig) -> ProjectConfig:

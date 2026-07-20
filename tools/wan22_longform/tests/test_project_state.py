@@ -18,12 +18,17 @@ from wan22_longform.config import ProjectConfig, load_project  # noqa: E402
 from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
 import wan22_longform.project as project_module  # noqa: E402
 from wan22_longform.project import (  # noqa: E402
+    AssemblyState,
     AttemptState,
     ProjectStateError,
+    create_assembly_record,
     create_attempt,
+    load_assembly_record,
     load_attempt,
     needs_render,
+    transition_assembly_record,
     transition_attempt,
+    verify_assembly_record_inputs,
 )
 
 
@@ -188,23 +193,103 @@ class ProjectStateTests(unittest.TestCase):
 
                 self.assertEqual(sorted(path.name for path in decision_dir.glob("*.json")), before)
 
-    def test_accepted_attempt_follows_the_only_assembly_path_to_final(self) -> None:
-        attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)
-        for state in (
-            AttemptState.RENDERING,
-            AttemptState.RENDERED,
-            AttemptState.NEEDS_REVIEW,
-            AttemptState.ACCEPTED,
-            AttemptState.ASSEMBLING,
-            AttemptState.ASSEMBLED,
-            AttemptState.FINAL,
-        ):
-            note = "approved" if state is AttemptState.ACCEPTED else None
-            attempt = transition_attempt(attempt, state, note, now=self.now)
+    def test_assembly_record_leaves_accepted_source_attempt_reusable(self) -> None:
+        source = self._review_attempt()
+        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
+        rendered = self.root / "accepted-segment.mp4"
+        rendered.write_bytes(b"accepted-segment")
 
-        self.assertEqual(attempt.state, AttemptState.FINAL)
-        with self.assertRaisesRegex(ProjectStateError, "final.*rendering"):
-            transition_attempt(attempt, AttemptState.RENDERING, None, now=self.now)
+        record = create_assembly_record(
+            self.project,
+            "project",
+            inputs=(
+                {
+                    "attempt_id": source.attempt_id,
+                    "attempt_path": source.path,
+                    "output": {
+                        "path": rendered,
+                        "sha256": hashlib.sha256(rendered.read_bytes()).hexdigest(),
+                    },
+                    "segment_id": source.segment_id,
+                    "shot_id": source.shot_id,
+                },
+            ),
+            requested={"scope": "project", "targets": {"review_mp4": self.root / "review.mp4"}},
+            now=self.now,
+        )
+
+        assembling = transition_assembly_record(
+            record, AssemblyState.ASSEMBLING, "local FFmpeg assembly started", now=self.now
+        )
+        assembled = transition_assembly_record(
+            assembling, AssemblyState.ASSEMBLED, "all requested outputs validated", now=self.now
+        )
+        final = transition_assembly_record(
+            assembled, AssemblyState.FINAL, "assembly evidence finalized", now=self.now
+        )
+
+        self.assertEqual(load_attempt(source.path).state, AttemptState.ACCEPTED)
+        self.assertEqual(load_assembly_record(record.path).state, AssemblyState.FINAL)
+        self.assertEqual(final.state, AssemblyState.FINAL)
+        payload = json.loads((record.path / "assembly.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["inputs"][0]["attempt_id"], source.attempt_id)
+        self.assertEqual(payload["inputs"][0]["output"]["sha256"], hashlib.sha256(rendered.read_bytes()).hexdigest())
+
+    def test_invalid_assembly_source_provenance_leaves_no_partial_record_directory(self) -> None:
+        source = self._review_attempt()
+        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
+        rendered = self.root / "accepted-segment.mp4"
+        rendered.write_bytes(b"changed source")
+
+        with self.assertRaisesRegex(ProjectStateError, "output hash changed"):
+            create_assembly_record(
+                self.project,
+                "project",
+                inputs=(
+                    {
+                        "attempt_id": source.attempt_id,
+                        "attempt_path": source.path,
+                        "output": {
+                            "path": rendered,
+                            "sha256": hashlib.sha256(b"original source").hexdigest(),
+                        },
+                        "segment_id": source.segment_id,
+                        "shot_id": source.shot_id,
+                    },
+                ),
+                requested={"scope": "project"},
+                now=self.now,
+            )
+
+        self.assertFalse((self.root / "assembly-records" / "project").exists())
+
+    def test_assembly_record_rechecks_source_hashes_before_execution(self) -> None:
+        source = self._review_attempt()
+        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
+        rendered = self.root / "accepted-segment.mp4"
+        rendered.write_bytes(b"original source")
+        record = create_assembly_record(
+            self.project,
+            "project",
+            inputs=(
+                {
+                    "attempt_id": source.attempt_id,
+                    "attempt_path": source.path,
+                    "output": {
+                        "path": rendered,
+                        "sha256": hashlib.sha256(rendered.read_bytes()).hexdigest(),
+                    },
+                    "segment_id": source.segment_id,
+                    "shot_id": source.shot_id,
+                },
+            ),
+            requested={"scope": "project"},
+            now=self.now,
+        )
+        rendered.write_bytes(b"changed after assembly selection")
+
+        with self.assertRaisesRegex(ProjectStateError, "output hash changed"):
+            verify_assembly_record_inputs(record)
 
     def test_metadata_records_output_provenance_without_overwriting(self) -> None:
         attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)

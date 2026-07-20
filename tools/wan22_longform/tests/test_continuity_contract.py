@@ -184,8 +184,16 @@ class ContinuityContractTests(unittest.TestCase):
                 "strategy": "flf2v",
                 "first_image": str(self.anchor),
                 "last_image": str(self.second_anchor),
+                "from_segment": "S010_C001",
+                "to_segment": "S010_C002",
                 "frames": 33,
             }
+        ]
+        source["assembly_order"] = [
+            {"shot_id": "S010", "segment_id": "S010_C001"},
+            {"shot_id": "S010", "segment_id": "B010"},
+            {"shot_id": "S010", "segment_id": "S010_C002"},
+            {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
         project = self._project(source)
         client = FakeRenderClient(self.video)
@@ -198,7 +206,8 @@ class ContinuityContractTests(unittest.TestCase):
         self.assertEqual(client.submitted, [])
 
     def test_story_bridge_uses_hash_verified_accepted_tail_and_head(self) -> None:
-        upstream, head, tail = self._accepted_attempt("S010", "S010_C001")
+        upstream, _head, tail = self._accepted_attempt("S010", "S010_C001")
+        destination, head, _destination_tail = self._accepted_attempt("S010", "S010_C002")
         source = copy.deepcopy(self.source)
         source["bridges"] = [
             {
@@ -207,8 +216,16 @@ class ContinuityContractTests(unittest.TestCase):
                 "strategy": "flf2v",
                 "first_image": str(tail),
                 "last_image": str(head),
+                "from_segment": "S010_C001",
+                "to_segment": "S010_C002",
                 "frames": 33,
             }
+        ]
+        source["assembly_order"] = [
+            {"shot_id": "S010", "segment_id": "S010_C001"},
+            {"shot_id": "S010", "segment_id": "B010"},
+            {"shot_id": "S010", "segment_id": "S010_C002"},
+            {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
         project = self._project(source)
         client = FakeRenderClient(self.video)
@@ -224,6 +241,41 @@ class ContinuityContractTests(unittest.TestCase):
         self.assertEqual(selected["first_image"]["candidate_kind"], "tail")
         self.assertEqual(selected["last_image"]["candidate_kind"], "head")
         self.assertEqual(selected["first_image"]["upstream_attempt"], str(upstream.path))
+        self.assertEqual(selected["last_image"]["upstream_attempt"], str(destination.path))
+
+    def test_story_bridge_rejects_accepted_endpoints_from_the_wrong_declared_segments(self) -> None:
+        _source, source_head, source_tail = self._accepted_attempt("S010", "S010_C001")
+        _destination, destination_head, destination_tail = self._accepted_attempt(
+            "S010", "S010_C002"
+        )
+        source = copy.deepcopy(self.source)
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "first_image": str(destination_tail),
+                "last_image": str(source_head),
+                "from_segment": "S010_C001",
+                "to_segment": "S010_C002",
+                "frames": 33,
+            }
+        ]
+        source["assembly_order"] = [
+            {"shot_id": "S010", "segment_id": "S010_C001"},
+            {"shot_id": "S010", "segment_id": "B010"},
+            {"shot_id": "S010", "segment_id": "S010_C002"},
+            {"shot_id": "S020", "segment_id": "S020_C001"},
+        ]
+        project = self._project(source)
+        client = FakeRenderClient(self.video)
+
+        with self._render_artifact_patches():
+            with self.assertRaisesRegex(RenderError, "declared source.*destination"):
+                render_bridge(project, "B010", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
 
     def test_render_shot_refuses_dependent_segments_without_partial_queueing(self) -> None:
         args = Namespace(
@@ -297,6 +349,76 @@ class ContinuityContractTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ConfigError, "bridge B999 shot_id"):
+            validate_project_contract(self._project(source))
+
+    def test_strict_manifest_rejects_bridge_id_collision_with_a_same_shot_segment(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["bridges"] = [
+            {
+                "id": "S010_C001",
+                "shot_id": "S010",
+                "strategy": "direct",
+            }
+        ]
+
+        with self.assertRaisesRegex(ConfigError, "collides with configured segment"):
+            validate_project_contract(self._project(source))
+
+    def test_strict_manifest_requires_story_flf_source_and_destination_segments(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "first_image": str(self.anchor),
+                "last_image": str(self.second_anchor),
+                "frames": 33,
+            }
+        ]
+
+        with self.assertRaisesRegex(ConfigError, "from_segment"):
+            validate_project_contract(self._project(source))
+
+    def test_strict_manifest_requires_story_flf_bridge_directly_between_declared_segments(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "first_image": str(self.anchor),
+                "last_image": str(self.second_anchor),
+                "from_segment": "S010_C001",
+                "to_segment": "S010_C002",
+                "frames": 33,
+            }
+        ]
+        source["assembly_order"] = [
+            {"shot_id": "S010", "segment_id": "S010_C001"},
+            {"shot_id": "S010", "segment_id": "S010_C002"},
+            {"shot_id": "S010", "segment_id": "B010"},
+            {"shot_id": "S020", "segment_id": "S020_C001"},
+        ]
+
+        with self.assertRaisesRegex(ConfigError, "directly between"):
+            validate_project_contract(self._project(source))
+
+    def test_strict_manifest_excludes_technical_smoke_bridge_from_production_order(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "purpose": "technical_smoke",
+                "base_source_image": str(self.anchor),
+                "frames": 33,
+            }
+        ]
+        source["assembly_order"].append({"shot_id": "S010", "segment_id": "B010"})
+
+        with self.assertRaisesRegex(ConfigError, "technical_smoke"):
             validate_project_contract(self._project(source))
 
     def test_strict_manifest_rejects_assembly_item_for_the_wrong_shot(self) -> None:

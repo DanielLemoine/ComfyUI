@@ -47,6 +47,7 @@ class AssembleCliTests(unittest.TestCase):
                     str(master_prores),
                     "--decision-log",
                     str(decision_log),
+                    "--diagnostic-only",
                 ],
             ), contextlib.redirect_stdout(stdout):
                 cli.main()

@@ -589,6 +589,7 @@ class RenderBridgeTests(unittest.TestCase):
                     "id": "B010",
                     "shot_id": "S010",
                     "strategy": "flf2v",
+                    "purpose": "technical_smoke",
                     "first_image": str(self.first),
                     "last_image": str(self.last),
                     "frames": 33,

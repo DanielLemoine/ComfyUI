@@ -51,6 +51,8 @@ environment_snapshot:
   gpu: NVIDIA GeForce RTX 5090, 595.95, 32607 MiB
 
 attempts_dir: attempts
+# Assembly records are separate from accepted render attempts and preserve recovery evidence.
+assembly_records_dir: assembly-records
 policy:
   automatic_continuation: false
 continuation:
@@ -129,7 +131,8 @@ bridges:
     strategy: flf2v
     purpose: technical_smoke
     # This explicit technical smoke uses the declared anchor for both endpoints.
-    # Story bridges must use accepted tail/head QC candidates instead.
+    # Story bridges must use accepted tail/head QC candidates, declare from_segment/to_segment,
+    # and sit directly between those segment ids in assembly_order.
     base_source_image: inputs/s010_anchor.png
     frames: 33
 

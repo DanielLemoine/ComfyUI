@@ -120,6 +120,15 @@ class ProjectConfig:
 
 
 @dataclass(frozen=True)
+class BridgeContract:
+    shot_id: str
+    strategy: str
+    purpose: str | None
+    from_segment: str | None
+    to_segment: str | None
+
+
+@dataclass(frozen=True)
 class Preset:
     name: str
     vbvr_high: float
@@ -353,12 +362,12 @@ def _shots_contract(source: Mapping[str, Any]) -> dict[str, frozenset[str]]:
 
 def _bridges_contract(
     source: Mapping[str, Any], shot_segments: Mapping[str, frozenset[str]]
-) -> dict[str, str]:
+) -> dict[str, BridgeContract]:
     bridges = source.get("bridges", ())
     if not isinstance(bridges, (list, tuple)):
         raise ConfigError("bridges must be a list")
     seen: set[str] = set()
-    bridge_shots: dict[str, str] = {}
+    bridge_shots: dict[str, BridgeContract] = {}
     for bridge in bridges:
         if not isinstance(bridge, Mapping):
             raise ConfigError("bridge must be a mapping")
@@ -369,10 +378,16 @@ def _bridges_contract(
         shot_id = _string(bridge.get("shot_id"), f"bridge {bridge_id} shot_id")
         if shot_id not in shot_segments:
             raise ConfigError(f"bridge {bridge_id} shot_id does not reference a configured shot: {shot_id}")
-        bridge_shots[bridge_id] = shot_id
+        if bridge_id in shot_segments[shot_id]:
+            raise ConfigError(
+                f"bridge {bridge_id} collides with configured segment in shot {shot_id}"
+            )
         strategy = _string(bridge.get("strategy"), f"bridge {bridge_id} strategy")
         if strategy not in BRIDGE_STRATEGIES:
             raise ConfigError(f"bridge {bridge_id} strategy is invalid")
+        purpose = bridge.get("purpose")
+        if purpose is not None:
+            purpose = _string(purpose, f"bridge {bridge_id} purpose")
         base = bridge.get("base_source_image")
         first = bridge.get("first_image")
         last = bridge.get("last_image")
@@ -390,20 +405,55 @@ def _bridges_contract(
             else:
                 _string(first, f"bridge {bridge_id} first_image")
                 _string(last, f"bridge {bridge_id} last_image")
+            if purpose == "technical_smoke":
+                if bridge.get("from_segment") is not None or bridge.get("to_segment") is not None:
+                    raise ConfigError(
+                        f"technical_smoke bridge {bridge_id} cannot declare story segments"
+                    )
+                from_segment = None
+                to_segment = None
+            else:
+                from_segment = _string(
+                    bridge.get("from_segment"), f"bridge {bridge_id} from_segment"
+                )
+                to_segment = _string(
+                    bridge.get("to_segment"), f"bridge {bridge_id} to_segment"
+                )
+                if from_segment not in shot_segments[shot_id]:
+                    raise ConfigError(
+                        f"bridge {bridge_id} from_segment is not configured in shot {shot_id}"
+                    )
+                if to_segment not in shot_segments[shot_id]:
+                    raise ConfigError(
+                        f"bridge {bridge_id} to_segment is not configured in shot {shot_id}"
+                    )
+                if from_segment == to_segment:
+                    raise ConfigError(f"bridge {bridge_id} from_segment and to_segment must differ")
         elif base is not None or first is not None or last is not None:
             raise ConfigError(f"bridge {bridge_id} endpoints require strategy flf2v")
+        else:
+            from_segment = None
+            to_segment = None
+        bridge_shots[bridge_id] = BridgeContract(
+            shot_id=shot_id,
+            strategy=strategy,
+            purpose=purpose,
+            from_segment=from_segment,
+            to_segment=to_segment,
+        )
     return bridge_shots
 
 
 def _assembly_order(
     source: Mapping[str, Any],
     shot_segments: Mapping[str, frozenset[str]],
-    bridge_shots: Mapping[str, str],
+    bridge_shots: Mapping[str, BridgeContract],
 ) -> None:
     order = source.get("assembly_order")
     if not isinstance(order, (list, tuple)) or not order:
         raise ConfigError("assembly_order must be a non-empty list")
     seen: set[tuple[str, str]] = set()
+    entries: list[tuple[str, str]] = []
     for item in order:
         if not isinstance(item, Mapping):
             raise ConfigError("assembly_order entry must be a mapping")
@@ -414,13 +464,34 @@ def _assembly_order(
             raise ConfigError(f"assembly_order has a duplicate item: {shot_id}/{segment_id}")
         seen.add(key)
         if segment_id in shot_segments.get(shot_id, frozenset()):
+            entries.append(key)
             continue
-        if bridge_shots.get(segment_id) == shot_id:
+        bridge = bridge_shots.get(segment_id)
+        if bridge is not None and bridge.shot_id == shot_id:
+            if bridge.purpose == "technical_smoke":
+                raise ConfigError(
+                    f"assembly_order cannot include technical_smoke bridge: {shot_id}/{segment_id}"
+                )
+            entries.append(key)
             continue
         raise ConfigError(
             f"assembly_order item does not reference a configured segment or matching bridge: "
             f"{shot_id}/{segment_id}"
         )
+    for index, (shot_id, segment_id) in enumerate(entries):
+        bridge = bridge_shots.get(segment_id)
+        if bridge is None or bridge.strategy != "flf2v" or bridge.purpose == "technical_smoke":
+            continue
+        if index == 0 or index == len(entries) - 1:
+            raise ConfigError(
+                f"story FLF bridge {segment_id} must be directly between declared source and destination segments"
+            )
+        expected_left = (shot_id, bridge.from_segment)
+        expected_right = (shot_id, bridge.to_segment)
+        if entries[index - 1] != expected_left or entries[index + 1] != expected_right:
+            raise ConfigError(
+                f"story FLF bridge {segment_id} must be directly between declared source and destination segments"
+            )
 
 
 def load_presets(path: Path) -> PresetCatalog:

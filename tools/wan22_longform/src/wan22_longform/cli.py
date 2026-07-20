@@ -8,12 +8,25 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .assembly import AssemblyTargets, compare_boundary, execute_assembly_plan, plan_assembly
 from .comfy_client import ComfyClient
-from .config import ProjectConfig, load_project
+from .config import ProjectConfig, load_project, validate_project_contract
 from .ffmpeg import probe_media
 from .frames import create_contact_sheet
 from .hashing import sha256_file
 from .inventory import collect_preflight
-from .project import Attempt, AttemptState, load_attempt, transition_attempt
+from .project import (
+    AssemblyRecord,
+    AssemblyState,
+    Attempt,
+    AttemptState,
+    assembly_records,
+    create_assembly_record,
+    load_assembly_record,
+    load_attempt,
+    transition_assembly_record,
+    transition_attempt,
+    verify_assembly_record_inputs,
+    write_assembly_record_json,
+)
 from .qc import read_qc
 from .render import render_bridge, render_segment, resume_attempt, validate_project
 
@@ -81,13 +94,20 @@ def build_parser() -> argparse.ArgumentParser:
         outcome.set_defaults(handler=_outcome_handler(state))
 
     assemble = subparsers.add_parser(
-        "assemble", help="run a safe local native assembly and post-output duration validation"
+        "assemble",
+        help="diagnostic-only arbitrary-input assembly; not the reviewed project assembly path",
     )
     assemble.add_argument("--input", action="append", required=True, type=Path)
     assemble.add_argument("--review-mp4", required=True, type=Path)
     assemble.add_argument("--edit-master-ffv1", required=True, type=Path)
     assemble.add_argument("--edit-master-prores", required=True, type=Path)
     assemble.add_argument("--decision-log", required=True, type=Path)
+    assemble.add_argument(
+        "--diagnostic-only",
+        action="store_true",
+        required=True,
+        help="acknowledge that arbitrary inputs bypass accepted project provenance",
+    )
     _add_assembly_options(assemble)
     assemble.set_defaults(handler=_handle_assemble)
 
@@ -298,12 +318,14 @@ def _handle_assemble(args: argparse.Namespace) -> int:
 def _handle_assemble_shot(args: argparse.Namespace) -> int:
     project = load_project(args.project)
     _safe_path_component(args.shot_id, "shot_id")
+    validate_project_contract(project)
     attempts = _accepted_shot_attempts(project, args.shot_id)
     return _assemble_attempts(project, attempts, f"shot-{args.shot_id}", args)
 
 
 def _handle_assemble_project(args: argparse.Namespace) -> int:
     project = load_project(args.project)
+    validate_project_contract(project)
     attempts = _accepted_project_attempts(project)
     return _assemble_attempts(project, attempts, "project", args)
 
@@ -314,6 +336,9 @@ def _handle_status(args: argparse.Namespace) -> int:
         project = load_project(target)
         _print_json(
             {
+                "assembly_records": [
+                    _assembly_record_payload(record) for record in assembly_records(project)
+                ],
                 "attempts": [_attempt_payload(attempt) for attempt in _project_attempts(project)],
                 "project": str(project.path),
             }
@@ -326,12 +351,28 @@ def _handle_status(args: argparse.Namespace) -> int:
 
 def _handle_resume(args: argparse.Namespace) -> int:
     project = load_project(args.project)
-    client = _client(args)
+    validate_project_contract(project)
+    planned = [
+        attempt for attempt in _project_attempts(project) if attempt.state is AttemptState.PLANNED
+    ]
     resumed: list[dict[str, str]] = []
-    for attempt in _project_attempts(project):
-        if attempt.state is AttemptState.PLANNED:
+    if planned:
+        client = _client(args)
+        for attempt in planned:
             resumed.append(_attempt_payload(resume_attempt(project, attempt, client)))
-    _print_json({"resumed": resumed, "project": str(project.path)})
+    records = assembly_records(project)
+    _print_json(
+        {
+            "assembly_records": [_assembly_record_payload(record) for record in records],
+            "incomplete_assembly_records": [
+                _assembly_recovery_payload(record)
+                for record in records
+                if record.state is not AssemblyState.FINAL
+            ],
+            "project": str(project.path),
+            "resumed": resumed,
+        }
+    )
     return 0
 
 
@@ -478,30 +519,46 @@ def _assemble_attempts(
     if not attempts:
         raise ValueError("assembly requires at least one accepted attempt")
     _safe_path_component(scope, "assembly scope")
-    output_dir = args.output_dir
-    if output_dir is None:
-        output_dir = project.path.parent / "assembly" / scope
-    output_dir = output_dir.resolve()
-    if output_dir.is_file():
-        raise ValueError(f"assembly output path is a file: {output_dir}")
-    videos = [_accepted_video(attempt) for attempt in attempts]
-    result = _execute_assembly(
-        videos,
-        AssemblyTargets(
-            review_mp4=output_dir / f"{scope}-review.mp4",
-            edit_master_ffv1=output_dir / f"{scope}-edit-master.ffv1.mkv",
-            edit_master_prores=output_dir / f"{scope}-edit-master.prores.mov",
-            rife_review_mp4=(output_dir / f"{scope}-rife-review.mp4")
-            if args.request_rife
-            else None,
-        ),
-        decision_log=output_dir / f"{scope}-boundary-decisions.json",
-        request_rife=args.request_rife,
-        qc_approved=args.qc_approved,
+    selected = [_accepted_assembly_input(attempt) for attempt in attempts]
+    videos = [video for video, _ in selected]
+    record = create_assembly_record(
+        project,
+        scope,
+        inputs=tuple(input_record for _, input_record in selected),
+        requested={
+            "qc_approved": bool(args.qc_approved),
+            "request_rife": bool(args.request_rife),
+            "requested_output_dir": str(args.output_dir.resolve()) if args.output_dir else None,
+            "scope": scope,
+        },
     )
+    output_dir = args.output_dir.resolve() if args.output_dir else record.path / "outputs"
+    if output_dir.is_file():
+        _mark_assembly_failed(record, ValueError(f"assembly output path is a file: {output_dir}"))
+        raise ValueError(f"assembly output path is a file: {output_dir}")
+    targets = AssemblyTargets(
+        review_mp4=output_dir / f"{scope}-review.mp4",
+        edit_master_ffv1=output_dir / f"{scope}-edit-master.ffv1.mkv",
+        edit_master_prores=output_dir / f"{scope}-edit-master.prores.mov",
+        rife_review_mp4=(output_dir / f"{scope}-rife-review.mp4")
+        if args.request_rife
+        else None,
+    )
+    try:
+        result, finalized = _execute_assembly_record(
+            record,
+            videos,
+            targets,
+            request_rife=args.request_rife,
+            qc_approved=args.qc_approved,
+        )
+    except Exception as error:
+        _mark_assembly_failed(record, error)
+        raise
     _print_json(
         {
             **_assembly_payload(result),
+            "assembly_record": _assembly_record_payload(finalized),
             "attempts": [_attempt_payload(attempt) for attempt in attempts],
             "scope": scope,
         }
@@ -531,6 +588,20 @@ def _accepted_video(attempt: Attempt) -> Path:
     return video
 
 
+def _accepted_assembly_input(attempt: Attempt) -> tuple[Path, dict[str, Any]]:
+    video = _accepted_video(attempt)
+    return (
+        video,
+        {
+            "attempt_id": attempt.attempt_id,
+            "attempt_path": attempt.path,
+            "output": {"path": video, "sha256": sha256_file(video)},
+            "segment_id": attempt.segment_id,
+            "shot_id": attempt.shot_id,
+        },
+    )
+
+
 def _execute_assembly(
     input_paths: Sequence[Path],
     targets: AssemblyTargets,
@@ -539,16 +610,80 @@ def _execute_assembly(
     request_rife: bool,
     qc_approved: bool,
 ):
+    plan = _plan_assembly(
+        input_paths,
+        targets,
+        request_rife=request_rife,
+        qc_approved=qc_approved,
+    )
+    return execute_assembly_plan(plan, decision_log=decision_log)
+
+
+def _execute_assembly_record(
+    record: AssemblyRecord,
+    input_paths: Sequence[Path],
+    targets: AssemblyTargets,
+    *,
+    request_rife: bool,
+    qc_approved: bool,
+) -> tuple[Any, AssemblyRecord]:
+    verified = verify_assembly_record_inputs(record)
+    verified_paths = tuple(Path(item["output"]["path"]).resolve() for item in verified)
+    requested_paths = tuple(path.resolve() for path in input_paths)
+    if verified_paths != requested_paths:
+        raise ValueError("assembly record inputs no longer match the accepted source selection")
+    plan = _plan_assembly(
+        input_paths,
+        targets,
+        request_rife=request_rife,
+        qc_approved=qc_approved,
+    )
+    decision_log = record.path / "boundary-decisions.json"
+    write_assembly_record_json(
+        record,
+        "assembly-plan.json",
+        _assembly_plan_payload(plan, targets, decision_log),
+    )
+    assembling = transition_assembly_record(
+        record,
+        AssemblyState.ASSEMBLING,
+        "local FFmpeg assembly started",
+    )
+    result = execute_assembly_plan(plan, decision_log=decision_log)
+    write_assembly_record_json(
+        assembling,
+        "outputs.json",
+        _assembly_outputs_payload(targets, decision_log, result),
+    )
+    assembled = transition_assembly_record(
+        assembling,
+        AssemblyState.ASSEMBLED,
+        "all requested outputs passed post-output validation",
+    )
+    final = transition_assembly_record(
+        assembled,
+        AssemblyState.FINAL,
+        "assembly evidence finalized",
+    )
+    return result, final
+
+
+def _plan_assembly(
+    input_paths: Sequence[Path],
+    targets: AssemblyTargets,
+    *,
+    request_rife: bool,
+    qc_approved: bool,
+):
     inputs = [probe_media(path) for path in input_paths]
     decisions = [compare_boundary(left.path, right.path) for left, right in zip(inputs, inputs[1:])]
-    plan = plan_assembly(
+    return plan_assembly(
         inputs,
         targets,
         boundary_decisions=decisions,
         request_rife=request_rife,
         qc_approved=qc_approved,
     )
-    return execute_assembly_plan(plan, decision_log=decision_log)
 
 
 def _attempt_payload(attempt: Attempt) -> dict[str, str]:
@@ -568,6 +703,107 @@ def _assembly_payload(result: Any) -> dict[str, Any]:
         "output_fps": str(result.output_fps),
         "rife_ready": str(result.rife_ready) if result.rife_ready else None,
     }
+
+
+def _assembly_record_payload(record: AssemblyRecord) -> dict[str, str]:
+    return {
+        "assembly_id": record.assembly_id,
+        "path": str(record.path),
+        "scope": record.scope,
+        "state": str(record.state),
+    }
+
+
+def _assembly_recovery_payload(record: AssemblyRecord) -> dict[str, str]:
+    action = {
+        AssemblyState.PLANNED: "plan is preserved; start a new reviewed assembly request explicitly",
+        AssemblyState.ASSEMBLING: "inspect the preserved record and partial targets; do not rerun automatically",
+        AssemblyState.ASSEMBLED: "inspect validated outputs before explicitly finalizing the record",
+        AssemblyState.FAILED: "inspect the preserved failure and use a new output target for another request",
+    }.get(record.state)
+    if action is None:
+        raise ValueError(f"assembly recovery requested for a final record: {record.path}")
+    return {**_assembly_record_payload(record), "recovery_action": action}
+
+
+def _mark_assembly_failed(record: AssemblyRecord, error: Exception) -> None:
+    """Preserve a failed assembly outcome without retrying or replacing its targets."""
+    current = load_assembly_record(record.path)
+    if current.state not in {AssemblyState.PLANNED, AssemblyState.ASSEMBLING}:
+        return
+    detail = str(error).strip() or type(error).__name__
+    transition_assembly_record(
+        current,
+        AssemblyState.FAILED,
+        f"assembly failed: {detail}",
+        details={"error_type": type(error).__name__, "message": detail},
+    )
+
+
+def _assembly_plan_payload(plan: Any, targets: AssemblyTargets, decision_log: Path) -> dict[str, Any]:
+    return {
+        "audio_policy": plan.audio_policy,
+        "boundary_decisions": [dict(decision.__dict__) for decision in plan.boundary_decisions],
+        "concat_manifest": str(plan.concat_manifest),
+        "decision_log": str(decision_log),
+        "expected_duration": str(plan.expected_duration) if plan.expected_duration else None,
+        "expected_frame_count": plan.expected_frame_count,
+        "normalize_first": plan.normalize_first,
+        "operations": [
+            {
+                "command": list(operation.command),
+                "expected_duration": (
+                    str(operation.expected_duration) if operation.expected_duration else None
+                ),
+                "inputs": [str(path) for path in operation.inputs],
+                "kind": operation.kind,
+                "output": str(operation.output),
+                "output_fps": str(operation.output_fps) if operation.output_fps else None,
+            }
+            for operation in plan.operations
+        ],
+        "output_fps": str(plan.output_fps),
+        "targets": _assembly_targets_payload(targets),
+    }
+
+
+def _assembly_outputs_payload(
+    targets: AssemblyTargets,
+    decision_log: Path,
+    result: Any,
+) -> dict[str, Any]:
+    outputs = {
+        name: _hashed_assembly_path(path, name)
+        for name, path in (
+            ("review_mp4", targets.review_mp4),
+            ("edit_master_ffv1", targets.edit_master_ffv1),
+            ("edit_master_prores", targets.edit_master_prores),
+        )
+    }
+    if targets.rife_review_mp4 is not None and targets.rife_review_mp4.is_file():
+        outputs["rife_review_mp4"] = _hashed_assembly_path(
+            targets.rife_review_mp4, "rife_review_mp4"
+        )
+    return {
+        "boundary_decisions": _hashed_assembly_path(decision_log, "boundary decisions"),
+        "execution": _assembly_payload(result),
+        "outputs": outputs,
+    }
+
+
+def _assembly_targets_payload(targets: AssemblyTargets) -> dict[str, str | None]:
+    return {
+        "edit_master_ffv1": str(targets.edit_master_ffv1),
+        "edit_master_prores": str(targets.edit_master_prores),
+        "review_mp4": str(targets.review_mp4),
+        "rife_review_mp4": str(targets.rife_review_mp4) if targets.rife_review_mp4 else None,
+    }
+
+
+def _hashed_assembly_path(path: Path, label: str) -> dict[str, str]:
+    if not path.is_file():
+        raise ValueError(f"assembly {label} was not produced: {path}")
+    return {"path": str(path.resolve()), "sha256": sha256_file(path)}
 
 
 def _print_json(payload: Mapping[str, Any]) -> None:

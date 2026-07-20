@@ -52,8 +52,17 @@ def build_api_graph(
         raise WorkflowError("base graph must be clean and contain no optional LoRA nodes")
 
     validate_two_stage_graph(graph)
-    if not render.models.high or not render.models.low:
-        raise WorkflowError("configured high and low model filenames are required")
+    if not all(
+        (
+            render.models.high,
+            render.models.low,
+            render.models.vae,
+            render.models.text_encoder,
+        )
+    ):
+        raise WorkflowError(
+            "configured high, low, VAE, and text-encoder model filenames are required"
+        )
     if render.models.high.casefold() == render.models.low.casefold():
         raise WorkflowError("configured high and low model filenames must differ")
 
@@ -63,6 +72,12 @@ def build_api_graph(
     find_unique_node(graph, "MODEL_LOW", "UNETLoader").node["inputs"][
         "unet_name"
     ] = render.models.low
+    find_unique_node(graph, "VAE", "VAELoader").node["inputs"]["vae_name"] = (
+        render.models.vae
+    )
+    find_unique_node(graph, "TEXT_ENCODER", "CLIPLoader").node["inputs"][
+        "clip_name"
+    ] = render.models.text_encoder
 
     for sampling_title, lora_title, slot in _ordered_lora_slots(render):
         if slot.is_enabled:

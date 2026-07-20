@@ -22,7 +22,12 @@ from wan22_longform.config import (  # noqa: E402
 
 def resolved_config(**changes: object) -> ResolvedRenderConfig:
     values: dict[str, object] = {
-        "models": Models(high="wan-high.safetensors", low="wan-low.safetensors"),
+        "models": Models(
+            high="wan-high.safetensors",
+            low="wan-low.safetensors",
+            vae="wan-vae.safetensors",
+            text_encoder="wan-text.safetensors",
+        ),
         "permissiveness": Permissiveness(mode="none"),
         "identity": IdentityLora(),
         "vbvr": LoraSlot(branch="high"),
@@ -55,6 +60,8 @@ class LoraPolicyTests(unittest.TestCase):
             {
                 "wan-high.safetensors",
                 "wan-low.safetensors",
+                "wan-vae.safetensors",
+                "wan-text.safetensors",
                 "id.safetensors",
                 "id-high.safetensors",
                 "id-low.safetensors",
@@ -116,27 +123,29 @@ class LoraPolicyTests(unittest.TestCase):
         validate_lora_policy(config, self.model_files)
 
     def test_high_and_low_models_must_differ(self) -> None:
-        config = resolved_config(models=Models(high="same.safetensors", low="same.safetensors"))
+        config = resolved_config(
+            models=Models("same.safetensors", "same.safetensors", "wan-vae.safetensors", "wan-text.safetensors")
+        )
         with self.assertRaisesRegex(ConfigError, "high and low model files must differ"):
             validate_lora_policy(config, self.model_files)
 
     def test_high_and_low_models_are_distinct_case_insensitively(self) -> None:
         config = resolved_config(
-            models=Models(high="WAN-HIGH.safetensors", low="wan-high.safetensors")
+            models=Models("WAN-HIGH.safetensors", "wan-high.safetensors", "wan-vae.safetensors", "wan-text.safetensors")
         )
         with self.assertRaisesRegex(ConfigError, "high and low model files must differ"):
             validate_lora_policy(config, self.model_files)
 
     def test_configured_models_must_exist_in_discovery(self) -> None:
         config = resolved_config(
-            models=Models(high="missing-high.safetensors", low="wan-low.safetensors")
+            models=Models("missing-high.safetensors", "wan-low.safetensors", "wan-vae.safetensors", "wan-text.safetensors")
         )
         with self.assertRaisesRegex(ConfigError, "configured high model is missing"):
             validate_lora_policy(config, self.model_files)
 
     def test_discovery_matches_model_names_case_insensitively(self) -> None:
         config = resolved_config(
-            models=Models(high="WAN-HIGH.SAFETENSORS", low="wan-low.safetensors")
+            models=Models("WAN-HIGH.SAFETENSORS", "wan-low.safetensors", "wan-vae.safetensors", "wan-text.safetensors")
         )
 
         validate_lora_policy(config, self.model_files)

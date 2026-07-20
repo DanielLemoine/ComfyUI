@@ -56,6 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--comfy-url")
     preflight.add_argument("--artifact-dir", default=Path("artifacts") / "preflight", type=Path)
     preflight.add_argument("--project", type=Path)
+    preflight.add_argument(
+        "--extra-model-paths-config",
+        action="append",
+        default=[],
+        nargs="+",
+        type=Path,
+        help="active ComfyUI extra_model_paths YAML file (repeatable)",
+    )
     preflight.set_defaults(handler=_handle_preflight)
 
     validate = subparsers.add_parser("validate-project", help="validate a project without modifying it")
@@ -244,9 +252,18 @@ def _handle_preflight(args: argparse.Namespace) -> int:
         comfy_url=args.comfy_url,
         artifact_dir=args.artifact_dir,
         project=project,
+        extra_model_path_configs=tuple(
+            path for group in args.extra_model_paths_config for path in group
+        ),
     )
-    print(result.artifact_dir)  # noqa: T201
-    return 0
+    _print_json(
+        {
+            "artifact_dir": str(result.artifact_dir),
+            "blockers": list(result.blockers),
+            "status": result.status,
+        }
+    )
+    return 0 if result.status == "READY" else 1
 
 
 def _handle_validate_project(args: argparse.Namespace) -> int:
@@ -386,16 +403,15 @@ def _handle_status(args: argparse.Namespace) -> int:
 def _handle_resume(args: argparse.Namespace) -> int:
     project = load_project(args.project)
     validate_project_contract(project)
-    planned = [
+    resumable = [
         attempt
         for attempt in _project_attempts(project)
-        if attempt.state is AttemptState.PLANNED
-        and inspect_attempt_integrity(project, attempt)[0] == "verified"
+        if _is_safely_resumable_attempt(project, attempt)
     ]
     resumed: list[dict[str, str]] = []
-    if planned:
+    if resumable:
         client = _client(args)
-        for attempt in planned:
+        for attempt in resumable:
             resumed.append(_attempt_payload(resume_attempt(project, attempt, client), project))
     records = _assembly_record_integrities(project)
     _print_json(
@@ -420,6 +436,21 @@ def _handle_resume(args: argparse.Namespace) -> int:
         }
     )
     return 0
+
+
+def _is_safely_resumable_attempt(project: ProjectConfig, attempt: Attempt) -> bool:
+    status, _failures = inspect_attempt_integrity(project, attempt)
+    if attempt.state is AttemptState.RENDERING:
+        return status == "incomplete" and (attempt.path / "queue.json").is_file()
+    if attempt.state is not AttemptState.PLANNED:
+        return False
+    if status == "verified":
+        return True
+    if status != "incomplete":
+        return False
+    intent = attempt.path / "submission-intent.json"
+    queue = attempt.path / "queue.json"
+    return not intent.is_file() or queue.is_file()
 
 
 def _handle_deploy_workflows(args: argparse.Namespace) -> int:
@@ -857,6 +888,9 @@ def _attempt_payload(
     }
     if project is not None:
         status, failures = inspect_attempt_integrity(project, attempt)
+        if status == "failed":
+            payload["recorded_state"] = payload["state"]
+            payload["state"] = "integrity_failed"
         payload["integrity"] = {"failures": list(failures), "status": status}
     else:
         payload["integrity"] = {

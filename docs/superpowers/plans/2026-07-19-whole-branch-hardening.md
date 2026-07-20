@@ -69,3 +69,34 @@ Expected: full suite green, compile/lint/diff checks clean.
 ## Execution Handoff
 
 Run one final-review fix implementer against this complete task, then perform a fresh broad whole-branch review and live read-only validation. Do not reuse the older cross-project smoke assembly as proof after lineage enforcement; it must fail closed.
+
+---
+
+### Task 2: Final traceability, model-role, and resume recovery wave
+
+**Files:**
+
+- Modify: `tools/wan22_longform/src/wan22_longform/project.py`
+- Modify: `tools/wan22_longform/src/wan22_longform/render.py`
+- Modify: `tools/wan22_longform/src/wan22_longform/config.py`
+- Modify: `tools/wan22_longform/src/wan22_longform/workflow.py`
+- Modify: `tools/wan22_longform/src/wan22_longform/inventory.py`
+- Modify: `tools/wan22_longform/src/wan22_longform/cli.py`
+- Modify: focused project/render/config/workflow/inventory/CLI test modules and `README.md` where behavior changes.
+
+**Requirements:**
+
+- [x] Write failing tests that mutate every accepted-attempt provenance artifact: source manifest, workflow snapshot, request snapshot, configured workflow, submission request, submission provenance, and their referenced hashes. `status`, continuation/FLF selection, and project assembly must reject the altered attempt.
+- [x] Write failing tests that declare non-default VAE/text-encoder model names and verify the submitted native API graph patches those exact loader targets; missing declared files must fail before submission.
+- [x] Write failing segment and bridge recovery tests for upload failure, prompt-submission failure, and wait-timeout interruption. Prepared evidence must be hash-verified/idempotent; a recorded prompt ID must permit polling a rendering attempt without duplicate queue submission.
+- [x] Write a failing planned-state integrity test: changed provenance/workflow/request/selected-input evidence must produce `integrity_failed`, never `verified`.
+- [x] Write failing extra-model-path parser tests using canonical YAML block scalar model paths, multiple config inputs, and role-correct root discovery. Do not treat the literal `|` as a directory.
+- [x] Write a failing CLI preflight test where `BLOCKED` returns nonzero and emits status/blockers; a ready fixture remains success.
+- [x] Run the focused modules and observe red before production changes.
+- [x] Implement complete transitive accepted-evidence verification and serialize it into accepted/assembly evidence. Do not accept a video merely because its final file hash still matches.
+- [x] Retain all four declared model roles in resolved config, validate them against inventory, and patch unique VAE and text-encoder loader targets in both native graph templates.
+- [x] Make interruption recovery explicit and idempotent: persist queue identity immediately after submission, retry safely only when nothing was submitted, and reattach rendering attempts through their recorded prompt ID.
+- [x] Make `inspect_attempt_integrity()` validate the evidence appropriate to every lifecycle state and report incomplete/legacy evidence distinctly.
+- [x] Parse ComfyUI extra-model path YAML with `yaml.safe_load`, including block scalars and active config files; combine configured and default roots with correct role kinds.
+- [x] Make `preflight` a true gate: structured status/blockers output and nonzero exit for BLOCKED.
+- [x] Re-run focused tests, full suite, compileall, Ruff, and `git diff --check`; commit a coherent follow-up and append the hardening report.

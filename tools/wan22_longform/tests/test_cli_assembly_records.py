@@ -945,6 +945,12 @@ class AssemblyRecordCliTests(unittest.TestCase):
 
     @staticmethod
     def _accepted_attempt(project, segment_id: str):
+        def write(path: Path, payload: object) -> None:
+            path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
         attempt = create_attempt(project, "S010", segment_id)
         for state in (AttemptState.RENDERING, AttemptState.RENDERED, AttemptState.NEEDS_REVIEW):
             attempt = transition_attempt(attempt, state, "fixture")
@@ -952,7 +958,66 @@ class AssemblyRecordCliTests(unittest.TestCase):
         output.parent.mkdir(parents=True)
         output.write_bytes(segment_id.encode("utf-8"))
         output_name = "bridge" if segment_id.startswith("B") else "segment"
-        write_metadata(attempt, RenderMetadata(outputs={output_name: output}))
+        kind = "bridge" if output_name == "bridge" else "segment"
+        input_upload = attempt.path / "input-upload.json"
+        configured = attempt.path / "configured-workflow-api.json"
+        request = attempt.path / "submission-request.json"
+        provenance = attempt.path / "submission-provenance.json"
+        write(input_upload, {})
+        configured_payload = json.loads(
+            (attempt.path / "workflow-api.json").read_text(encoding="utf-8")
+        )
+        write(configured, configured_payload)
+        write(request, {"prompt": configured_payload})
+        source_manifest = next(attempt.path.glob("source-manifest.*"))
+        write(
+            provenance,
+            {
+                "version": 1,
+                "input_upload": hashlib.sha256(input_upload.read_bytes()).hexdigest(),
+                "request": hashlib.sha256(request.read_bytes()).hexdigest(),
+                "source_manifest": hashlib.sha256(source_manifest.read_bytes()).hexdigest(),
+                "base_workflow": hashlib.sha256(
+                    (attempt.path / "workflow-api.json").read_bytes()
+                ).hexdigest(),
+                "workflow": hashlib.sha256(configured.read_bytes()).hexdigest(),
+            },
+        )
+        request_evidence = {
+            "path": str(request.resolve()),
+            "sha256": hashlib.sha256(request.read_bytes()).hexdigest(),
+        }
+        provenance_evidence = {
+            "path": str(provenance.resolve()),
+            "sha256": hashlib.sha256(provenance.read_bytes()).hexdigest(),
+        }
+        write(
+            attempt.path / "submission-intent.json",
+            {
+                "submission_request": request_evidence,
+                "submission_provenance": provenance_evidence,
+            },
+        )
+        write(
+            attempt.path / "queue.json",
+            {
+                "kind": kind,
+                "prompt_id": "fixture-prompt",
+                "submission_request": request_evidence,
+                "submission_provenance": provenance_evidence,
+            },
+        )
+        write(attempt.path / "history.json", {"prompt_id": "fixture-prompt", "history": {}})
+        write_metadata(
+            attempt,
+            RenderMetadata(
+                outputs={output_name: output},
+                details={
+                    "prompt_id": "fixture-prompt",
+                    "submission_request": request_evidence,
+                },
+            ),
+        )
         head = attempt.path / "head.png"
         tail = attempt.path / "tail.png"
         sheet = attempt.path / "contact-sheet.png"

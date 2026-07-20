@@ -32,6 +32,7 @@ from .project import (
     selected_tail_frame,
     transition_attempt,
     verify_planned_attempt_evidence,
+    verify_submission_attempt_evidence,
 )
 from .qc import initialize_qc
 from .workflow import (
@@ -116,7 +117,7 @@ def render_segment(
     validate_project_contract(project)
     if attempt is None:
         segment = _segment_request(project, shot_id, segment_id)
-        attempt = _new_or_planned_attempt(
+        attempt = _new_or_resumable_attempt(
             project,
             shot_id,
             segment_id,
@@ -124,30 +125,45 @@ def render_segment(
             selected_inputs={"opening_frame": segment.opening.provenance()},
         )
     else:
-        attempt = _new_or_planned_attempt(project, shot_id, segment_id, attempt)
+        attempt = _new_or_resumable_attempt(project, shot_id, segment_id, attempt)
         segment = _segment_request(
             project,
             shot_id,
             segment_id,
             opening=_stored_input_selection(project, attempt, "opening_frame"),
         )
+    queued_prompt = _queued_prompt_id(project, attempt)
+    if queued_prompt is not None:
+        return _complete_render(
+            project,
+            attempt,
+            client,
+            prompt_id=queued_prompt,
+            kind="segment",
+            input_provenance={"opening_frame": segment.opening.provenance()},
+            extra_details={},
+            rendered_note="local render complete",
+        )
+    _reject_unknown_submit_outcome(attempt)
     base_graph = _read_graph(attempt.path / "workflow-api.json")
     resolved, available_files = _resolved_submission_config(project)
     graph = build_api_graph(base_graph, resolved, available_files)
-    _write_json_exclusive(
+    _write_or_verify_json(
         attempt.path / "input-upload.json",
         {"opening_frame": segment.opening.provenance()},
     )
     uploaded_opening = _safe_uploaded_name(client.upload_image(segment.opening.path))
     _patch_segment_graph(graph, segment, uploaded_opening)
     _validate_submission_graph(project, graph)
-    _write_json_exclusive(attempt.path / "configured-workflow-api.json", graph)
+    _write_or_verify_json(attempt.path / "configured-workflow-api.json", graph)
     submission = {"prompt": graph}
     submission_path = attempt.path / "submission-request.json"
-    _write_json_exclusive(submission_path, submission)
-    _write_json_exclusive(
+    _write_or_verify_json(submission_path, submission)
+    _write_or_verify_json(
         attempt.path / "submission-provenance.json",
         {
+            "version": 1,
+            "input_upload": sha256_file(attempt.path / "input-upload.json"),
             "request": sha256_file(submission_path),
             "source_manifest": sha256_file(
                 next(attempt.path.glob("source-manifest.*"))
@@ -156,78 +172,17 @@ def render_segment(
             "workflow": sha256_file(attempt.path / "configured-workflow-api.json"),
         },
     )
-
-    attempt = transition_attempt(attempt, AttemptState.RENDERING, "queued locally")
-    prompt_id = client.submit(graph)
-    history = client.wait(prompt_id)
-    history_path = attempt.path / "history.json"
-    _write_json_exclusive(
-        history_path,
-        {"prompt_id": history.prompt_id, "history": history.raw},
-    )
-
-    history_output = _video_output(history)
-    output_suffix = Path(history_output.filename).suffix.casefold()
-    video = attempt.path / "outputs" / f"segment{output_suffix}"
-    if history_output.local_path is not None:
-        video.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(history_output.local_path, video)
-    else:
-        client.fetch_output(history_output, video)
-    if not video.is_file() or video.stat().st_size == 0:
-        raise RenderError("Local ComfyUI history output did not produce a video")
-
-    candidate_count = _candidate_count(project)
-    candidates_root = attempt.path / "candidate-frames"
-    head_frames = extract_candidate_frames(
-        video, candidate_count, "head", candidates_root / "head"
-    )
-    tail_frames = extract_candidate_frames(
-        video, candidate_count, "tail", candidates_root / "tail"
-    )
-    contact_sheet = create_contact_sheet(
-        [*head_frames, *tail_frames], attempt.path / "contact-sheet.png"
-    )
-
-    outputs: dict[str, Path] = {
-        "segment": video,
-        "contact_sheet": contact_sheet,
-        **{f"head_{index:02d}": path for index, path in enumerate(head_frames)},
-        **{f"tail_{index:02d}": path for index, path in enumerate(tail_frames)},
-    }
-    write_metadata(
+    attempt, prompt_id = _queue_submission(attempt, graph, "segment", client)
+    return _complete_render(
+        project,
         attempt,
-        RenderMetadata(
-            outputs=outputs,
-            rendered_at=datetime.now(UTC),
-            details={
-                "candidate_count": candidate_count,
-                "history": str(history_path),
-                "history_output": {
-                    "filename": history_output.filename,
-                    "node_id": history_output.node_id,
-                    "subfolder": history_output.subfolder,
-                    "type": history_output.type,
-                },
-                "prompt_id": prompt_id,
-                "input_provenance": {"opening_frame": segment.opening.provenance()},
-                "submission_request": {
-                    "path": str(submission_path),
-                    "sha256": sha256_file(submission_path),
-                },
-            },
-        ),
+        client,
+        prompt_id=prompt_id,
+        kind="segment",
+        input_provenance={"opening_frame": segment.opening.provenance()},
+        extra_details={},
+        rendered_note="local render complete",
     )
-    attempt = transition_attempt(attempt, AttemptState.RENDERED, "local render complete")
-    initialize_qc(
-        attempt,
-        video=video,
-        head_frames=head_frames,
-        tail_frames=tail_frames,
-        contact_sheet=contact_sheet,
-        automatic_continuation_authorized=_automatic_continuation(project),
-    )
-    return transition_attempt(attempt, AttemptState.NEEDS_REVIEW, None)
 
 
 def render_bridge(
@@ -242,7 +197,7 @@ def render_bridge(
     bridge_project = _project_with_bridge_workflow(project)
     if attempt is None:
         bridge = _bridge_request(project, bridge_id)
-        attempt = _new_or_planned_attempt(
+        attempt = _new_or_resumable_attempt(
             bridge_project,
             bridge.shot_id,
             bridge.bridge_id,
@@ -253,7 +208,7 @@ def render_bridge(
             },
         )
     else:
-        attempt = _new_or_planned_attempt(
+        attempt = _new_or_resumable_attempt(
             bridge_project, attempt.shot_id, bridge_id, attempt
         )
         bridge = _bridge_request(
@@ -266,10 +221,26 @@ def render_bridge(
             raise RenderError(
                 "planned bridge attempt shot does not match the configured bridge"
             )
+    queued_prompt = _queued_prompt_id(bridge_project, attempt)
+    if queued_prompt is not None:
+        return _complete_render(
+            bridge_project,
+            attempt,
+            client,
+            prompt_id=queued_prompt,
+            kind="bridge",
+            input_provenance={
+                "first_image": bridge.first_image.provenance(),
+                "last_image": bridge.last_image.provenance(),
+            },
+            extra_details={"bridge_id": bridge.bridge_id},
+            rendered_note="local bridge render complete",
+        )
+    _reject_unknown_submit_outcome(attempt)
     base_graph = _read_graph(attempt.path / "workflow-api.json")
     resolved, available_files = _resolved_submission_config(bridge_project)
     graph = build_api_graph(base_graph, resolved, available_files)
-    _write_json_exclusive(
+    _write_or_verify_json(
         attempt.path / "input-upload.json",
         {
             "first_image": bridge.first_image.provenance(),
@@ -280,13 +251,15 @@ def render_bridge(
     uploaded_last = _safe_uploaded_name(client.upload_image(bridge.last_image.path))
     _patch_bridge_graph(graph, bridge, uploaded_first, uploaded_last)
     _validate_submission_graph(bridge_project, graph)
-    _write_json_exclusive(attempt.path / "configured-workflow-api.json", graph)
+    _write_or_verify_json(attempt.path / "configured-workflow-api.json", graph)
     submission = {"prompt": graph}
     submission_path = attempt.path / "submission-request.json"
-    _write_json_exclusive(submission_path, submission)
-    _write_json_exclusive(
+    _write_or_verify_json(submission_path, submission)
+    _write_or_verify_json(
         attempt.path / "submission-provenance.json",
         {
+            "version": 1,
+            "input_upload": sha256_file(attempt.path / "input-upload.json"),
             "request": sha256_file(submission_path),
             "source_manifest": sha256_file(
                 next(attempt.path.glob("source-manifest.*"))
@@ -295,81 +268,20 @@ def render_bridge(
             "workflow": sha256_file(attempt.path / "configured-workflow-api.json"),
         },
     )
-
-    attempt = transition_attempt(attempt, AttemptState.RENDERING, "queued locally")
-    prompt_id = client.submit(graph)
-    history = client.wait(prompt_id)
-    history_path = attempt.path / "history.json"
-    _write_json_exclusive(
-        history_path,
-        {"prompt_id": history.prompt_id, "history": history.raw},
-    )
-
-    history_output = _video_output(history)
-    output_suffix = Path(history_output.filename).suffix.casefold()
-    video = attempt.path / "outputs" / f"bridge{output_suffix}"
-    if history_output.local_path is not None:
-        video.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(history_output.local_path, video)
-    else:
-        client.fetch_output(history_output, video)
-    if not video.is_file() or video.stat().st_size == 0:
-        raise RenderError("Local ComfyUI history output did not produce a video")
-
-    candidate_count = _candidate_count(bridge_project)
-    candidates_root = attempt.path / "candidate-frames"
-    head_frames = extract_candidate_frames(
-        video, candidate_count, "head", candidates_root / "head"
-    )
-    tail_frames = extract_candidate_frames(
-        video, candidate_count, "tail", candidates_root / "tail"
-    )
-    contact_sheet = create_contact_sheet(
-        [*head_frames, *tail_frames], attempt.path / "contact-sheet.png"
-    )
-    outputs: dict[str, Path] = {
-        "bridge": video,
-        "contact_sheet": contact_sheet,
-        **{f"head_{index:02d}": path for index, path in enumerate(head_frames)},
-        **{f"tail_{index:02d}": path for index, path in enumerate(tail_frames)},
-    }
-    write_metadata(
+    attempt, prompt_id = _queue_submission(attempt, graph, "bridge", client)
+    return _complete_render(
+        bridge_project,
         attempt,
-        RenderMetadata(
-            outputs=outputs,
-            rendered_at=datetime.now(UTC),
-            details={
-                "bridge_id": bridge.bridge_id,
-                "candidate_count": candidate_count,
-                "history": str(history_path),
-                "history_output": {
-                    "filename": history_output.filename,
-                    "node_id": history_output.node_id,
-                    "subfolder": history_output.subfolder,
-                    "type": history_output.type,
-                },
-                "prompt_id": prompt_id,
-                "input_provenance": {
-                    "first_image": bridge.first_image.provenance(),
-                    "last_image": bridge.last_image.provenance(),
-                },
-                "submission_request": {
-                    "path": str(submission_path),
-                    "sha256": sha256_file(submission_path),
-                },
-            },
-        ),
+        client,
+        prompt_id=prompt_id,
+        kind="bridge",
+        input_provenance={
+            "first_image": bridge.first_image.provenance(),
+            "last_image": bridge.last_image.provenance(),
+        },
+        extra_details={"bridge_id": bridge.bridge_id},
+        rendered_note="local bridge render complete",
     )
-    attempt = transition_attempt(attempt, AttemptState.RENDERED, "local bridge render complete")
-    initialize_qc(
-        attempt,
-        video=video,
-        head_frames=head_frames,
-        tail_frames=tail_frames,
-        contact_sheet=contact_sheet,
-        automatic_continuation_authorized=_automatic_continuation(bridge_project),
-    )
-    return transition_attempt(attempt, AttemptState.NEEDS_REVIEW, None)
 
 
 def resume_attempt(
@@ -377,8 +289,8 @@ def resume_attempt(
     attempt: Attempt,
     client: RenderClient,
 ) -> Attempt:
-    """Resume exactly one immutable planned attempt from its snapshot evidence."""
-    persisted = _new_or_planned_attempt(
+    """Resume one immutable planned or safely queued rendering attempt."""
+    persisted = _new_or_resumable_attempt(
         project, attempt.shot_id, attempt.segment_id, attempt
     )
     replay_project = _snapshot_project(project, persisted)
@@ -399,10 +311,10 @@ def resume_attempt(
             client,
             attempt=persisted,
         )
-    raise RenderError("planned attempt has no recognized native I2V or FLF workflow")
+    raise RenderError("resumable attempt has no recognized native I2V or FLF workflow")
 
 
-def _new_or_planned_attempt(
+def _new_or_resumable_attempt(
     project: ProjectConfig,
     shot_id: str,
     segment_id: str,
@@ -417,17 +329,174 @@ def _new_or_planned_attempt(
         if supplied is None
         else load_attempt(supplied.path)
     )
-    try:
-        verify_planned_attempt_evidence(project, persisted)
-    except ProjectStateError as error:
-        raise RenderError(f"planned attempt evidence is invalid: {error}") from error
-    if supplied is None:
-        return persisted
     if persisted.shot_id != shot_id or persisted.segment_id != segment_id:
-        raise RenderError("planned attempt identity does not match the requested render")
-    if persisted.state is not AttemptState.PLANNED:
-        raise RenderError(f"attempt is not planned and cannot be resumed: {persisted.path}")
+        raise RenderError("resumable attempt identity does not match the requested render")
+    try:
+        if persisted.state is AttemptState.PLANNED:
+            verify_planned_attempt_evidence(project, persisted)
+        elif persisted.state is AttemptState.RENDERING:
+            verify_submission_attempt_evidence(project, persisted, require_queue=True)
+        else:
+            raise RenderError(
+                f"attempt is not planned or rendering and cannot be resumed: {persisted.path}"
+            )
+    except ProjectStateError as error:
+        phase = "planned" if persisted.state is AttemptState.PLANNED else "rendering"
+        raise RenderError(f"{phase} attempt evidence is invalid: {error}") from error
     return persisted
+
+
+def _queued_prompt_id(project: ProjectConfig, attempt: Attempt) -> str | None:
+    if not (attempt.path / "queue.json").is_file():
+        return None
+    try:
+        evidence = verify_submission_attempt_evidence(
+            project, attempt, require_queue=True
+        )
+    except ProjectStateError as error:
+        raise RenderError(f"queued attempt evidence is invalid: {error}") from error
+    submission = evidence.get("submission")
+    queue = submission.get("queue") if isinstance(submission, Mapping) else None
+    prompt_id = queue.get("prompt_id") if isinstance(queue, Mapping) else None
+    if not isinstance(prompt_id, str) or not prompt_id:
+        raise RenderError("queued attempt has no valid persisted prompt ID")
+    return prompt_id
+
+
+def _reject_unknown_submit_outcome(attempt: Attempt) -> None:
+    if (attempt.path / "submission-intent.json").is_file() and not (
+        attempt.path / "queue.json"
+    ).is_file():
+        raise RenderError(
+            "unknown submit outcome: submission intent has no persisted ComfyUI prompt ID; "
+            "do not submit again automatically"
+        )
+
+
+def _queue_submission(
+    attempt: Attempt,
+    graph: ApiGraph,
+    kind: str,
+    client: RenderClient,
+) -> tuple[Attempt, str]:
+    request_path = attempt.path / "submission-request.json"
+    provenance_path = attempt.path / "submission-provenance.json"
+    intent = {
+        "submission_provenance": _evidence_entry(provenance_path),
+        "submission_request": _evidence_entry(request_path),
+    }
+    _write_or_verify_json(attempt.path / "submission-intent.json", intent)
+    prompt_id = client.submit(graph)
+    if not isinstance(prompt_id, str) or not prompt_id:
+        raise RenderError("ComfyUI submit returned an invalid prompt ID")
+    queue = {
+        "kind": kind,
+        "prompt_id": prompt_id,
+        "submission_provenance": _evidence_entry(provenance_path),
+        "submission_request": _evidence_entry(request_path),
+    }
+    _write_or_verify_json(attempt.path / "queue.json", queue)
+    persisted = load_attempt(attempt.path)
+    if persisted.state is AttemptState.PLANNED:
+        persisted = transition_attempt(persisted, AttemptState.RENDERING, "queued locally")
+    if persisted.state is not AttemptState.RENDERING:
+        raise RenderError(f"queued attempt has invalid state: {persisted.state}")
+    return persisted, prompt_id
+
+
+def _complete_render(
+    project: ProjectConfig,
+    attempt: Attempt,
+    client: RenderClient,
+    *,
+    prompt_id: str,
+    kind: str,
+    input_provenance: Mapping[str, Mapping[str, str]],
+    extra_details: Mapping[str, Any],
+    rendered_note: str,
+) -> Attempt:
+    """Poll a recorded prompt ID and write the terminal local evidence once."""
+    try:
+        submitted = verify_submission_attempt_evidence(
+            project, attempt, require_queue=True
+        )
+    except ProjectStateError as error:
+        raise RenderError(f"queued attempt evidence is invalid: {error}") from error
+    queue = submitted["submission"]["queue"]
+    if queue["prompt_id"] != prompt_id or queue["kind"] != kind:
+        raise RenderError("persisted queue identity does not match the requested render")
+    persisted = load_attempt(attempt.path)
+    if persisted.state is AttemptState.PLANNED:
+        persisted = transition_attempt(persisted, AttemptState.RENDERING, "reattached queue")
+    if persisted.state is not AttemptState.RENDERING:
+        raise RenderError(f"queued attempt has invalid state: {persisted.state}")
+    history = client.wait(prompt_id)
+    if history.prompt_id != prompt_id:
+        raise RenderError("ComfyUI history prompt ID does not match the persisted queue identity")
+    history_path = persisted.path / "history.json"
+    _write_or_verify_json(
+        history_path,
+        {"prompt_id": history.prompt_id, "history": history.raw},
+    )
+    history_output = _video_output(history)
+    output_suffix = Path(history_output.filename).suffix.casefold()
+    video = persisted.path / "outputs" / f"{kind}{output_suffix}"
+    if not video.is_file() or video.stat().st_size == 0:
+        if history_output.local_path is not None:
+            video.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(history_output.local_path, video)
+        else:
+            client.fetch_output(history_output, video)
+    if not video.is_file() or video.stat().st_size == 0:
+        raise RenderError("Local ComfyUI history output did not produce a video")
+    candidate_count = _candidate_count(project)
+    candidates_root = persisted.path / "candidate-frames"
+    head_frames = extract_candidate_frames(
+        video, candidate_count, "head", candidates_root / "head"
+    )
+    tail_frames = extract_candidate_frames(
+        video, candidate_count, "tail", candidates_root / "tail"
+    )
+    contact_sheet = create_contact_sheet(
+        [*head_frames, *tail_frames], persisted.path / "contact-sheet.png"
+    )
+    outputs: dict[str, Path] = {
+        kind: video,
+        "contact_sheet": contact_sheet,
+        **{f"head_{index:02d}": path for index, path in enumerate(head_frames)},
+        **{f"tail_{index:02d}": path for index, path in enumerate(tail_frames)},
+    }
+    write_metadata(
+        persisted,
+        RenderMetadata(
+            outputs=outputs,
+            rendered_at=datetime.now(UTC),
+            details={
+                **extra_details,
+                "candidate_count": candidate_count,
+                "history": str(history_path),
+                "history_output": {
+                    "filename": history_output.filename,
+                    "node_id": history_output.node_id,
+                    "subfolder": history_output.subfolder,
+                    "type": history_output.type,
+                },
+                "input_provenance": input_provenance,
+                "prompt_id": prompt_id,
+                "submission_request": submitted["submission"]["submission_request"],
+            },
+        ),
+    )
+    rendered = transition_attempt(persisted, AttemptState.RENDERED, rendered_note)
+    initialize_qc(
+        rendered,
+        video=video,
+        head_frames=head_frames,
+        tail_frames=tail_frames,
+        contact_sheet=contact_sheet,
+        automatic_continuation_authorized=_automatic_continuation(project),
+    )
+    return transition_attempt(rendered, AttemptState.NEEDS_REVIEW, None)
 
 
 def _snapshot_project(project: ProjectConfig, attempt: Attempt) -> ProjectConfig:
@@ -1238,7 +1307,25 @@ def _local_path(project: ProjectConfig, value: object) -> Path:
     return path
 
 
-def _write_json_exclusive(path: Path, payload: object) -> None:
-    with path.open("x", encoding="utf-8", newline="\n") as destination:
-        json.dump(payload, destination, indent=2, sort_keys=True)
-        destination.write("\n")
+def _evidence_entry(path: Path) -> dict[str, str]:
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise RenderError(f"submission evidence does not exist: {resolved}")
+    return {"path": str(resolved), "sha256": sha256_file(resolved)}
+
+
+def _write_or_verify_json(path: Path, payload: object) -> None:
+    """Write immutable evidence once, or reuse it only when it is byte-equivalent JSON."""
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    try:
+        with path.open("x", encoding="utf-8", newline="\n") as destination:
+            destination.write(encoded)
+        return
+    except FileExistsError:
+        pass
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RenderError(f"immutable evidence is unreadable: {path}") from error
+    if json.dumps(existing, sort_keys=True) != json.dumps(payload, sort_keys=True):
+        raise RenderError(f"immutable evidence does not match the prepared request: {path}")

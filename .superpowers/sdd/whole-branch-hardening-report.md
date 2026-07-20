@@ -199,3 +199,59 @@ OK (skipped=1)
 ```
 
 No reviewed-boundary, runtime-execution, or artifact behavior changed.
+
+## Fix Report: Task 2 Final Traceability, Model Roles, and Resume Recovery
+
+Date: 2026-07-19
+
+### Scope and guardrails
+
+This follow-up remained static and unit-test only. It did not start, stop, query, or modify ComfyUI, the GPU, network services, or the ignored `tools/wan22_longform/artifacts/` runtime directory.
+
+### TDD RED
+
+Before the production edits, the focused Task 2 command exposed the missing model-role, YAML, lifecycle, preflight, and recovery behavior:
+
+```powershell
+C:\Program Files\Python311\python.exe -m unittest tools.wan22_longform.tests.test_workflow_patch tools.wan22_longform.tests.test_inventory tools.wan22_longform.tests.test_project_state tools.wan22_longform.tests.test_render_client tools.wan22_longform.tests.test_cli
+```
+
+```text
+Ran 110 tests
+FAILED (failures=15, errors=6, skipped=1)
+```
+
+### Corrections
+
+- Accepted evidence is now transitive. The immutable planned snapshot, selected input provenance, configured workflow, submission request, versioned submission provenance, queue identity, history, metadata, QC, and output are rehashed and compared before status, continuation/FLF selection, or assembly can use an accepted attempt.
+- Resolved model configuration is strict for high-noise UNet, low-noise UNet, VAE, and text encoder. Native I2V and FLF graph patching now targets the unique `UNETLoader`, `VAELoader`, and `CLIPLoader` nodes, and missing VAE/text files fail before upload or submission.
+- Render preparation is immutable and restart-safe. A submission intent is written before queue submission; a returned prompt ID is sealed in `queue.json` before polling or the rendering transition. Planned upload interruptions can repeat matching evidence, queued rendering attempts reattach to their recorded ID, and an intent without a queue ID fails closed as an unknown submit outcome.
+- Lifecycle integrity now validates state-appropriate evidence. Tampered planned data becomes `integrity_failed` in CLI payloads with its recorded state preserved; incomplete and legacy evidence remain distinct and cannot be promoted to trusted execution paths.
+- Extra model paths now use `yaml.safe_load`, accept canonical block scalars and multiple active files, and combine role-correct configured roots with standard `models/*` roots.
+- `preflight` emits JSON containing `status`, `blockers`, and `artifact_dir`; it returns zero only for `READY` and nonzero for `BLOCKED`.
+
+### GREEN verification
+
+Focused Task 2 modules:
+
+```text
+Ran 131 tests
+OK (skipped=1)
+```
+
+Full suite:
+
+```text
+Ran 217 tests in 28.727s
+OK (skipped=1)
+```
+
+Static checks passed:
+
+```powershell
+C:\Program Files\Python311\python.exe -m compileall -q tools\wan22_longform\src
+C:\Program Files\Python311\python.exe -m ruff check tools/wan22_longform/src tools/wan22_longform/tests
+git diff --check
+```
+
+Implementation commit: this Task 2 follow-up commit on `codex/wan22-longform-v1`.

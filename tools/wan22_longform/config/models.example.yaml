@@ -2,7 +2,9 @@
   "preset": "P0_IDENTITY_BASELINE",
   "models": {
     "high": "wan-high.safetensors",
-    "low": "wan-low.safetensors"
+    "low": "wan-low.safetensors",
+    "vae": "wan-vae.safetensors",
+    "text_encoder": "wan-text-encoder.safetensors"
   },
   "loras": {
     "identity": {"mode": "none"},

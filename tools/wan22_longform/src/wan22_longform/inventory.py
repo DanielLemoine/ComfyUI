@@ -3,13 +3,16 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import os
 import platform
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
+
+import yaml
 
 from .config import ProjectConfig
 from .errors import PreflightError
@@ -61,13 +64,18 @@ def collect_preflight(
     artifact_dir: Path,
     object_info: dict[str, object] | None = None,
     project: ProjectConfig | None = None,
+    extra_model_path_configs: Sequence[Path] = (),
 ) -> PreflightResult:
     """Write reproducible local evidence without downloading any artifact."""
     comfy_root = comfy_root.resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     object_info_data, object_info_status = _object_info(comfy_url, object_info)
-    model_inventory = _model_inventory(comfy_root, project)
+    model_inventory = _model_inventory(
+        comfy_root,
+        project,
+        extra_model_path_configs=extra_model_path_configs,
+    )
     custom_nodes = _custom_nodes(comfy_root)
     environment = _environment(comfy_root, comfy_url)
     (
@@ -344,9 +352,14 @@ def _command_output(command: list[str]) -> dict[str, object]:
 
 
 def _model_inventory(
-    comfy_root: Path, project: ProjectConfig | None = None
+    comfy_root: Path,
+    project: ProjectConfig | None = None,
+    *,
+    extra_model_path_configs: Sequence[Path] = (),
 ) -> dict[str, object]:
-    roots = _configured_model_roots(comfy_root)
+    roots = _configured_model_roots(
+        comfy_root, extra_model_path_configs=extra_model_path_configs
+    )
     payload: dict[str, object] = {
         "roots": [
             {
@@ -417,8 +430,17 @@ def _model_role_blockers(
     return tuple(blockers)
 
 
-def _configured_model_roots(comfy_root: Path) -> list[tuple[str, Path]]:
-    configured = _parse_extra_model_paths(comfy_root / "extra_model_paths.yaml")
+def _configured_model_roots(
+    comfy_root: Path,
+    *,
+    extra_model_path_configs: Sequence[Path] = (),
+) -> list[tuple[str, Path]]:
+    discovered_configs = sorted(comfy_root.glob("extra_model_paths*.yaml"))
+    configured = [
+        root
+        for path in (*discovered_configs, *extra_model_path_configs)
+        for root in _parse_extra_model_paths(Path(path))
+    ]
     defaults = [
         (child.name, child)
         for child in (comfy_root / "models").iterdir()
@@ -466,34 +488,49 @@ def _runtime_revision_blockers(
 def _parse_extra_model_paths(path: Path) -> list[tuple[str, Path]]:
     if not path.is_file():
         return []
-    sections: list[tuple[str, Path, list[tuple[str, str]]]] = []
-    current_name: str | None = None
-    base_path: Path | None = None
-    entries: list[tuple[str, str]] = []
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        stripped = raw_line.split("#", 1)[0].rstrip()
-        if not stripped or ":" not in stripped:
-            continue
-        indentation = len(stripped) - len(stripped.lstrip())
-        key, value = (part.strip().strip('"\'') for part in stripped.split(":", 1))
-        if indentation == 0:
-            if current_name is not None and base_path is not None:
-                sections.append((current_name, base_path, entries))
-            current_name, base_path, entries = key, None, []
-        elif current_name is not None and key == "base_path":
-            base_path = Path(value)
-        elif current_name is not None:
-            entries.append((key, value))
-    if current_name is not None and base_path is not None:
-        sections.append((current_name, base_path, entries))
-
+    try:
+        source = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise PreflightError(f"invalid extra_model_paths YAML: {path}") from error
+    if source is None:
+        return []
+    if not isinstance(source, Mapping):
+        raise PreflightError(f"extra_model_paths root must be a mapping: {path}")
     roots: list[tuple[str, Path]] = []
-    for _section, base_path, entries in sections:
-        for kind, relative_path in entries:
-            if kind == "base_path" or not relative_path:
+    for section in source.values():
+        if not isinstance(section, Mapping):
+            continue
+        raw_base = section.get("base_path")
+        if raw_base is None:
+            base_path = path.parent
+        elif not isinstance(raw_base, str) or not raw_base.strip():
+            raise PreflightError(f"extra_model_paths base_path is invalid: {path}")
+        else:
+            base_path = Path(os.path.expandvars(os.path.expanduser(raw_base)))
+            if not base_path.is_absolute():
+                base_path = path.parent / base_path
+        for kind, raw_paths in section.items():
+            if kind in {"base_path", "is_default"}:
                 continue
-            candidate = Path(relative_path)
-            roots.append((kind, candidate if candidate.is_absolute() else base_path / candidate))
+            values = raw_paths if isinstance(raw_paths, (list, tuple)) else (raw_paths,)
+            for value in values:
+                if not isinstance(value, str):
+                    raise PreflightError(
+                        f"extra_model_paths {kind} entry is not a string: {path}"
+                    )
+                for relative_path in value.splitlines():
+                    relative_path = relative_path.strip()
+                    if not relative_path:
+                        continue
+                    candidate = Path(
+                        os.path.expandvars(os.path.expanduser(relative_path))
+                    )
+                    roots.append(
+                        (
+                            str(kind),
+                            candidate if candidate.is_absolute() else base_path / candidate,
+                        )
+                    )
     return roots
 
 

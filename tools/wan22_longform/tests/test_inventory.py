@@ -659,6 +659,45 @@ class CollectPreflightTests(unittest.TestCase):
             self.assertIn(("vae", default_root.resolve()), roots)
             self.assertIn(("diffusion_models", extra_root.resolve()), roots)
 
+    def test_model_inventory_parses_canonical_block_scalars_and_multiple_configs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            comfy_root = root / "ComfyUI"
+            default_root = comfy_root / "models" / "text_encoders"
+            default_root.mkdir(parents=True)
+            primary_root = root / "shared" / "diffusion_models"
+            secondary_root = root / "shared" / "vae"
+            primary_root.mkdir(parents=True)
+            secondary_root.mkdir(parents=True)
+            first = comfy_root / "extra_model_paths.yaml"
+            first.parent.mkdir(parents=True, exist_ok=True)
+            first.write_text(
+                """primary:
+  base_path: ../shared
+  is_default: true
+  diffusion_models: |
+    diffusion_models
+""",
+                encoding="utf-8",
+            )
+            second = root / "additional-model-paths.yaml"
+            second.write_text(
+                """secondary:
+  base_path: shared
+  vae:
+    - vae
+""",
+                encoding="utf-8",
+            )
+
+            roots = inventory._configured_model_roots(
+                comfy_root, extra_model_path_configs=(first, second)
+            )
+
+            self.assertIn(("text_encoders", default_root.resolve()), roots)
+            self.assertIn(("diffusion_models", primary_root.resolve()), roots)
+            self.assertIn(("vae", secondary_root.resolve()), roots)
+
     @patch("wan22_longform.inventory.subprocess.run")
     def test_preflight_blocks_without_a_trustworthy_comfy_runtime(self, run) -> None:
         run.return_value = CompletedProcess([], 0, "fixture output", "")

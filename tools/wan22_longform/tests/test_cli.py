@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -16,6 +18,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from wan22_longform.cli import DeploymentError, deploy_workflows, main  # noqa: E402
+from wan22_longform.inventory import PreflightResult  # noqa: E402
 
 
 class CliTests(unittest.TestCase):
@@ -118,6 +121,49 @@ class CliTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised, redirect_stdout(io.StringIO()):
                     main([*command, "--help"])
                 self.assertEqual(raised.exception.code, 0)
+
+    def test_preflight_emits_machine_readable_gate_status_and_nonzero_for_blocked(self) -> None:
+        result = PreflightResult(
+            artifact_dir=Path("C:/evidence"),
+            object_info_path=Path("C:/evidence/object_info.json"),
+            active_workflow_dir=None,
+            native_i2v_template=None,
+            native_flf_template=None,
+            status="BLOCKED",
+            blockers=("CUDA proof is unavailable",),
+            workflow_candidates=(),
+        )
+        output = io.StringIO()
+
+        with patch("wan22_longform.cli.collect_preflight", return_value=result), redirect_stdout(output):
+            exit_code = main(["preflight", "--comfy-root", "C:/ComfyUI"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "artifact_dir": str(Path("C:/evidence")),
+                "blockers": ["CUDA proof is unavailable"],
+                "status": "BLOCKED",
+            },
+        )
+
+    def test_preflight_returns_zero_only_when_ready(self) -> None:
+        result = PreflightResult(
+            artifact_dir=Path("C:/evidence"),
+            object_info_path=Path("C:/evidence/object_info.json"),
+            active_workflow_dir=None,
+            native_i2v_template=None,
+            native_flf_template=None,
+            status="READY",
+            blockers=(),
+            workflow_candidates=(),
+        )
+
+        with patch("wan22_longform.cli.collect_preflight", return_value=result), redirect_stdout(io.StringIO()):
+            exit_code = main(["preflight", "--comfy-root", "C:/ComfyUI"])
+
+        self.assertEqual(exit_code, 0)
 
     @staticmethod
     def _write_example_manifest(root: Path) -> Path:

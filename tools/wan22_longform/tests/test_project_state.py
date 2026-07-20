@@ -257,12 +257,15 @@ class ProjectStateTests(unittest.TestCase):
                 "attempt_path",
                 "lineage",
                 "output",
+                "planned",
                 "provenance",
                 "qc",
+                "render_history",
                 "render_metadata",
                 "segment_id",
                 "shot_id",
                 "source_manifest",
+                "submission",
             },
         )
         self.assertRegex(payload["root_digest"], r"^[0-9a-f]{64}$")
@@ -395,6 +398,16 @@ class ProjectStateTests(unittest.TestCase):
                 with self.assertRaises(ProjectStateError):
                     accepted_attempt_evidence(self.project, accepted)
 
+    def test_planned_attempt_tamper_is_integrity_failed_not_verified(self) -> None:
+        attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)
+        provenance = attempt.path / "provenance.json"
+        provenance.write_bytes(provenance.read_bytes() + b"\n")
+
+        status, failures = inspect_attempt_integrity(self.project, attempt)
+
+        self.assertEqual(status, "failed")
+        self.assertTrue(any("provenance" in failure for failure in failures))
+
     def test_legacy_attempt_is_readable_but_explicitly_unverified(self) -> None:
         accepted, _output, _evidence = self._accepted_source()
         attempt_path = accepted.path / "attempt.json"
@@ -521,12 +534,83 @@ inputs:
             attempt = transition_attempt(attempt, state, None, now=self.now)
         return attempt
 
+    @staticmethod
+    def _write_json(path: Path, payload: object) -> None:
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    def _submission_fixture(self, attempt) -> dict[str, str]:
+        input_upload = attempt.path / "input-upload.json"
+        configured = attempt.path / "configured-workflow-api.json"
+        request = attempt.path / "submission-request.json"
+        provenance = attempt.path / "submission-provenance.json"
+        self._write_json(input_upload, {})
+        configured_payload = json.loads(
+            (attempt.path / "workflow-api.json").read_text(encoding="utf-8")
+        )
+        self._write_json(configured, configured_payload)
+        self._write_json(request, {"prompt": configured_payload})
+        source_manifest = next(attempt.path.glob("source-manifest.*"))
+        self._write_json(
+            provenance,
+            {
+                "version": 1,
+                "input_upload": hashlib.sha256(input_upload.read_bytes()).hexdigest(),
+                "request": hashlib.sha256(request.read_bytes()).hexdigest(),
+                "source_manifest": hashlib.sha256(source_manifest.read_bytes()).hexdigest(),
+                "base_workflow": hashlib.sha256(
+                    (attempt.path / "workflow-api.json").read_bytes()
+                ).hexdigest(),
+                "workflow": hashlib.sha256(configured.read_bytes()).hexdigest(),
+            },
+        )
+        request_evidence = {
+            "path": str(request.resolve()),
+            "sha256": hashlib.sha256(request.read_bytes()).hexdigest(),
+        }
+        provenance_evidence = {
+            "path": str(provenance.resolve()),
+            "sha256": hashlib.sha256(provenance.read_bytes()).hexdigest(),
+        }
+        self._write_json(
+            attempt.path / "submission-intent.json",
+            {
+                "submission_request": request_evidence,
+                "submission_provenance": provenance_evidence,
+            },
+        )
+        self._write_json(
+            attempt.path / "queue.json",
+            {
+                "kind": "segment",
+                "prompt_id": "fixture-prompt",
+                "submission_request": request_evidence,
+                "submission_provenance": provenance_evidence,
+            },
+        )
+        self._write_json(
+            attempt.path / "history.json",
+            {"prompt_id": "fixture-prompt", "history": {}},
+        )
+        return request_evidence
+
     def _accepted_source(self):
         attempt = self._review_attempt()
         output = attempt.path / "outputs" / "segment.mp4"
         output.parent.mkdir(parents=True)
         output.write_bytes(b"accepted-segment")
-        write_metadata(attempt, RenderMetadata(outputs={"segment": output}))
+        request_evidence = self._submission_fixture(attempt)
+        write_metadata(
+            attempt,
+            RenderMetadata(
+                outputs={"segment": output},
+                details={
+                    "prompt_id": "fixture-prompt",
+                    "submission_request": request_evidence,
+                },
+            ),
+        )
         head = attempt.path / "head.png"
         tail = attempt.path / "tail.png"
         sheet = attempt.path / "contact-sheet.png"

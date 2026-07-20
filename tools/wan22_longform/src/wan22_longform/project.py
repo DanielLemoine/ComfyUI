@@ -377,12 +377,51 @@ def verify_planned_attempt_evidence(
     persisted = load_attempt(attempt.path)
     if persisted.state is not AttemptState.PLANNED:
         raise ProjectStateError("attempt is not planned")
-    lineage = verify_attempt_lineage(project, persisted)
+    return _verify_attempt_snapshot_evidence(project, persisted)
+
+
+def verify_submission_attempt_evidence(
+    project: ProjectConfig,
+    attempt: Attempt,
+    *,
+    require_queue: bool = False,
+) -> dict[str, Any]:
+    """Rehash immutable prepared submission evidence for any lifecycle state."""
+    persisted = load_attempt(attempt.path)
+    planned = _verify_attempt_snapshot_evidence(project, persisted)
+    return _submission_evidence(persisted, planned, require_queue=require_queue)
+
+
+def _verify_attempt_snapshot_evidence(
+    project: ProjectConfig, attempt: Attempt
+) -> dict[str, Any]:
+    lineage = verify_attempt_lineage(project, attempt)
+    verified = _snapshot_attempt_evidence(attempt)
+    if verified["lineage"] != lineage:
+        raise ProjectStateError("attempt snapshot project lineage changed")
+
+    recorded_inputs = _read_json(attempt.path / "provenance.json").get("inputs")
+    if not isinstance(recorded_inputs, Mapping):
+        raise ProjectStateError("planned attempt input provenance is invalid")
+    current_inputs: dict[str, str] = {}
+    for name, path in _input_paths(project).items():
+        if not path.is_file():
+            raise ProjectStateError(f"planned attempt input does not exist: {path}")
+        current_inputs[name] = sha256_file(path)
+    if _json_ready(recorded_inputs) != current_inputs:
+        raise ProjectStateError("planned attempt project input provenance changed")
+    return verified
+
+
+def _snapshot_attempt_evidence(attempt: Attempt) -> dict[str, Any]:
+    """Verify immutable attempt snapshots without requiring live project inputs."""
+    persisted = load_attempt(attempt.path)
+    lineage = _attempt_lineage(persisted)
     attempt_record = _read_json(persisted.path / "attempt.json")
     expected_provenance_hash = attempt_record.get("provenance_sha256")
     if not _is_sha256(expected_provenance_hash):
         raise ProjectStateError(
-            "legacy planned attempt has no sealed provenance evidence"
+            "legacy attempt has no sealed provenance evidence"
         )
     provenance_path = persisted.path / "provenance.json"
     if (
@@ -392,7 +431,7 @@ def verify_planned_attempt_evidence(
         raise ProjectStateError("planned attempt provenance hash changed")
     provenance = _read_json(provenance_path)
     if _lineage_payload(provenance.get("lineage"), "attempt provenance") != lineage:
-        raise ProjectStateError("planned attempt provenance project lineage changed")
+        raise ProjectStateError("attempt provenance project lineage changed")
 
     snapshots = tuple(persisted.path.glob("source-manifest.*"))
     if len(snapshots) != 1:
@@ -409,27 +448,16 @@ def verify_planned_attempt_evidence(
         expected_hash = provenance.get(name)
         if not _is_sha256(expected_hash):
             raise ProjectStateError(
-                f"planned attempt provenance {name} hash is invalid"
+                f"attempt provenance {name} hash is invalid"
             )
         if not path.is_file() or sha256_file(path) != expected_hash.casefold():
-            raise ProjectStateError(f"planned attempt {name} hash changed")
+            raise ProjectStateError(f"attempt {name} hash changed")
         verified[name] = {
             "path": str(path.resolve()),
             "sha256": expected_hash.casefold(),
         }
     if verified["source_manifest"]["sha256"] != lineage["source_manifest_sha256"]:
-        raise ProjectStateError("planned attempt source manifest lineage changed")
-
-    recorded_inputs = provenance.get("inputs")
-    if not isinstance(recorded_inputs, Mapping):
-        raise ProjectStateError("planned attempt input provenance is invalid")
-    current_inputs: dict[str, str] = {}
-    for name, path in _input_paths(project).items():
-        if not path.is_file():
-            raise ProjectStateError(f"planned attempt input does not exist: {path}")
-        current_inputs[name] = sha256_file(path)
-    if _json_ready(recorded_inputs) != current_inputs:
-        raise ProjectStateError("planned attempt project input provenance changed")
+        raise ProjectStateError("attempt source manifest lineage changed")
 
     selected = provenance.get("selected_inputs", {})
     if not isinstance(selected, Mapping):
@@ -452,7 +480,14 @@ def accepted_attempt_evidence(
     project: ProjectConfig, attempt: Attempt
 ) -> dict[str, Any]:
     """Return canonical immutable evidence for a current-project accepted attempt."""
-    return _accepted_attempt_evidence(attempt, project_lineage(project))
+    persisted = load_attempt(attempt.path)
+    try:
+        _verify_attempt_snapshot_evidence(project, persisted)
+    except ProjectStateError as error:
+        raise ProjectStateError(
+            f"accepted attempt immutable artifact evidence changed: {error}"
+        ) from error
+    return _accepted_attempt_evidence(persisted, project_lineage(project))
 
 
 def inspect_attempt_integrity(
@@ -460,14 +495,42 @@ def inspect_attempt_integrity(
 ) -> tuple[str, tuple[str, ...]]:
     """Classify readable attempts without promoting legacy data to verified."""
     try:
-        verify_attempt_lineage(project, attempt)
-        if attempt.state is AttemptState.ACCEPTED:
-            accepted_attempt_evidence(project, attempt)
+        persisted = load_attempt(attempt.path)
+        if persisted.state is AttemptState.PLANNED:
+            _verify_attempt_snapshot_evidence(project, persisted)
+            return _planned_integrity_status(persisted)
+        if persisted.state is AttemptState.RENDERING:
+            verify_submission_attempt_evidence(project, persisted, require_queue=True)
+            return "incomplete", ("attempt is rendering with a persisted queue identity",)
+        if persisted.state is AttemptState.RENDERED:
+            submission = verify_submission_attempt_evidence(
+                project, persisted, require_queue=True
+            )
+            _rendered_evidence(persisted, submission, require_qc=False)
+            return "incomplete", ("attempt is rendered and awaiting QC initialization",)
+        if persisted.state in {
+            AttemptState.NEEDS_REVIEW,
+            AttemptState.REJECTED,
+            AttemptState.RETRY_REQUESTED,
+        }:
+            submission = verify_submission_attempt_evidence(
+                project, persisted, require_queue=True
+            )
+            _rendered_evidence(persisted, submission, require_qc=True)
+            return "verified", ()
+        if persisted.state is AttemptState.ACCEPTED:
+            accepted_attempt_evidence(project, persisted)
+            return "verified", ()
+        raise ProjectStateError(f"attempt has unknown state: {persisted.state}")
     except ProjectStateError as error:
         detail = str(error)
-        status = "legacy_unverified" if "legacy" in detail else "failed"
+        if "legacy" in detail:
+            status = "legacy_unverified"
+        elif "incomplete" in detail:
+            status = "incomplete"
+        else:
+            status = "failed"
         return status, (detail,)
-    return "verified", ()
 
 
 def _attempt_lineage(attempt: Attempt) -> dict[str, str]:
@@ -476,6 +539,196 @@ def _attempt_lineage(attempt: Attempt) -> dict[str, str]:
     if lineage is None:
         raise ProjectStateError("legacy attempt has unverified project lineage")
     return _lineage_payload(lineage, "attempt")
+
+
+def _planned_integrity_status(attempt: Attempt) -> tuple[str, tuple[str, ...]]:
+    """Classify a planned attempt without mistaking interrupted preparation for clean."""
+    planned = _snapshot_attempt_evidence(attempt)
+    input_upload = attempt.path / "input-upload.json"
+    prepared_paths = (
+        "configured-workflow-api.json",
+        "submission-request.json",
+        "submission-provenance.json",
+        "submission-intent.json",
+        "queue.json",
+    )
+    if not input_upload.exists() and not any(
+        (attempt.path / name).exists() for name in prepared_paths
+    ):
+        return "verified", ()
+    if not input_upload.is_file():
+        raise ProjectStateError("incomplete planned attempt input-upload evidence is invalid")
+    _input_upload_evidence(attempt, planned)
+    if (attempt.path / "submission-intent.json").is_file() and not (
+        attempt.path / "queue.json"
+    ).is_file():
+        _submission_intent_evidence(attempt, None)
+        return "incomplete", (
+            "submission intent has no queue identity; manual ComfyUI lookup is required",
+        )
+    try:
+        _submission_evidence(
+            attempt,
+            planned,
+            require_queue=(attempt.path / "queue.json").is_file(),
+        )
+    except ProjectStateError as error:
+        if "incomplete" not in str(error):
+            raise
+    return "incomplete", ("attempt has reusable prepared submission evidence",)
+
+
+def _input_upload_evidence(
+    attempt: Attempt, planned: Mapping[str, Any]
+) -> dict[str, str]:
+    path = attempt.path / "input-upload.json"
+    artifact = _attempt_artifact(path, "input upload")
+    payload = _read_json(path)
+    if _json_ready(payload) != _json_ready(planned["selected_inputs"]):
+        raise ProjectStateError("attempt input-upload evidence does not match selected inputs")
+    return artifact
+
+
+def _submission_evidence(
+    attempt: Attempt,
+    planned: Mapping[str, Any],
+    *,
+    require_queue: bool,
+) -> dict[str, Any]:
+    """Verify the immutable graph/request evidence that was eligible for submission."""
+    required_paths = {
+        "input_upload": attempt.path / "input-upload.json",
+        "configured_workflow": attempt.path / "configured-workflow-api.json",
+        "submission_request": attempt.path / "submission-request.json",
+        "submission_provenance": attempt.path / "submission-provenance.json",
+    }
+    missing = [name for name, path in required_paths.items() if not path.is_file()]
+    if missing:
+        raise ProjectStateError(
+            "incomplete attempt submission evidence is missing: " + ", ".join(missing)
+        )
+    input_upload = _input_upload_evidence(attempt, planned)
+    configured = _attempt_artifact(
+        required_paths["configured_workflow"], "configured workflow"
+    )
+    request = _attempt_artifact(
+        required_paths["submission_request"], "submission request"
+    )
+    provenance = _attempt_artifact(
+        required_paths["submission_provenance"], "submission provenance"
+    )
+    configured_payload = _read_json(required_paths["configured_workflow"])
+    request_payload = _read_json(required_paths["submission_request"])
+    if _json_ready(request_payload.get("prompt")) != _json_ready(configured_payload):
+        raise ProjectStateError("submission request prompt does not match configured workflow")
+    provenance_payload = _read_json(required_paths["submission_provenance"])
+    if provenance_payload.get("version") != 1:
+        raise ProjectStateError("legacy submission provenance has no versioned evidence")
+    expected_hashes = {
+        "input_upload": input_upload["sha256"],
+        "request": request["sha256"],
+        "source_manifest": planned["artifacts"]["source_manifest"]["sha256"],
+        "base_workflow": planned["artifacts"]["workflow"]["sha256"],
+        "workflow": configured["sha256"],
+    }
+    for name, expected_hash in expected_hashes.items():
+        recorded_hash = provenance_payload.get(name)
+        if not _is_sha256(recorded_hash) or recorded_hash.casefold() != expected_hash:
+            raise ProjectStateError(f"submission provenance {name} hash changed")
+    submission: dict[str, Any] = {
+        "input_upload": input_upload,
+        "configured_workflow": configured,
+        "submission_request": request,
+        "submission_provenance": provenance,
+    }
+    intent_path = attempt.path / "submission-intent.json"
+    if intent_path.exists():
+        submission["intent"] = _submission_intent_evidence(attempt, submission)
+    queue_path = attempt.path / "queue.json"
+    if queue_path.exists() or require_queue:
+        submission["queue"] = _queue_evidence(attempt, submission)
+    return {"planned": _json_ready(planned), "submission": submission}
+
+
+def _submission_intent_evidence(
+    attempt: Attempt, submission: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    path = attempt.path / "submission-intent.json"
+    artifact = _attempt_artifact(path, "submission intent")
+    payload = _read_json(path)
+    if submission is not None:
+        for name in ("submission_request", "submission_provenance"):
+            if _json_ready(payload.get(name)) != _json_ready(submission[name]):
+                raise ProjectStateError(f"submission intent {name} evidence changed")
+    return {"artifact": artifact, **_json_ready(payload)}
+
+
+def _queue_evidence(attempt: Attempt, submission: Mapping[str, Any]) -> dict[str, Any]:
+    path = attempt.path / "queue.json"
+    artifact = _attempt_artifact(path, "ComfyUI queue identity")
+    payload = _read_json(path)
+    prompt_id = payload.get("prompt_id")
+    kind = payload.get("kind")
+    if not isinstance(prompt_id, str) or not prompt_id:
+        raise ProjectStateError("ComfyUI queue identity prompt_id is invalid")
+    if not isinstance(kind, str) or kind not in {"segment", "bridge"}:
+        raise ProjectStateError("ComfyUI queue identity kind is invalid")
+    for name in ("submission_request", "submission_provenance"):
+        if _json_ready(payload.get(name)) != _json_ready(submission[name]):
+            raise ProjectStateError(f"ComfyUI queue identity {name} evidence changed")
+    return {
+        "artifact": artifact,
+        "kind": kind,
+        "prompt_id": prompt_id,
+        "submission_provenance": submission["submission_provenance"],
+        "submission_request": submission["submission_request"],
+    }
+
+
+def _rendered_evidence(
+    attempt: Attempt,
+    submitted: Mapping[str, Any],
+    *,
+    require_qc: bool,
+) -> dict[str, Any]:
+    submission = submitted.get("submission")
+    if not isinstance(submission, Mapping) or not isinstance(submission.get("queue"), Mapping):
+        raise ProjectStateError("incomplete attempt has no verified ComfyUI queue identity")
+    queue = submission["queue"]
+    prompt_id = queue.get("prompt_id")
+    if not isinstance(prompt_id, str):
+        raise ProjectStateError("ComfyUI queue identity prompt_id is invalid")
+    history_path = attempt.path / "history.json"
+    metadata_path = attempt.path / "render-metadata.json"
+    if not history_path.is_file() or not metadata_path.is_file():
+        raise ProjectStateError("incomplete attempt has no rendered history and metadata evidence")
+    history = _attempt_artifact(history_path, "render history")
+    history_payload = _read_json(history_path)
+    if history_payload.get("prompt_id") != prompt_id:
+        raise ProjectStateError("render history prompt_id does not match queue identity")
+    render_metadata = _attempt_artifact(metadata_path, "render metadata")
+    metadata = _read_json(metadata_path)
+    if metadata.get("attempt_id") != attempt.attempt_id:
+        raise ProjectStateError("render metadata belongs to a different attempt")
+    details = metadata.get("details")
+    if not isinstance(details, Mapping) or details.get("prompt_id") != prompt_id:
+        raise ProjectStateError("render metadata prompt_id does not match queue identity")
+    if _json_ready(details.get("submission_request")) != _json_ready(
+        submission["submission_request"]
+    ):
+        raise ProjectStateError("render metadata submission request evidence changed")
+    output = _render_output_evidence(attempt, metadata_path)
+    evidence: dict[str, Any] = {
+        "history": history,
+        "output": output,
+        "render_metadata": render_metadata,
+    }
+    if require_qc:
+        qc_path = attempt.path / "qc.yaml"
+        evidence["qc"] = _attempt_artifact(qc_path, "QC")
+        if _selected_video_evidence(attempt, metadata_path, qc_path) != output:
+            raise ProjectStateError("QC output evidence does not match render metadata")
+    return evidence
 
 
 def _acceptance_evidence(attempt: Attempt) -> dict[str, Any] | None:
@@ -487,19 +740,24 @@ def _acceptance_evidence(attempt: Attempt) -> dict[str, Any] | None:
         raise ProjectStateError(
             "accepted attempt requires render metadata and QC evidence together"
         )
-    lineage = _attempt_lineage(attempt)
-    source_manifest = _source_manifest_evidence(attempt, lineage)
-    provenance = _attempt_artifact(attempt.path / "provenance.json", "provenance")
-    render_metadata = _attempt_artifact(metadata_path, "render metadata")
-    qc = _attempt_artifact(qc_path, "QC")
-    output = _selected_video_evidence(attempt, metadata_path, qc_path)
+    planned = _snapshot_attempt_evidence(attempt)
+    try:
+        submitted = _submission_evidence(attempt, planned, require_queue=True)
+        rendered = _rendered_evidence(attempt, submitted, require_qc=True)
+    except ProjectStateError as error:
+        if "incomplete" in str(error):
+            return None
+        raise
     return {
-        "lineage": lineage,
-        "output": output,
-        "provenance": provenance,
-        "qc": qc,
-        "render_metadata": render_metadata,
-        "source_manifest": source_manifest,
+        "lineage": planned["lineage"],
+        "output": rendered["output"],
+        "planned": submitted["planned"],
+        "provenance": planned["provenance"],
+        "qc": rendered["qc"],
+        "render_metadata": rendered["render_metadata"],
+        "render_history": rendered["history"],
+        "source_manifest": planned["artifacts"]["source_manifest"],
+        "submission": submitted["submission"],
     }
 
 
@@ -514,19 +772,9 @@ def _accepted_attempt_evidence(
         raise ProjectStateError(
             "attempt project lineage does not match the current project manifest"
         )
-    source_manifest = _source_manifest_evidence(persisted, lineage)
-    provenance_path = persisted.path / "provenance.json"
-    provenance_payload = _read_json(provenance_path)
-    if provenance_payload.get("source_manifest") != lineage["source_manifest_sha256"]:
-        raise ProjectStateError("attempt provenance source-manifest hash changed")
-    if _lineage_payload(provenance_payload.get("lineage"), "attempt provenance") != lineage:
-        raise ProjectStateError("attempt provenance project lineage changed")
-    provenance = _attempt_artifact(provenance_path, "provenance")
-    metadata_path = persisted.path / "render-metadata.json"
-    qc_path = persisted.path / "qc.yaml"
-    render_metadata = _attempt_artifact(metadata_path, "render metadata")
-    qc = _attempt_artifact(qc_path, "QC")
-    output = _selected_video_evidence(persisted, metadata_path, qc_path)
+    current = _acceptance_evidence(persisted)
+    if current is None:
+        raise ProjectStateError("incomplete accepted attempt has no full submitted render evidence")
     acceptances = [
         (path, _read_json(path))
         for path in decision_paths
@@ -538,14 +786,6 @@ def _accepted_attempt_evidence(
     sealed = acceptance.get("accepted_evidence")
     if not isinstance(sealed, Mapping):
         raise ProjectStateError("legacy accepted attempt has unverified artifact evidence")
-    current = {
-        "lineage": lineage,
-        "output": output,
-        "provenance": provenance,
-        "qc": qc,
-        "render_metadata": render_metadata,
-        "source_manifest": source_manifest,
-    }
     if _json_ready(sealed) != current:
         raise ProjectStateError("accepted attempt immutable artifact evidence changed")
     seal = _read_json(persisted.path / "acceptance.json")
@@ -584,6 +824,16 @@ def _source_manifest_evidence(
 def _selected_video_evidence(
     attempt: Attempt, metadata_path: Path, qc_path: Path
 ) -> dict[str, str]:
+    output = _render_output_evidence(attempt, metadata_path)
+    qc = _read_qc(qc_path)
+    if qc.get("attempt_id") != attempt.attempt_id:
+        raise ProjectStateError("QC record belongs to a different attempt")
+    if _json_ready(qc.get("video")) != output:
+        raise ProjectStateError("QC video evidence does not match render metadata")
+    return output
+
+
+def _render_output_evidence(attempt: Attempt, metadata_path: Path) -> dict[str, str]:
     metadata = _read_json(metadata_path)
     if metadata.get("attempt_id") != attempt.attempt_id:
         raise ProjectStateError("render metadata belongs to a different attempt")
@@ -592,13 +842,8 @@ def _selected_video_evidence(
         raise ProjectStateError("accepted attempt has no render outputs")
     candidates = [outputs[name] for name in ("segment", "bridge") if name in outputs]
     if len(candidates) != 1 or not isinstance(candidates[0], Mapping):
-        raise ProjectStateError("accepted attempt has no unambiguous video output")
+        raise ProjectStateError("rendered attempt has no unambiguous video output")
     output = _hashed_entry(candidates[0], "accepted attempt output")
-    qc = _read_qc(qc_path)
-    if qc.get("attempt_id") != attempt.attempt_id:
-        raise ProjectStateError("QC record belongs to a different attempt")
-    if _json_ready(qc.get("video")) != output:
-        raise ProjectStateError("QC video evidence does not match render metadata")
     return output
 
 

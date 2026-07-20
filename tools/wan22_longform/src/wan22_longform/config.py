@@ -21,6 +21,8 @@ class ConfigError(ValueError):
 class Models:
     high: str
     low: str
+    vae: str
+    text_encoder: str
 
 
 @dataclass(frozen=True)
@@ -601,6 +603,8 @@ def resolve_preset(project: ProjectConfig, presets: PresetCatalog) -> ResolvedRe
         models=Models(
             high=_string(models.get("high"), "models.high"),
             low=_string(models.get("low"), "models.low"),
+            vae=_string(models.get("vae"), "models.vae"),
+            text_encoder=_string(models.get("text_encoder"), "models.text_encoder"),
         ),
         permissiveness=Permissiveness(
             mode=preset.permissiveness_mode,
@@ -626,10 +630,14 @@ def resolve_preset(project: ProjectConfig, presets: PresetCatalog) -> ResolvedRe
 def validate_lora_policy(config: ResolvedRenderConfig, files: ModelFiles) -> None:
     if config.models.high.casefold() == config.models.low.casefold():
         raise ConfigError("high and low model files must differ")
-    if not files.contains(config.models.high):
-        raise ConfigError(f"configured high model is missing: {config.models.high}")
-    if not files.contains(config.models.low):
-        raise ConfigError(f"configured low model is missing: {config.models.low}")
+    for role, filename in (
+        ("high", config.models.high),
+        ("low", config.models.low),
+        ("vae", config.models.vae),
+        ("text_encoder", config.models.text_encoder),
+    ):
+        if not files.contains(filename):
+            raise ConfigError(f"configured {role} model is missing: {filename}")
     if config.vbvr.is_enabled and config.vbvr.branch != "high":
         raise ConfigError("VBVR must be high-noise only")
     if config.motion.is_enabled and config.motion.branch != "high":

@@ -27,9 +27,13 @@ from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
 from wan22_longform.project import (  # noqa: E402
     Attempt,
     AttemptState,
+    accepted_attempt_evidence,
     create_attempt,
+    inspect_attempt_integrity,
+    load_attempt,
     transition_attempt,
 )
+from wan22_longform import cli  # noqa: E402
 from wan22_longform.qc import initialize_qc, read_qc  # noqa: E402
 from wan22_longform import render as render_module  # noqa: E402
 from wan22_longform.render import (  # noqa: E402
@@ -57,22 +61,41 @@ class FakeTransport:
 
 
 class FakeRenderClient:
-    def __init__(self, video: Path) -> None:
+    def __init__(
+        self,
+        video: Path,
+        *,
+        fail_uploads: int = 0,
+        fail_submits: int = 0,
+        fail_waits: int = 0,
+    ) -> None:
         self.video = video
         self.submitted: list[dict[str, dict[str, object]]] = []
         self.waited: list[str] = []
         self.uploaded: list[Path] = []
+        self.fail_uploads = fail_uploads
+        self.fail_submits = fail_submits
+        self.fail_waits = fail_waits
 
     def upload_image(self, path: Path) -> str:
         self.uploaded.append(path)
+        if self.fail_uploads:
+            self.fail_uploads -= 1
+            raise TimeoutError("fixture upload failure")
         return "uploaded-opening.png"
 
     def submit(self, graph: dict[str, dict[str, object]]) -> str:
         self.submitted.append(graph)
+        if self.fail_submits:
+            self.fail_submits -= 1
+            raise TimeoutError("fixture submit response failure")
         return "fixture-prompt"
 
     def wait(self, prompt_id: str) -> HistoryResult:
         self.waited.append(prompt_id)
+        if self.fail_waits:
+            self.fail_waits -= 1
+            raise TimeoutError("fixture wait timeout")
         return HistoryResult(
             prompt_id=prompt_id,
             outputs=(
@@ -90,6 +113,64 @@ class FakeRenderClient:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(output.local_path, destination)
         return destination
+
+
+def write_submission_fixture(attempt: Attempt, *, kind: str = "segment") -> dict[str, str]:
+    def write(path: Path, payload: object) -> None:
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    input_upload = attempt.path / "input-upload.json"
+    configured = attempt.path / "configured-workflow-api.json"
+    request = attempt.path / "submission-request.json"
+    provenance = attempt.path / "submission-provenance.json"
+    write(input_upload, {})
+    configured_payload = json.loads(
+        (attempt.path / "workflow-api.json").read_text(encoding="utf-8")
+    )
+    write(configured, configured_payload)
+    write(request, {"prompt": configured_payload})
+    source_manifest = next(attempt.path.glob("source-manifest.*"))
+    write(
+        provenance,
+        {
+            "version": 1,
+            "input_upload": hashlib.sha256(input_upload.read_bytes()).hexdigest(),
+            "request": hashlib.sha256(request.read_bytes()).hexdigest(),
+            "source_manifest": hashlib.sha256(source_manifest.read_bytes()).hexdigest(),
+            "base_workflow": hashlib.sha256(
+                (attempt.path / "workflow-api.json").read_bytes()
+            ).hexdigest(),
+            "workflow": hashlib.sha256(configured.read_bytes()).hexdigest(),
+        },
+    )
+    request_evidence = {
+        "path": str(request.resolve()),
+        "sha256": hashlib.sha256(request.read_bytes()).hexdigest(),
+    }
+    provenance_evidence = {
+        "path": str(provenance.resolve()),
+        "sha256": hashlib.sha256(provenance.read_bytes()).hexdigest(),
+    }
+    write(
+        attempt.path / "submission-intent.json",
+        {
+            "submission_request": request_evidence,
+            "submission_provenance": provenance_evidence,
+        },
+    )
+    write(
+        attempt.path / "queue.json",
+        {
+            "kind": kind,
+            "prompt_id": "fixture-prompt",
+            "submission_request": request_evidence,
+            "submission_provenance": provenance_evidence,
+        },
+    )
+    write(attempt.path / "history.json", {"prompt_id": "fixture-prompt", "history": {}})
+    return request_evidence
 
 
 class ComfyClientTests(unittest.TestCase):
@@ -352,7 +433,17 @@ class RenderSegmentTests(unittest.TestCase):
             AttemptState.NEEDS_REVIEW,
         ):
             upstream = transition_attempt(upstream, state, "fixture")
-        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
+        request_evidence = write_submission_fixture(upstream)
+        write_metadata(
+            upstream,
+            RenderMetadata(
+                outputs={"segment": self.video},
+                details={
+                    "prompt_id": "fixture-prompt",
+                    "submission_request": request_evidence,
+                },
+            ),
+        )
         sheet = upstream.path / "sheet.png"
         sheet.write_bytes(b"sheet")
         initialize_qc(
@@ -426,6 +517,8 @@ class RenderSegmentTests(unittest.TestCase):
         graph = client.submitted[0]
         self.assertEqual(graph["1"]["inputs"]["unet_name"], "configured-high.safetensors")
         self.assertEqual(graph["2"]["inputs"]["unet_name"], "configured-low.safetensors")
+        self.assertEqual(graph["5"]["inputs"]["clip_name"], "umt5_xxl_fp8_e4m3fn_scaled.safetensors")
+        self.assertEqual(graph["6"]["inputs"]["vae_name"], "wan_2.1_vae.safetensors")
         self.assertEqual(graph["7"]["inputs"]["text"], "configured positive prompt")
         self.assertEqual(graph["8"]["inputs"]["text"], "configured negative prompt")
         self.assertEqual(graph["9"]["inputs"]["image"], "uploaded-opening.png")
@@ -454,6 +547,111 @@ class RenderSegmentTests(unittest.TestCase):
             render_segment(project, "S020", "S020_C001", client)
 
         self.assertEqual(client.submitted, [])
+
+    def test_missing_vae_or_text_encoder_stops_before_uploading_or_submitting(self) -> None:
+        for role in ("vae", "text_encoder"):
+            with self.subTest(role=role):
+                source = dict(self.project.source)
+                source["model_files"] = [
+                    name for name in source["model_files"] if name != source["models"][role]
+                ]
+                client = FakeRenderClient(self.video)
+
+                with self.assertRaisesRegex(ValueError, f"models.{role}"):
+                    render_segment(
+                        ProjectConfig(path=self.manifest, source=source),
+                        "S020",
+                        "S020_C001",
+                        client,
+                    )
+
+                self.assertEqual(client.uploaded, [])
+                self.assertEqual(client.submitted, [])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_accepted_submission_chain_tampering_blocks_status_continuation_flf_and_assembly(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(f"{where}-{index}".encode("utf-8"))
+                frames.append(frame)
+            return frames
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        attempt = render_segment(self.project, "S010", "S010_C001", FakeRenderClient(self.video))
+        tail = Path(read_qc(attempt.path / "qc.yaml")["candidate_frames"]["tail"][0]["path"])
+        accepted = transition_attempt(
+            attempt,
+            AttemptState.ACCEPTED,
+            "approved fixture",
+            selected_continuation_frame=tail,
+        )
+        provenance_path = accepted.path / "submission-provenance.json"
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        artifacts = {
+            "source manifest": next(accepted.path.glob("source-manifest.*")),
+            "workflow snapshot": accepted.path / "workflow-api.json",
+            "request snapshot": accepted.path / "request.json",
+            "input upload": accepted.path / "input-upload.json",
+            "configured workflow": accepted.path / "configured-workflow-api.json",
+            "submission request": accepted.path / "submission-request.json",
+            "submission provenance": provenance_path,
+        }
+        mutations = {
+            **{
+                name: (path, lambda target: target.write_bytes(target.read_bytes() + b"\n"))
+                for name, path in artifacts.items()
+            },
+            **{
+                f"submission provenance {name} hash": (
+                    provenance_path,
+                    lambda target, key=name: target.write_text(
+                        json.dumps({**provenance, key: "0" * 64}, indent=2, sort_keys=True)
+                        + "\n",
+                        encoding="utf-8",
+                    ),
+                )
+                for name in ("request", "source_manifest", "base_workflow", "workflow")
+            },
+        }
+        continuation_shot = {
+            "segments": [{"id": "S010_C001"}, {"id": "S010_C002"}],
+        }
+        continuation_segment = {"id": "S010_C002"}
+        for label, (path, mutate) in mutations.items():
+            with self.subTest(label=label):
+                original = path.read_bytes()
+                mutate(path)
+                status, failures = inspect_attempt_integrity(self.project, accepted)
+                self.assertEqual(status, "failed")
+                self.assertTrue(failures)
+                with self.assertRaises(Exception):
+                    accepted_attempt_evidence(self.project, accepted)
+                self.assertEqual(
+                    cli._attempt_payload(accepted, self.project)["state"],
+                    "integrity_failed",
+                )
+                with self.assertRaises(RenderError):
+                    render_module._continuation_selection(
+                        self.project,
+                        "S010",
+                        continuation_shot,
+                        continuation_segment,
+                        "S010_C001",
+                    )
+                with self.assertRaises(RenderError):
+                    render_module._accepted_bridge_endpoint(self.project, tail, "tail")
+                with self.assertRaises(Exception):
+                    cli._accepted_project_attempts(self.project)
+                path.write_bytes(original)
 
     @patch("wan22_longform.render.create_contact_sheet")
     @patch("wan22_longform.render.extract_candidate_frames")
@@ -552,6 +750,44 @@ class RenderSegmentTests(unittest.TestCase):
         self.assertEqual(resumed.path, planned.path)
         self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
         self.assertEqual(len(list(planned.path.parent.iterdir())), 1)
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_segment_recovery_keeps_prepared_evidence_and_never_duplicates_submission(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.return_value = [self.opening]
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        cases = (
+            ("upload", {"fail_uploads": 1}),
+            ("submit", {"fail_submits": 1}),
+            ("wait", {"fail_waits": 1}),
+        )
+        for stage, failures in cases:
+            with self.subTest(stage=stage):
+                client = FakeRenderClient(self.video, **failures)
+                with self.assertRaises(TimeoutError):
+                    render_segment(self.project, "S010", "S010_C001", client)
+                attempt_path = sorted(
+                    (self.root / "attempts" / "S010" / "S010_C001").iterdir()
+                )[-1]
+                failed = load_attempt(attempt_path)
+                self.assertTrue((failed.path / "input-upload.json").is_file())
+                if stage == "upload":
+                    resumed = resume_attempt(self.project, failed, client)
+                    self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+                    self.assertEqual(len(client.submitted), 1)
+                elif stage == "submit":
+                    self.assertTrue((failed.path / "submission-intent.json").is_file())
+                    with self.assertRaisesRegex(RenderError, "unknown submit outcome"):
+                        resume_attempt(self.project, failed, client)
+                    self.assertEqual(len(client.submitted), 1)
+                else:
+                    self.assertTrue((failed.path / "queue.json").is_file())
+                    resumed = resume_attempt(self.project, failed, client)
+                    self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+                    self.assertEqual(len(client.submitted), 1)
+                    self.assertEqual(client.waited, ["fixture-prompt", "fixture-prompt"])
 
     def test_resume_rejects_a_planned_attempt_from_another_project(self) -> None:
         planned = create_attempt(
@@ -723,7 +959,17 @@ class RenderSegmentTests(unittest.TestCase):
             AttemptState.NEEDS_REVIEW,
         ):
             upstream = transition_attempt(upstream, state, "fixture")
-        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
+        request_evidence = write_submission_fixture(upstream)
+        write_metadata(
+            upstream,
+            RenderMetadata(
+                outputs={"segment": self.video},
+                details={
+                    "prompt_id": "fixture-prompt",
+                    "submission_request": request_evidence,
+                },
+            ),
+        )
         sheet = upstream.path / "sheet.png"
         sheet.write_bytes(b"sheet")
         initialize_qc(
@@ -927,7 +1173,17 @@ class RenderBridgeTests(unittest.TestCase):
             contact_sheet=sheet,
             automatic_continuation_authorized=False,
         )
-        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
+        request_evidence = write_submission_fixture(upstream)
+        write_metadata(
+            upstream,
+            RenderMetadata(
+                outputs={"segment": self.video},
+                details={
+                    "prompt_id": "fixture-prompt",
+                    "submission_request": request_evidence,
+                },
+            ),
+        )
         transition_attempt(
             upstream,
             AttemptState.ACCEPTED,
@@ -952,6 +1208,57 @@ class RenderBridgeTests(unittest.TestCase):
         self.assertEqual(uploaded["first_image"]["sha256"], hashlib.sha256(b"first-frame").hexdigest())
         self.assertEqual(uploaded["last_image"]["sha256"], hashlib.sha256(b"last-frame").hexdigest())
 
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_bridge_recovery_keeps_prepared_evidence_and_never_duplicates_submission(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.return_value = [self.first]
+        contact_sheet.side_effect = lambda _frames, destination: self._sheet(destination)
+        source = dict(self.source)
+        source["bridges"] = [
+            {
+                "id": "B010",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "purpose": "technical_smoke",
+                "base_source_image": str(self.first),
+                "frames": 33,
+            }
+        ]
+        self.manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+        project = ProjectConfig(path=self.manifest, source=source)
+        cases = (
+            ("upload", {"fail_uploads": 1}),
+            ("submit", {"fail_submits": 1}),
+            ("wait", {"fail_waits": 1}),
+        )
+        for stage, failures in cases:
+            with self.subTest(stage=stage):
+                client = FakeRenderClient(self.video, **failures)
+                with self.assertRaises(TimeoutError):
+                    render_bridge(project, "B010", client)
+                attempt_path = sorted(
+                    (self.root / "attempts" / "S010" / "B010").iterdir()
+                )[-1]
+                failed = load_attempt(attempt_path)
+                self.assertTrue((failed.path / "input-upload.json").is_file())
+                if stage == "upload":
+                    resumed = resume_attempt(project, failed, client)
+                    self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+                    self.assertEqual(len(client.submitted), 1)
+                elif stage == "submit":
+                    self.assertTrue((failed.path / "submission-intent.json").is_file())
+                    with self.assertRaisesRegex(RenderError, "unknown submit outcome"):
+                        resume_attempt(project, failed, client)
+                    self.assertEqual(len(client.submitted), 1)
+                else:
+                    self.assertTrue((failed.path / "queue.json").is_file())
+                    resumed = resume_attempt(project, failed, client)
+                    self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+                    self.assertEqual(len(client.submitted), 1)
+                    self.assertEqual(client.waited, ["fixture-prompt", "fixture-prompt"])
+
     def test_bridge_rejects_changed_accepted_endpoint_evidence(self) -> None:
         upstream = create_attempt(self.project, "S010", "S010_C001")
         for state in (
@@ -970,7 +1277,17 @@ class RenderBridgeTests(unittest.TestCase):
             contact_sheet=sheet,
             automatic_continuation_authorized=False,
         )
-        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
+        request_evidence = write_submission_fixture(upstream)
+        write_metadata(
+            upstream,
+            RenderMetadata(
+                outputs={"segment": self.video},
+                details={
+                    "prompt_id": "fixture-prompt",
+                    "submission_request": request_evidence,
+                },
+            ),
+        )
         transition_attempt(
             upstream,
             AttemptState.ACCEPTED,

@@ -26,7 +26,7 @@ class ConfigResolutionTests(unittest.TestCase):
             project_path.write_text(
                 """{
   "preset": "P3_MYSTIC_MOTION",
-  "models": {"high": "wan-high.safetensors", "low": "wan-low.safetensors"},
+  "models": {"high": "wan-high.safetensors", "low": "wan-low.safetensors", "vae": "wan-vae.safetensors", "text_encoder": "wan-text.safetensors"},
   "loras": {"identity": {"mode": "single_both", "file": "identity.safetensors"}}
 }
 """,
@@ -40,6 +40,8 @@ class ConfigResolutionTests(unittest.TestCase):
             self.assertEqual(project.source["preset"], "P3_MYSTIC_MOTION")
             self.assertEqual(resolved.models.high, "wan-high.safetensors")
             self.assertEqual(resolved.models.low, "wan-low.safetensors")
+            self.assertEqual(resolved.models.vae, "wan-vae.safetensors")
+            self.assertEqual(resolved.models.text_encoder, "wan-text.safetensors")
             self.assertEqual(resolved.permissiveness.mode, "mystic")
             self.assertEqual(resolved.vbvr.strength, 0.25)
             self.assertEqual(resolved.motion.strength, 0.25)
@@ -53,7 +55,7 @@ class ConfigResolutionTests(unittest.TestCase):
             project_path.write_text(
                 """{
   "preset": "P0_IDENTITY_BASELINE",
-  "models": {"high": "exact-high.safetensors", "low": "exact-low.safetensors"}
+  "models": {"high": "exact-high.safetensors", "low": "exact-low.safetensors", "vae": "exact-vae.safetensors", "text_encoder": "exact-text.safetensors"}
 }
 """,
                 encoding="utf-8",
@@ -65,6 +67,8 @@ class ConfigResolutionTests(unittest.TestCase):
 
             self.assertEqual(resolved.models.high, "exact-high.safetensors")
             self.assertEqual(resolved.models.low, "exact-low.safetensors")
+            self.assertEqual(resolved.models.vae, "exact-vae.safetensors")
+            self.assertEqual(resolved.models.text_encoder, "exact-text.safetensors")
 
     def test_indented_yaml_manifest_is_loaded_safely(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -74,6 +78,8 @@ class ConfigResolutionTests(unittest.TestCase):
 models:
   high: wan-high.safetensors
   low: wan-low.safetensors
+  vae: wan-vae.safetensors
+  text_encoder: wan-text.safetensors
 """,
                 encoding="utf-8",
             )
@@ -89,7 +95,7 @@ models:
             project_path.write_text(
                 """{
   "preset": "P0_IDENTITY_BASELINE",
-  "models": {"high": "wan-high.safetensors", "low": "wan-low.safetensors"},
+  "models": {"high": "wan-high.safetensors", "low": "wan-low.safetensors", "vae": "wan-vae.safetensors", "text_encoder": "wan-text.safetensors"},
   "loras": {
     "corrective": {
       "enabled": true,
@@ -108,7 +114,7 @@ models:
                 path=Path("project.yaml"),
                 source={
                     "preset": preset_name,
-                    "models": {"high": "wan-high.safetensors", "low": "wan-low.safetensors"},
+                    "models": {"high": "wan-high.safetensors", "low": "wan-low.safetensors", "vae": "wan-vae.safetensors", "text_encoder": "wan-text.safetensors"},
                 },
             )
             self.assertEqual(resolve_preset(project, presets).corrective.strength, 0.0)
@@ -150,7 +156,14 @@ models:
 
         validate_lora_policy(
             resolved,
-            ModelFiles.from_names({"wan-high.safetensors", "wan-low.safetensors"}),
+            ModelFiles.from_names(
+                {
+                    "wan-high.safetensors",
+                    "wan-low.safetensors",
+                    "wan-vae.safetensors",
+                    "wan-text-encoder.safetensors",
+                }
+            ),
         )
 
 

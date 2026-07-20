@@ -38,6 +38,8 @@ def base_render_config(**changes: object) -> ResolvedRenderConfig:
         "models": Models(
             high="wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
             low="wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+            vae="wan_2.1_vae.safetensors",
+            text_encoder="umt5_xxl_fp8_e4m3fn_scaled.safetensors",
         ),
         "permissiveness": Permissiveness(mode="none"),
         "identity": IdentityLora(),
@@ -54,6 +56,8 @@ def available_files(*extra: str) -> ModelFiles:
         {
             "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
             "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+            "wan_2.1_vae.safetensors",
+            "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
             "vbvr.safetensors",
             "motion.safetensors",
             "mystic.safetensors",
@@ -182,7 +186,12 @@ class WorkflowPatchTests(unittest.TestCase):
 
     def test_builder_patches_exact_high_and_low_model_names(self) -> None:
         render = base_render_config(
-            models=Models("configured-high.safetensors", "configured-low.safetensors")
+            models=Models(
+                "configured-high.safetensors",
+                "configured-low.safetensors",
+                "configured-vae.safetensors",
+                "configured-text-encoder.safetensors",
+            )
         )
 
         graph = build_api_graph(
@@ -196,6 +205,38 @@ class WorkflowPatchTests(unittest.TestCase):
         self.assertEqual(
             find_unique_node(graph, "MODEL_LOW", "UNETLoader").node["inputs"]["unet_name"],
             "configured-low.safetensors",
+        )
+
+    def test_builder_patches_all_four_declared_native_model_roles(self) -> None:
+        render = base_render_config(
+            models=Models(
+                "configured-high.safetensors",
+                "configured-low.safetensors",
+                "configured-vae.safetensors",
+                "configured-text-encoder.safetensors",
+            )
+        )
+
+        graph = build_api_graph(
+            load_fixture("native_segment_api.json"),
+            render,
+            available_files(
+                "configured-high.safetensors",
+                "configured-low.safetensors",
+                "configured-vae.safetensors",
+                "configured-text-encoder.safetensors",
+            ),
+        )
+
+        self.assertEqual(
+            find_unique_node(graph, "VAE", "VAELoader").node["inputs"]["vae_name"],
+            "configured-vae.safetensors",
+        )
+        self.assertEqual(
+            find_unique_node(graph, "TEXT_ENCODER", "CLIPLoader").node["inputs"][
+                "clip_name"
+            ],
+            "configured-text-encoder.safetensors",
         )
 
     def test_enabled_lora_without_configured_filename_is_rejected(self) -> None:

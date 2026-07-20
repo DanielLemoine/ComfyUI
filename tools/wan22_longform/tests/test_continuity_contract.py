@@ -613,6 +613,67 @@ class ContinuityContractTests(unittest.TestCase):
         path.write_bytes(contents)
         return path
 
+    @staticmethod
+    def _write_json(path: Path, payload: object) -> None:
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    def _submission_fixture(self, attempt: Attempt) -> dict[str, str]:
+        input_upload = attempt.path / "input-upload.json"
+        configured = attempt.path / "configured-workflow-api.json"
+        request = attempt.path / "submission-request.json"
+        provenance = attempt.path / "submission-provenance.json"
+        self._write_json(input_upload, {})
+        configured_payload = json.loads(
+            (attempt.path / "workflow-api.json").read_text(encoding="utf-8")
+        )
+        self._write_json(configured, configured_payload)
+        self._write_json(request, {"prompt": configured_payload})
+        source_manifest = next(attempt.path.glob("source-manifest.*"))
+        self._write_json(
+            provenance,
+            {
+                "version": 1,
+                "input_upload": hashlib.sha256(input_upload.read_bytes()).hexdigest(),
+                "request": hashlib.sha256(request.read_bytes()).hexdigest(),
+                "source_manifest": hashlib.sha256(source_manifest.read_bytes()).hexdigest(),
+                "base_workflow": hashlib.sha256(
+                    (attempt.path / "workflow-api.json").read_bytes()
+                ).hexdigest(),
+                "workflow": hashlib.sha256(configured.read_bytes()).hexdigest(),
+            },
+        )
+        request_evidence = {
+            "path": str(request.resolve()),
+            "sha256": hashlib.sha256(request.read_bytes()).hexdigest(),
+        }
+        provenance_evidence = {
+            "path": str(provenance.resolve()),
+            "sha256": hashlib.sha256(provenance.read_bytes()).hexdigest(),
+        }
+        self._write_json(
+            attempt.path / "submission-intent.json",
+            {
+                "submission_request": request_evidence,
+                "submission_provenance": provenance_evidence,
+            },
+        )
+        self._write_json(
+            attempt.path / "queue.json",
+            {
+                "kind": "segment",
+                "prompt_id": "fixture-prompt",
+                "submission_request": request_evidence,
+                "submission_provenance": provenance_evidence,
+            },
+        )
+        self._write_json(
+            attempt.path / "history.json",
+            {"prompt_id": "fixture-prompt", "history": {}},
+        )
+        return request_evidence
+
     def _review_attempt(
         self, shot_id: str, segment_id: str, project: ProjectConfig | None = None
     ) -> tuple[Attempt, Path, Path]:
@@ -630,7 +691,17 @@ class ContinuityContractTests(unittest.TestCase):
             contact_sheet=sheet,
             automatic_continuation_authorized=False,
         )
-        write_metadata(attempt, RenderMetadata(outputs={"segment": self.video}))
+        request_evidence = self._submission_fixture(attempt)
+        write_metadata(
+            attempt,
+            RenderMetadata(
+                outputs={"segment": self.video},
+                details={
+                    "prompt_id": "fixture-prompt",
+                    "submission_request": request_evidence,
+                },
+            ),
+        )
         return attempt, head, tail
 
     def _accepted_attempt(

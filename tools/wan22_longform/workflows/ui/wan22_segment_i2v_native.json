@@ -165,6 +165,11 @@
             294
           ],
           "type": "VIDEO"
+        },
+        {
+          "name": "FRAMES",
+          "links": null,
+          "type": "IMAGE"
         }
       ],
       "properties": {
@@ -281,9 +286,9 @@
         "id": "84e2cf3f-de93-40ef-ab22-b9375296917b",
         "version": 1,
         "state": {
-          "lastGroupId": 19,
+          "lastGroupId": 20,
           "lastNodeId": 166,
-          "lastLinkId": 296,
+          "lastLinkId": 297,
           "lastRerouteId": 0
         },
         "revision": 0,
@@ -304,7 +309,7 @@
             3190,
             180,
             120,
-            60
+            80
           ]
         },
         "inputs": [
@@ -460,6 +465,19 @@
             "pos": [
               3210,
               200
+            ]
+          },
+          {
+            "id": "28f7d09d-9d43-4c5f-92a4-b22a61ce8dc5",
+            "name": "FRAMES",
+            "type": "IMAGE",
+            "linkIds": [
+              297
+            ],
+            "localized_name": "FRAMES",
+            "pos": [
+              3210,
+              230
             ]
           }
         ],
@@ -863,7 +881,8 @@
                 "type": "IMAGE",
                 "slot_index": 0,
                 "links": [
-                  182
+                  182,
+                  297
                 ]
               }
             ],
@@ -1157,8 +1176,8 @@
             "id": 166,
             "type": "LoraLoaderModelOnly",
             "pos": [
-              500,
-              20
+              1500,
+              -200
             ],
             "size": [
               400,
@@ -1291,8 +1310,8 @@
             "id": 165,
             "type": "LoraLoaderModelOnly",
             "pos": [
-              500,
-              -220
+              1500,
+              -450
             ],
             "size": [
               400,
@@ -1955,6 +1974,19 @@
             "color": "#3f789e",
             "font_size": 24,
             "flags": {}
+          },
+          {
+            "id": 20,
+            "title": "Identity LoRA (sgfw)",
+            "bounding": [
+              1450,
+              -530,
+              500,
+              560
+            ],
+            "color": "#704c99",
+            "font_size": 24,
+            "flags": {}
           }
         ],
         "links": [
@@ -2157,6 +2189,14 @@
             "target_id": -20,
             "target_slot": 0,
             "type": "VIDEO"
+          },
+          {
+            "id": 297,
+            "origin_id": 87,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 1,
+            "type": "IMAGE"
           },
           {
             "id": 239,

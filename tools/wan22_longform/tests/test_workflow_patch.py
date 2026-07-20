@@ -760,6 +760,10 @@ class WorkflowPatchTests(unittest.TestCase):
         self.assertTrue(has_link(162, 0, 163, 1))
         self.assertTrue(has_link(163, 1, 98, 7))
         self.assertTrue(has_link(162, 0, 94, 2))
+        subgraph_outputs = {output["name"]: output for output in subgraph["outputs"]}
+        self.assertEqual(set(subgraph_outputs), {"VIDEO", "FRAMES"})
+        self.assertEqual(subgraph_outputs["FRAMES"]["type"], "IMAGE")
+        self.assertTrue(has_link(87, 0, -20, 1))
 
         identity_lora = "wan22-i2v-a14b\\sgfw\\wan22_i2v_a14b_sgfw.safetensors"
         identity_nodes = {
@@ -774,6 +778,17 @@ class WorkflowPatchTests(unittest.TestCase):
         for title in ("LORA_IDENTITY_HIGH", "LORA_IDENTITY_LOW"):
             with self.subTest(title=title):
                 self.assertEqual(identity_nodes[title]["widgets_values"], [identity_lora, 0.8])
+
+        identity_groups = [
+            group
+            for group in subgraph["groups"]
+            if group["title"] == "Identity LoRA (sgfw)"
+        ]
+        self.assertEqual(len(identity_groups), 1)
+        identity_group = identity_groups[0]
+        self.assertEqual(identity_group["bounding"], [1450, -530, 500, 560])
+        self.assertEqual(identity_nodes["LORA_IDENTITY_HIGH"]["pos"], [1500, -450])
+        self.assertEqual(identity_nodes["LORA_IDENTITY_LOW"]["pos"], [1500, -200])
 
         normal_routes = (
             (95, 165, 0),

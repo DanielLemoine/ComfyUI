@@ -1,9 +1,10 @@
 # Wan2.2 long-form operator package
 
-This package supplies two native ComfyUI API/UI workflows and a local-only operator runner:
+This package supplies two native ComfyUI API/UI workflows, one six-segment manual sequence workflow, and a local-only operator runner:
 
 - `wan22_segment_i2v_native`: a quality-first Wan 2.2 image-to-video segment.
 - `wan22_bridge_flf2v_native`: a native first/last-frame bridge with two explicit endpoint images.
+- `wan22_six_segment_sequence_native`: six optionally rendered or reused I2V sections with one assembled final MP4.
 - `wan22_longform.cli`: immutable attempts, QC evidence, accepted-only assembly records, and copy-only workflow deployment.
 
 It is intentionally more than a single graph. The graphs create media; the runner preserves the evidence needed to choose continuation frames, retry safely, and assemble only reviewed outputs. Each assembly is a separate immutable record, so accepting a segment never turns that reusable source attempt into an assembly state.
@@ -47,7 +48,7 @@ The persisted I2V graph uses stable executable titles: `PROMPT_POSITIVE`, `PROMP
 
 ### Manual ComfyUI execution
 
-The two deployed UI workflows are complete manual canvases: their `LoadImage` and
+The three deployed UI workflows are complete manual canvases: their `LoadImage` and
 `SaveVideo` nodes are already wired to the native Wan subgraph. Open them from
 ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
 `.NOT_BUILT` marker.
@@ -64,6 +65,22 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
   `BRIDGE_FIRST_IMAGE` and `BRIDGE_LAST_IMAGE`, set `PROMPT_POSITIVE`, then
   click **Run**. Its default is 640x640 and 81 frames; the MP4 is saved below
   `D:\AI\outputs\wan22_longform\bridge_`.
+- **`wan22_six_segment_sequence_native`**: this is the long-form manual
+  canvas. `ENABLE_SEGMENT_nn` decides whether that numbered section appears in
+  the final sequence. `USE_EXISTING_SEGMENT_nn` means use an already rendered
+  MP4 instead of generating that section again: upload/select that MP4 in its
+  matching `CACHED_SEGMENT_nn` Video Helper Suite node. Leave it false to
+  generate from the segment's own prompt. Segment 1 always starts with
+  `SEED_IMAGE`. For segments 2–6, keep `USE_PREVIOUS_TAIL_nn` true to continue
+  from the accumulated preceding section, or set it false and paste a saved MP4
+  path into `RESUME_VIDEO_nn` to start a new continuation point. Each freshly
+  generated enabled section is saved below `D:\AI\outputs\wan22_longform\segments\`;
+  `SAVE_FINAL_VIDEO` writes the direct assembled sequence. For example, to
+  preserve clips 1–3 and rerender only 4–5, enable 1–5, set `USE_EXISTING_SEGMENT_01`
+  through `_03` true and choose their MP4s, leave 4–5 false, keep their previous-tail
+  toggles true, and disable 6. This workflow performs direct frame assembly;
+  use the separate FLF workflow only when you deliberately want a generated
+  transition rather than a cut.
 
 If ComfyUI was already open when deploying an update, use the **Refresh** button
 in the Workflows sidebar and reopen the workflow. A missing-image warning before

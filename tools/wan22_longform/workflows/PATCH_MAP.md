@@ -55,3 +55,18 @@ The bridge base remains free of `LoraLoaderModelOnly` nodes. `build_api_graph(ba
 - Installed source: `D:\AI\ComfyUI\venv\Lib\site-packages\comfyui_workflow_templates_json\templates\video_wan2_2_14B_flf2v.json`
 
 The UI bridge is a native LiteGraph subgraph adapted from that official template’s normal branch. Its API counterpart contains only executable core nodes; frontend-only notes are not included in the API graph.
+
+## Six-segment manual sequence UI
+
+`wan22_six_segment_sequence_native.json` reuses the canonical I2V subgraph six
+times without modifying its normal 20-step high-to-low topology. Each section
+has `ENABLE_SEGMENT_nn` and `USE_EXISTING_SEGMENT_nn`: disabled sections do not
+enter the final assembly, while existing sections load their selected MP4 via
+`CACHED_SEGMENT_nn` instead of requesting a Wan render. Segments 2–6 also have
+`USE_PREVIOUS_TAIL_nn` to select the accumulated prior tail or the final frame
+from `RESUME_VIDEO_nn`. Every `ComfySwitchNode` supplies both branches, so its
+lazy branch selection protects disabled Wan and resume-video work. Fresh enabled
+sections pass through `Wan22ConditionalSaveVideo`; cached sections are not
+rewritten. `ASSEMBLE_ENABLED_SEGMENTS` and `SAVE_FINAL_VIDEO` make one direct
+frame-concatenated MP4. Generated FLF transitions remain deliberate separate
+operations rather than silently inserted cuts.

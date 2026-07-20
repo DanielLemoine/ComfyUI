@@ -233,12 +233,47 @@ class RenderSegmentTests(unittest.TestCase):
         self.workflow = PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"
         self.manifest = self.root / "project.yaml"
         source = {
+            "schema_version": 1,
+            "project_id": "render-segment-fixture",
+            "title": "Render segment fixture",
+            "mode": "continuous",
+            "target_seconds": 20.25,
+            "output_root": str(self.root / "outputs"),
+            "outputs": {
+                "review_mp4": str(self.root / "outputs" / "review.mp4"),
+                "edit_master_ffv1": str(self.root / "outputs" / "master.mkv"),
+                "edit_master_prores": str(self.root / "outputs" / "master.mov"),
+            },
             "preset": "P0_IDENTITY_BASELINE",
             "models": {
                 "high": "configured-high.safetensors",
                 "low": "configured-low.safetensors",
+                "vae": "wan_2.1_vae.safetensors",
+                "text_encoder": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
             },
             "workflow_api": str(self.workflow),
+            "bridge_workflow_api": str(self.workflow),
+            "workflow_hashes": {
+                "segment_api": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),
+                "bridge_api": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),
+            },
+            "environment_snapshot": {
+                "captured_at": "2026-07-19T00:00:00Z",
+                "platform": "fixture",
+                "python": "3.11.6",
+                "gpu": "fixture",
+            },
+            "render": {
+                "workflow": "wan22_segment_i2v_native_api.json",
+                "width": 832,
+                "height": 480,
+                "frames": 81,
+                "generation_fps": 16,
+                "review_mp4_codec": "h264",
+                "master_codec": "ffv1",
+                "seed_base": 424242,
+                "seed_increment": 17,
+            },
             "request": {
                 "positive": "configured positive prompt",
                 "negative": "configured negative prompt",
@@ -252,8 +287,43 @@ class RenderSegmentTests(unittest.TestCase):
             "model_files": [
                 "configured-high.safetensors",
                 "configured-low.safetensors",
+                "wan_2.1_vae.safetensors",
+                "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
             ],
-            "candidate_count": 5,
+            "policy": {"automatic_continuation": False},
+            "continuation": {"strategy": "selected_tail", "reset_limit": 3},
+            "qc": {"candidate_count": 5, "retry_limit": 2},
+            "loras": {
+                "identity": {"mode": "none"},
+                "vbvr": {"enabled": False},
+                "motion": {"enabled": False},
+                "corrective": {"enabled": False},
+                "permissiveness": {
+                    "mystic": {"enabled": False},
+                    "wan_general": {"enabled": False},
+                },
+            },
+            "shots": [
+                {
+                    "id": shot_id,
+                    "target_seconds": 5.0625,
+                    "anchor_image": str(self.opening),
+                    "segments": [
+                        {
+                            "id": f"{shot_id}_C001",
+                            "action": "A neutral adult pauses naturally.",
+                            "expected_seconds": 5.0625,
+                            "seed_offset": index * 17,
+                        }
+                    ],
+                }
+                for index, shot_id in enumerate(("S010", "S020", "S030", "S040"))
+            ],
+            "bridges": [],
+            "assembly_order": [
+                {"shot_id": shot_id, "segment_id": f"{shot_id}_C001"}
+                for shot_id in ("S010", "S020", "S030", "S040")
+            ],
         }
         self.manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
         self.project = ProjectConfig(path=self.manifest, source=source)
@@ -337,10 +407,40 @@ class RenderSegmentTests(unittest.TestCase):
         project = ProjectConfig(path=self.manifest, source=source)
         client = FakeRenderClient(self.video)
 
-        with self.assertRaisesRegex(ValueError, "configured low model is missing"):
+        with self.assertRaisesRegex(ValueError, "models.low"):
             render_segment(project, "S020", "S020_C001", client)
 
         self.assertEqual(client.submitted, [])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_render_uses_qc_candidate_count_for_frame_extraction_and_qc(
+        self, extract, contact_sheet
+    ) -> None:
+        source = dict(self.project.source)
+        source["qc"] = {"candidate_count": 2, "retry_limit": 2}
+        project = ProjectConfig(path=self.manifest, source=source)
+
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(b"frame")
+                frames.append(frame)
+            return frames
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+
+        attempt = render_segment(project, "S010", "S010_C001", FakeRenderClient(self.video))
+
+        self.assertEqual([call.args[1] for call in extract.call_args_list], [2, 2])
+        qc = read_qc(attempt.path / "qc.yaml")
+        self.assertEqual(len(qc["candidate_frames"]["head"]), 2)
+        self.assertEqual(len(qc["candidate_frames"]["tail"]), 2)
 
     @patch("wan22_longform.render.create_contact_sheet")
     @patch("wan22_longform.render.extract_candidate_frames")
@@ -429,13 +529,49 @@ class RenderBridgeTests(unittest.TestCase):
         self.workflow = PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"
         self.manifest = self.root / "project.yaml"
         self.source = {
+            "schema_version": 1,
+            "project_id": "render-bridge-fixture",
+            "title": "Render bridge fixture",
+            "mode": "continuous",
+            "target_seconds": 1.0625,
+            "output_root": str(self.root / "outputs"),
+            "outputs": {
+                "review_mp4": str(self.root / "outputs" / "review.mp4"),
+                "edit_master_ffv1": str(self.root / "outputs" / "master.mkv"),
+                "edit_master_prores": str(self.root / "outputs" / "master.mov"),
+            },
             "preset": "P0_IDENTITY_BASELINE",
             "models": {
                 "high": "configured-high.safetensors",
                 "low": "configured-low.safetensors",
+                "vae": "wan_2.1_vae.safetensors",
+                "text_encoder": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
             },
             "workflow_api": str(PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"),
             "bridge_workflow_api": str(self.workflow),
+            "workflow_hashes": {
+                "segment_api": hashlib.sha256(
+                    (PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json").read_bytes()
+                ).hexdigest(),
+                "bridge_api": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),
+            },
+            "environment_snapshot": {
+                "captured_at": "2026-07-19T00:00:00Z",
+                "platform": "fixture",
+                "python": "3.11.6",
+                "gpu": "fixture",
+            },
+            "render": {
+                "workflow": "wan22_segment_i2v_native_api.json",
+                "width": 832,
+                "height": 480,
+                "frames": 17,
+                "generation_fps": 16,
+                "review_mp4_codec": "h264",
+                "master_codec": "ffv1",
+                "seed_base": 424242,
+                "seed_increment": 17,
+            },
             "request": {
                 "positive": "configured positive prompt",
                 "negative": "configured negative prompt",
@@ -452,6 +588,7 @@ class RenderBridgeTests(unittest.TestCase):
                 {
                     "id": "B010",
                     "shot_id": "S010",
+                    "strategy": "flf2v",
                     "first_image": str(self.first),
                     "last_image": str(self.last),
                     "frames": 33,
@@ -461,8 +598,38 @@ class RenderBridgeTests(unittest.TestCase):
             "model_files": [
                 "configured-high.safetensors",
                 "configured-low.safetensors",
+                "wan_2.1_vae.safetensors",
+                "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
             ],
-            "candidate_count": 2,
+            "policy": {"automatic_continuation": False},
+            "continuation": {"strategy": "selected_tail", "reset_limit": 3},
+            "qc": {"candidate_count": 2, "retry_limit": 2},
+            "loras": {
+                "identity": {"mode": "none"},
+                "vbvr": {"enabled": False},
+                "motion": {"enabled": False},
+                "corrective": {"enabled": False},
+                "permissiveness": {
+                    "mystic": {"enabled": False},
+                    "wan_general": {"enabled": False},
+                },
+            },
+            "shots": [
+                {
+                    "id": "S010",
+                    "target_seconds": 1.0625,
+                    "anchor_image": str(self.first),
+                    "segments": [
+                        {
+                            "id": "S010_C001",
+                            "action": "A neutral adult pauses naturally.",
+                            "expected_seconds": 1.0625,
+                            "seed_offset": 0,
+                        }
+                    ],
+                }
+            ],
+            "assembly_order": [{"shot_id": "S010", "segment_id": "S010_C001"}],
         }
         self.manifest.write_text(yaml.safe_dump(self.source, sort_keys=True), encoding="utf-8")
         self.project = ProjectConfig(path=self.manifest, source=self.source)
@@ -546,12 +713,13 @@ class RenderBridgeTests(unittest.TestCase):
         self.assertEqual(client.uploaded, [])
         self.assertEqual(client.submitted, [])
 
-    def test_bridge_base_source_image_is_an_explicit_two_endpoint_choice(self) -> None:
+    def test_bridge_base_source_image_requires_a_technical_smoke_purpose(self) -> None:
         source = dict(self.source)
         source["bridges"] = [
             {
                 "id": "B011",
                 "shot_id": "S010",
+                "strategy": "flf2v",
                 "base_source_image": str(self.first),
                 "frames": 33,
             }
@@ -565,9 +733,53 @@ class RenderBridgeTests(unittest.TestCase):
                 self._candidate(destination, where, index) for index in range(count)
             ]
             contact_sheet.side_effect = lambda _frames, destination: self._sheet(destination)
-            render_bridge(ProjectConfig(path=self.manifest, source=source), "B011", client)
+            with self.assertRaisesRegex(ValueError, "purpose technical_smoke"):
+                render_bridge(ProjectConfig(path=self.manifest, source=source), "B011", client)
 
-        self.assertEqual(client.uploaded, [self.first, self.first])
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
+
+    def test_resume_rejects_an_unsafe_bridge_snapshot_before_submission(self) -> None:
+        source = dict(self.source)
+        source["workflow_api"] = str(self.workflow)
+        source["bridges"] = [
+            {
+                "id": "B011",
+                "shot_id": "S010",
+                "strategy": "flf2v",
+                "base_source_image": str(self.first),
+                "frames": 33,
+            }
+        ]
+        unsafe_project = ProjectConfig(path=self.manifest, source=source)
+        self.manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+        planned = create_attempt(
+            unsafe_project,
+            "S010",
+            "B011",
+            selected_inputs={
+                "first_image": {
+                    "path": str(self.first),
+                    "sha256": hashlib.sha256(self.first.read_bytes()).hexdigest(),
+                    "source": "technical_smoke_base",
+                },
+                "last_image": {
+                    "path": str(self.first),
+                    "sha256": hashlib.sha256(self.first.read_bytes()).hexdigest(),
+                    "source": "technical_smoke_base",
+                },
+            },
+        )
+        client = FakeRenderClient(self.video)
+
+        with patch("wan22_longform.render.render_bridge") as render_bridge_mock:
+            with self.assertRaisesRegex(ValueError, "purpose technical_smoke"):
+                resume_attempt(unsafe_project, planned, client)
+
+        render_bridge_mock.assert_not_called()
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
 
     @staticmethod
     def _candidate(destination: Path, where: str, index: int) -> Path:

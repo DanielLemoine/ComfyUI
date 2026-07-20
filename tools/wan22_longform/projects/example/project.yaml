@@ -2,7 +2,7 @@ schema_version: 1
 project_id: neutral_continuity_starter
 title: Identity-disabled Wan 2.2 continuity starter
 mode: continuous
-target_seconds: 4
+target_seconds: 3.1875
 output_root: outputs/neutral_continuity_starter
 
 outputs:
@@ -51,7 +51,6 @@ environment_snapshot:
   gpu: NVIDIA GeForce RTX 5090, 595.95, 32607 MiB
 
 attempts_dir: attempts
-candidate_count: 5
 policy:
   automatic_continuation: false
 continuation:
@@ -97,7 +96,7 @@ prompt_blocks:
 
 shots:
   - id: S010
-    target_seconds: 2
+    target_seconds: 2.125
     # Add this user-owned fully clothed adult anchor before any render.
     anchor_image: inputs/s010_anchor.png
     camera: slow forward dolly, eye-level framing
@@ -113,7 +112,7 @@ shots:
         seed_offset: 17
         continue_from: S010_C001
   - id: S020
-    target_seconds: 2
+    target_seconds: 1.0625
     # This reset anchor is also user-supplied; it is not an identity LoRA claim.
     anchor_image: inputs/s020_anchor.png
     camera: gentle lateral move, eye-level framing
@@ -134,13 +133,12 @@ bridges:
     base_source_image: inputs/s010_anchor.png
     frames: 33
 
-# Project assembly does not infer chronology from attempt folders.
+# Project assembly does not infer chronology from attempt folders. B010 remains a separate
+# technical smoke and is intentionally excluded from the production timeline.
 assembly_order:
   - shot_id: S010
     segment_id: S010_C001
   - shot_id: S010
     segment_id: S010_C002
-  - shot_id: S010
-    segment_id: B010
   - shot_id: S020
     segment_id: S020_C001

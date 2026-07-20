@@ -111,6 +111,7 @@ def render_segment(
     *,
     attempt: Attempt | None = None,
 ) -> Attempt:
+    validate_project_contract(project)
     if attempt is None:
         segment = _segment_request(project, shot_id, segment_id)
         attempt = _new_or_planned_attempt(
@@ -235,6 +236,7 @@ def render_bridge(
     attempt: Attempt | None = None,
 ) -> Attempt:
     """Render a native FLF bridge from explicitly selected endpoint images."""
+    validate_project_contract(project)
     bridge_project = _project_with_bridge_workflow(project)
     if attempt is None:
         bridge = _bridge_request(project, bridge_id)
@@ -374,6 +376,7 @@ def resume_attempt(
         project, attempt.shot_id, attempt.segment_id, attempt
     )
     replay_project = _snapshot_project(project, persisted)
+    validate_project_contract(replay_project)
     graph = _read_graph(persisted.path / "workflow-api.json")
     if _has_titled_node(graph, "FLF_CONDITIONING"):
         return render_bridge(
@@ -1105,9 +1108,22 @@ def _video_output(history: HistoryResult) -> HistoryOutput:
 
 
 def _candidate_count(project: ProjectConfig) -> int:
-    value = project.source.get("candidate_count", 5)
+    qc = project.source.get("qc")
+    if not isinstance(qc, Mapping):
+        raise RenderError("qc must be a mapping")
+    value = qc.get("candidate_count")
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise RenderError("candidate_count must be a positive integer")
+        raise RenderError("qc.candidate_count must be a positive integer")
+    legacy_candidate_count = project.source.get("candidate_count")
+    if legacy_candidate_count is not None:
+        if (
+            isinstance(legacy_candidate_count, bool)
+            or not isinstance(legacy_candidate_count, int)
+            or legacy_candidate_count <= 0
+        ):
+            raise RenderError("candidate_count must be a positive integer")
+        if legacy_candidate_count != value:
+            raise RenderError("candidate_count conflicts with qc.candidate_count")
     return value
 
 

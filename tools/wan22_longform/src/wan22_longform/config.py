@@ -192,11 +192,11 @@ def validate_project_contract(project: ProjectConfig) -> None:
     _lora_contract(_required_mapping(source, "loras"))
     _policy_contract(_required_mapping(source, "policy"))
     _continuation_contract(_required_mapping(source, "continuation"))
-    _qc_contract(_required_mapping(source, "qc"))
+    _qc_contract(source, _required_mapping(source, "qc"))
     _manifest_inputs(source)
-    _shots_contract(source)
-    _bridges_contract(source)
-    _assembly_order(source)
+    shot_segments = _shots_contract(source)
+    bridge_shots = _bridges_contract(source, shot_segments)
+    _assembly_order(source, shot_segments, bridge_shots)
 
 
 def _output_paths(outputs: Mapping[str, Any]) -> None:
@@ -277,8 +277,13 @@ def _continuation_contract(continuation: Mapping[str, Any]) -> None:
     _positive_int(continuation.get("reset_limit"), "continuation.reset_limit")
 
 
-def _qc_contract(qc: Mapping[str, Any]) -> None:
-    _positive_int(qc.get("candidate_count"), "qc.candidate_count")
+def _qc_contract(source: Mapping[str, Any], qc: Mapping[str, Any]) -> None:
+    candidate_count = _positive_int(qc.get("candidate_count"), "qc.candidate_count")
+    legacy_candidate_count = source.get("candidate_count")
+    if legacy_candidate_count is not None:
+        legacy_candidate_count = _positive_int(legacy_candidate_count, "candidate_count")
+        if legacy_candidate_count != candidate_count:
+            raise ConfigError("candidate_count conflicts with qc.candidate_count")
     _non_negative_int(qc.get("retry_limit"), "qc.retry_limit")
 
 
@@ -293,11 +298,12 @@ def _manifest_inputs(source: Mapping[str, Any]) -> None:
         _string(opening, "inputs.opening_frame")
 
 
-def _shots_contract(source: Mapping[str, Any]) -> None:
+def _shots_contract(source: Mapping[str, Any]) -> dict[str, frozenset[str]]:
     shots = source.get("shots")
     if not isinstance(shots, (list, tuple)) or not shots:
         raise ConfigError("shots must be a non-empty list")
     seen_shots: set[str] = set()
+    shot_segments: dict[str, frozenset[str]] = {}
     for shot in shots:
         if not isinstance(shot, Mapping):
             raise ConfigError("shot must be a mapping")
@@ -341,13 +347,18 @@ def _shots_contract(source: Mapping[str, Any]) -> None:
                 raise ConfigError(f"segment {segment_id} has multiple opening overrides")
             for key in overrides:
                 _string(segment.get(key), f"segment {segment_id} {key}")
+        shot_segments[shot_id] = frozenset(seen_segments)
+    return shot_segments
 
 
-def _bridges_contract(source: Mapping[str, Any]) -> None:
+def _bridges_contract(
+    source: Mapping[str, Any], shot_segments: Mapping[str, frozenset[str]]
+) -> dict[str, str]:
     bridges = source.get("bridges", ())
     if not isinstance(bridges, (list, tuple)):
         raise ConfigError("bridges must be a list")
     seen: set[str] = set()
+    bridge_shots: dict[str, str] = {}
     for bridge in bridges:
         if not isinstance(bridge, Mapping):
             raise ConfigError("bridge must be a mapping")
@@ -355,7 +366,10 @@ def _bridges_contract(source: Mapping[str, Any]) -> None:
         if bridge_id in seen:
             raise ConfigError(f"duplicate bridge id: {bridge_id}")
         seen.add(bridge_id)
-        _string(bridge.get("shot_id"), f"bridge {bridge_id} shot_id")
+        shot_id = _string(bridge.get("shot_id"), f"bridge {bridge_id} shot_id")
+        if shot_id not in shot_segments:
+            raise ConfigError(f"bridge {bridge_id} shot_id does not reference a configured shot: {shot_id}")
+        bridge_shots[bridge_id] = shot_id
         strategy = _string(bridge.get("strategy"), f"bridge {bridge_id} strategy")
         if strategy not in BRIDGE_STRATEGIES:
             raise ConfigError(f"bridge {bridge_id} strategy is invalid")
@@ -378,17 +392,35 @@ def _bridges_contract(source: Mapping[str, Any]) -> None:
                 _string(last, f"bridge {bridge_id} last_image")
         elif base is not None or first is not None or last is not None:
             raise ConfigError(f"bridge {bridge_id} endpoints require strategy flf2v")
+    return bridge_shots
 
 
-def _assembly_order(source: Mapping[str, Any]) -> None:
+def _assembly_order(
+    source: Mapping[str, Any],
+    shot_segments: Mapping[str, frozenset[str]],
+    bridge_shots: Mapping[str, str],
+) -> None:
     order = source.get("assembly_order")
     if not isinstance(order, (list, tuple)) or not order:
         raise ConfigError("assembly_order must be a non-empty list")
+    seen: set[tuple[str, str]] = set()
     for item in order:
         if not isinstance(item, Mapping):
             raise ConfigError("assembly_order entry must be a mapping")
-        _string(item.get("shot_id"), "assembly_order shot_id")
-        _string(item.get("segment_id"), "assembly_order segment_id")
+        shot_id = _string(item.get("shot_id"), "assembly_order shot_id")
+        segment_id = _string(item.get("segment_id"), "assembly_order segment_id")
+        key = (shot_id, segment_id)
+        if key in seen:
+            raise ConfigError(f"assembly_order has a duplicate item: {shot_id}/{segment_id}")
+        seen.add(key)
+        if segment_id in shot_segments.get(shot_id, frozenset()):
+            continue
+        if bridge_shots.get(segment_id) == shot_id:
+            continue
+        raise ConfigError(
+            f"assembly_order item does not reference a configured segment or matching bridge: "
+            f"{shot_id}/{segment_id}"
+        )
 
 
 def load_presets(path: Path) -> PresetCatalog:

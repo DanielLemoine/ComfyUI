@@ -18,7 +18,12 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from wan22_longform.cli import _handle_render_shot, main  # noqa: E402
 from wan22_longform.comfy_client import HistoryOutput, HistoryResult  # noqa: E402
-from wan22_longform.config import ProjectConfig, load_project  # noqa: E402
+from wan22_longform.config import (  # noqa: E402
+    ConfigError,
+    ProjectConfig,
+    load_project,
+    validate_project_contract,
+)
 from wan22_longform.project import (  # noqa: E402
     Attempt,
     AttemptState,
@@ -143,7 +148,7 @@ class ContinuityContractTests(unittest.TestCase):
                 client = FakeRenderClient(self.video)
 
                 with self._render_artifact_patches():
-                    with self.assertRaises(RenderError):
+                    with self.assertRaises((RenderError, ValueError)):
                         render_segment(project, "S010", "S010_C002", client)
 
                 self.assertEqual(client.uploaded, [])
@@ -273,6 +278,67 @@ class ContinuityContractTests(unittest.TestCase):
 
                 with self.assertRaises((RenderError, ValueError)):
                     validate_project(self._project(source))
+
+    def test_strict_manifest_rejects_conflicting_legacy_candidate_count(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["candidate_count"] = source["qc"]["candidate_count"] + 1
+
+        with self.assertRaisesRegex(ConfigError, "candidate_count.*qc.candidate_count"):
+            validate_project_contract(self._project(source))
+
+    def test_strict_manifest_rejects_unknown_bridge_shot(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["bridges"] = [
+            {
+                "id": "B999",
+                "shot_id": "S999",
+                "strategy": "direct",
+            }
+        ]
+
+        with self.assertRaisesRegex(ConfigError, "bridge B999 shot_id"):
+            validate_project_contract(self._project(source))
+
+    def test_strict_manifest_rejects_assembly_item_for_the_wrong_shot(self) -> None:
+        source = copy.deepcopy(self.source)
+        source["assembly_order"] = [
+            {"shot_id": "S020", "segment_id": "S010_C001"},
+        ]
+
+        with self.assertRaisesRegex(ConfigError, "assembly_order.*S020.*S010_C001"):
+            validate_project_contract(self._project(source))
+
+    def test_example_timeline_excludes_technical_smoke_and_matches_declared_durations(self) -> None:
+        project = load_project(PROJECT_DIR / "projects" / "example" / "project.yaml")
+        source = project.source
+        render = source["render"]
+        fps = render["generation_fps"]
+        segment_duration = render["frames"] / fps
+
+        durations: dict[tuple[str, str], float] = {}
+        technical_smoke_ids: set[str] = set()
+        for shot in source["shots"]:
+            shot_id = shot["id"]
+            expected_shot_duration = 0.0
+            for segment in shot["segments"]:
+                segment_id = segment["id"]
+                self.assertAlmostEqual(segment["expected_seconds"], segment_duration, delta=1 / fps)
+                durations[(shot_id, segment_id)] = segment["expected_seconds"]
+                expected_shot_duration += segment["expected_seconds"]
+            self.assertAlmostEqual(shot["target_seconds"], expected_shot_duration, delta=1 / fps)
+
+        for bridge in source["bridges"]:
+            if bridge.get("purpose") == "technical_smoke":
+                technical_smoke_ids.add(bridge["id"])
+            else:
+                durations[(bridge["shot_id"], bridge["id"])] = bridge["frames"] / fps
+
+        assembly_duration = 0.0
+        for item in source["assembly_order"]:
+            key = (item["shot_id"], item["segment_id"])
+            self.assertNotIn(item["segment_id"], technical_smoke_ids)
+            assembly_duration += durations[key]
+        self.assertAlmostEqual(source["target_seconds"], assembly_duration, delta=1 / fps)
 
     def test_example_manifest_stops_only_at_the_documented_missing_anchor(self) -> None:
         project = load_project(PROJECT_DIR / "projects" / "example" / "project.yaml")

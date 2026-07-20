@@ -293,6 +293,24 @@ class AssemblyPlanTests(unittest.TestCase):
         self.assertTrue(plan.boundary_decisions[0].requires_review)
         self.assertFalse(any(operation.kind == "trim_boundary" for operation in plan.operations))
 
+    def test_reviewed_boundary_rejects_forged_approval_object(self) -> None:
+        left = self._media("left.mp4")
+        right = self._media("right.mp4")
+        similar = compare_frame_hashes("different", "different", perceptual_distance=3)
+        forged = type(
+            "ForgedApproval",
+            (),
+            {"boundary_index": 1, "note": "Reviewed at 200%; retain both frames."},
+        )()
+
+        with self.assertRaisesRegex(AssemblyError, "BoundaryApproval"):
+            plan_assembly(
+                [left, right],
+                self._targets(),
+                boundary_decisions=[similar],
+                boundary_approvals=[forged],
+            )
+
     def test_reviewed_boundary_rejects_blank_approval_note(self) -> None:
         left = self._media("left.mp4")
         right = self._media("right.mp4")

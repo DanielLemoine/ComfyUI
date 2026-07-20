@@ -614,6 +614,8 @@ def approve_reviewed_boundaries(
 ) -> list[BoundaryDecision]:
     approved_indexes: set[int] = set()
     for approval in approvals:
+        if not isinstance(approval, BoundaryApproval):
+            raise AssemblyError("boundary approvals must be BoundaryApproval values")
         if not isinstance(approval.boundary_index, int) or isinstance(approval.boundary_index, bool):
             raise AssemblyError("boundary approval index must be a positive integer")
         if approval.boundary_index < 1 or approval.boundary_index > len(decisions):

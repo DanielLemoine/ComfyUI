@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 
 Workflow = dict[str, Any]
@@ -150,6 +151,32 @@ def _expose_negative_prompt(
     segment_template["widgets_values"].append(negative_default)
 
 
+def _build_segment_variants(
+    base_definition: dict[str, Any], base_template: dict[str, Any]
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Give every segment a private editable subgraph definition."""
+    variants: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for index in range(1, 7):
+        definition = deepcopy(base_definition)
+        template = deepcopy(base_template)
+        definition["id"] = str(uuid5(NAMESPACE_URL, f"wan22-longform-segment-{index}"))
+        definition["name"] = f"Wan2.2 Longform Segment {index:02}"
+        template["type"] = definition["id"]
+        _expose_negative_prompt(definition, template)
+
+        positive_default = (
+            "sgfw person continues the same scene with natural motion and stable identity. "
+            f"Segment {index}: describe the next action here."
+        )
+        positive_node = next(
+            node for node in definition["nodes"] if node["title"] == "PROMPT_POSITIVE"
+        )
+        positive_node["widgets_values"][0] = positive_default
+        template["widgets_values"][0] = positive_default
+        variants.append((definition, template))
+    return variants
+
+
 def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
     """Create the user-facing six-segment sequence workflow from the native I2V graph."""
     definitions = native_workflow.get("definitions", {})
@@ -162,7 +189,8 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
     templates = [node for node in workflow["nodes"] if node.get("type") == segment_type]
     if len(templates) != 1:
         raise ValueError("native workflow must contain exactly one outer I2V segment node")
-    _expose_negative_prompt(segment_definition, templates[0])
+    segment_variants = _build_segment_variants(segment_definition, templates[0])
+    workflow["definitions"]["subgraphs"] = [definition for definition, _ in segment_variants]
     workflow["nodes"] = []
     workflow["links"] = []
     workflow["groups"] = []
@@ -230,11 +258,11 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
 
     active_frames_id = seed["id"]
     active_frames_slot = 0
-    segment_template = templates[0]
     segment_group_x = 500
     segment_group_width = 900
 
     for index in range(1, 7):
+        _, segment_template = segment_variants[index - 1]
         x = segment_group_x + (index - 1) * segment_group_width
         enable_id = 1000 + index
         segment_id = 1100 + index
@@ -406,34 +434,8 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             start_source_id, start_source_slot = start_switch["id"], 0
             continuation_count_id, continuation_count_slot = start_count_switch["id"], 0
 
-        segment = add(_segment_instance(segment_template, segment_id, index, (x, 1400)))
+        segment = add(_segment_instance(segment_template, segment_id, index, (x, 1120)))
         connect(start_source_id, start_source_slot, segment["id"], 0, "IMAGE")
-        positive_prompt = add(
-            _node(
-                3000 + index,
-                "PrimitiveStringMultiline",
-                f"PROMPT_POSITIVE_{index:02}",
-                (x, 1120),
-                [_input("value", "STRING", widget=True)],
-                [_output("STRING", "STRING")],
-                [segment["widgets_values"][0]],
-                (380, 240),
-            )
-        )
-        negative_prompt = add(
-            _node(
-                3100 + index,
-                "PrimitiveStringMultiline",
-                f"PROMPT_NEGATIVE_{index:02}",
-                (x + 410, 1120),
-                [_input("value", "STRING", widget=True)],
-                [_output("STRING", "STRING")],
-                [segment["widgets_values"][-1]],
-                (380, 240),
-            )
-        )
-        connect(positive_prompt["id"], 0, segment["id"], 1, "STRING")
-        connect(negative_prompt["id"], 0, segment["id"], 10, "STRING")
 
         if index == 1:
             append = add(
@@ -441,7 +443,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                     append_id,
                     "ImageFromBatch",
                     "APPEND_FRAMES_01 (skip repeated first frame)",
-                    (x + 460, 1400),
+                    (x + 460, 1120),
                     [
                         _input("image", "IMAGE"),
                         _input("batch_index", "INT", widget=True),
@@ -457,7 +459,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                     append_id,
                     "Wan22DropLeadingFrames",
                     f"APPEND_FRAMES_{index:02} (skip conditioned tail)",
-                    (x + 460, 1400),
+                    (x + 460, 1120),
                     [_input("images", "IMAGE"), _input("skip_frames", "INT")],
                     [_output("images", "IMAGE")],
                 )
@@ -476,7 +478,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 content_switch_id,
                 f"CONTENT_FOR_SEGMENT_{index:02}: generated (false) / cached (true)",
-                (x + 460, 1570),
+                (x + 460, 1290),
                 "IMAGE",
             )
         )
@@ -489,7 +491,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 1900 + index,
                 "ImageBatch",
                 f"MERGE_ACTIVE_WITH_SEGMENT_{index:02}",
-                (x + 460, 1750),
+                (x + 460, 1470),
                 [_input("image1", "IMAGE"), _input("image2", "IMAGE")],
                 [_output("IMAGE", "IMAGE")],
             )
@@ -501,7 +503,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 active_switch_id,
                 f"ACTIVE_FRAMES_AFTER_SEGMENT_{index:02}",
-                (x + 460, 1930),
+                (x + 460, 1650),
                 "IMAGE",
             )
         )
@@ -513,7 +515,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 generated_save_switch_id,
                 f"GENERATED_VIDEO_FOR_SEGMENT_{index:02}_SAVE",
-                (x + 460, 2130),
+                (x + 460, 1850),
                 "VIDEO",
             )
         )
@@ -524,7 +526,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 save_switch_id,
                 f"VIDEO_FOR_SEGMENT_{index:02}_SAVE",
-                (x + 460, 2330),
+                (x + 460, 2050),
                 "VIDEO",
             )
         )
@@ -537,7 +539,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 saver_id,
                 "Wan22ConditionalSaveVideo",
                 f"SAVE_SEGMENT_{index:02} (enabled only)",
-                (x + 460, 2530),
+                (x + 460, 2250),
                 [
                     _input("enabled", "BOOLEAN"),
                     _input("video", "VIDEO"),
@@ -557,7 +559,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             {
                 "id": index,
                 "title": f"Segment {index:02}: generate, reuse, continue, and save",
-                "bounding": [x - 35, -70, 850, 2850],
+                "bounding": [x - 35, -70, 800, 2570],
                 "color": "#3f789e",
                 "font_size": 24,
                 "flags": {},

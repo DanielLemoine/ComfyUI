@@ -59,10 +59,10 @@ The UI bridge is a native LiteGraph subgraph adapted from that official template
 ## Six-segment manual sequence UI
 
 `wan22_six_segment_sequence_native.json` reuses the canonical I2V subgraph six
-times without modifying its normal 20-step high-to-low topology. Each section
-has visible top-level `PROMPT_POSITIVE_nn` and `PROMPT_NEGATIVE_nn` nodes. They
-feed the matching subgraph instance, so prompt edits remain per segment rather
-than changing the shared subgraph definition. Each section also has
+times without modifying its normal 20-step high-to-low topology. Every section
+uses a private copy of that subgraph definition, including its prompt and
+model/LoRA nodes. Editing `PROMPT_POSITIVE`, `PROMPT_NEGATIVE`, or a LoRA after
+entering `SEGMENT_nn` therefore changes that numbered segment only. Each section also has
 `ENABLE_SEGMENT_nn` and `USE_EXISTING_SEGMENT_nn`: disabled sections do not
 enter the final assembly, while existing sections load their selected MP4 via
 `CACHED_SEGMENT_nn` instead of requesting a Wan render. Segments 2–6 also have

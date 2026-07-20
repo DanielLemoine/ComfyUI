@@ -174,28 +174,39 @@ class SequenceWorkflowTests(unittest.TestCase):
                 count_switch["id"],
             )
 
-    def test_each_segment_has_independent_positive_and_negative_prompt_boxes(self) -> None:
+    def test_each_segment_has_its_own_subgraph_definition_and_prompts(self) -> None:
         native = json.loads(NATIVE_WORKFLOW.read_text(encoding="utf-8"))
         workflow = build_sequence_workflow(native)
         nodes = workflow["nodes"]
-        links = {link[0]: link for link in workflow["links"]}
         by_title = {node["title"]: node for node in nodes}
+        definitions = workflow["definitions"]["subgraphs"]
 
-        prompt_boxes = [
-            node for node in nodes if node["type"] == "PrimitiveStringMultiline"
-        ]
-        self.assertEqual(len(prompt_boxes), 12)
-        self.assertIn("PROMPT_NEGATIVE", {
-            item["name"] for item in workflow["definitions"]["subgraphs"][0]["inputs"]
-        })
+        self.assertEqual(len(definitions), 6)
+        self.assertEqual(len({definition["id"] for definition in definitions}), 6)
+        self.assertEqual(
+            len([node for node in nodes if node["type"] == "PrimitiveStringMultiline"]),
+            0,
+        )
 
         for index in range(1, 7):
-            positive = by_title[f"PROMPT_POSITIVE_{index:02}"]
-            negative = by_title[f"PROMPT_NEGATIVE_{index:02}"]
             segment = by_title[f"SEGMENT_{index:02}"]
-            self.assertIn(f"Segment {index}", positive["widgets_values"][0])
-            self.assertEqual(links[segment["inputs"][1]["link"]][1], positive["id"])
-            self.assertEqual(links[segment["inputs"][10]["link"]][1], negative["id"])
+            definition = next(
+                item for item in definitions if item["id"] == segment["type"]
+            )
+            self.assertIn(f"Segment {index}", segment["widgets_values"][0])
+            self.assertIn(
+                "PROMPT_NEGATIVE", {item["name"] for item in definition["inputs"]}
+            )
+            self.assertEqual(
+                len(
+                    [
+                        node
+                        for node in definition["nodes"]
+                        if node["title"] == "PROMPT_NEGATIVE"
+                    ]
+                ),
+                1,
+            )
 
 
 if __name__ == "__main__":

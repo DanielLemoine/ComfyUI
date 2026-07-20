@@ -74,7 +74,10 @@ ComfyUI's **Workflows** sidebar under `wan22_longform`; do not open the
   `SEED_IMAGE`. For segments 2–6, keep `USE_PREVIOUS_TAIL_nn` true to continue
   from the exact final frames selected by `CONTINUATION_TAIL_nn` (default: 8),
   or set it false and paste a saved MP4 path into `RESUME_VIDEO_nn` to start a
-  new continuation point. Each freshly
+  new continuation point. Wan conditions the next render on that input batch;
+  the workflow then removes exactly those repeated conditioning frames before
+  it appends the fresh motion (eight with the default tail, or one when resuming
+  from a saved MP4). Each freshly
   generated enabled section is saved below `D:\AI\outputs\wan22_longform\segments\`;
   `SAVE_FINAL_VIDEO` writes the direct assembled sequence. For example, to
   preserve clips 1–3 and rerender only 4–5, enable 1–5, set `USE_EXISTING_SEGMENT_01`

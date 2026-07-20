@@ -53,20 +53,42 @@ class Wan22TailFramesFromBatch:
             }
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("tail_frames",)
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("tail_frames", "count")
     FUNCTION = "select_tail"
     CATEGORY = "Wan22 Longform/sequence"
 
     def select_tail(self, images, tail_frames):
-        return (images[-tail_frames:],)
+        count = min(tail_frames, len(images))
+        return (images[-count:], count)
+
+
+class Wan22DropLeadingFrames:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "skip_frames": ("INT", {"default": 1, "min": 0, "max": 64}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("images",)
+    FUNCTION = "drop_frames"
+    CATEGORY = "Wan22 Longform/sequence"
+
+    def drop_frames(self, images, skip_frames):
+        return (images[skip_frames:],)
 
 
 NODE_CLASS_MAPPINGS = {
     "Wan22ConditionalSaveVideo": Wan22ConditionalSaveVideo,
     "Wan22TailFramesFromBatch": Wan22TailFramesFromBatch,
+    "Wan22DropLeadingFrames": Wan22DropLeadingFrames,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Wan22ConditionalSaveVideo": "Wan22 Conditional Save Video",
     "Wan22TailFramesFromBatch": "Wan22 Tail Frames from Batch",
+    "Wan22DropLeadingFrames": "Wan22 Drop Leading Frames",
 }

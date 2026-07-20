@@ -1,8 +1,8 @@
 {
   "id": "ec7da562-7e21-4dac-a0d2-f4441e1efd3b",
   "revision": 0,
-  "last_node_id": 2706,
-  "last_link_id": 142,
+  "last_node_id": 2906,
+  "last_link_id": 162,
   "nodes": [
     {
       "id": 1,
@@ -87,16 +87,16 @@
           "links": [
             14,
             16,
-            38,
-            40,
-            62,
-            64,
-            86,
-            88,
-            110,
-            112,
-            134,
-            136
+            42,
+            44,
+            70,
+            72,
+            98,
+            100,
+            126,
+            128,
+            154,
+            156
           ]
         }
       ],
@@ -293,7 +293,7 @@
       "type": "84e2cf3f-de93-40ef-ab22-b9375296917b",
       "pos": [
         500,
-        870
+        1120
       ],
       "size": [
         420,
@@ -477,7 +477,7 @@
       "type": "ImageFromBatch",
       "pos": [
         960,
-        870
+        1120
       ],
       "size": [
         280,
@@ -533,7 +533,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         960,
-        1040
+        1290
       ],
       "size": [
         280,
@@ -585,7 +585,7 @@
       "type": "ImageBatch",
       "pos": [
         960,
-        1220
+        1470
       ],
       "size": [
         280,
@@ -627,7 +627,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         960,
-        1400
+        1650
       ],
       "size": [
         280,
@@ -662,8 +662,8 @@
           "type": "IMAGE",
           "links": [
             23,
-            32,
-            34
+            36,
+            38
           ]
         }
       ],
@@ -681,7 +681,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         960,
-        1600
+        1850
       ],
       "size": [
         280,
@@ -733,7 +733,7 @@
       "type": "ComfySwitchNode",
       "pos": [
         960,
-        1800
+        2050
       ],
       "size": [
         280,
@@ -785,7 +785,7 @@
       "type": "Wan22ConditionalSaveVideo",
       "pos": [
         960,
-        2000
+        2250
       ],
       "size": [
         330,
@@ -868,9 +868,9 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            36,
-            42,
-            43
+            40,
+            46,
+            47
           ]
         }
       ],
@@ -903,8 +903,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            31,
-            39
+            35,
+            43
           ]
         }
       ],
@@ -1013,7 +1013,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            30
+            34
           ]
         }
       ],
@@ -1047,7 +1047,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            26
+            26,
+            29
           ]
         }
       ],
@@ -1137,7 +1138,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            24
+            27
           ]
         }
       ],
@@ -1185,6 +1186,13 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
+            28
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": [
             25
           ]
         }
@@ -1199,28 +1207,61 @@
       "title": "CONTINUATION_TAIL_02 (last N frames)"
     },
     {
-      "id": 1802,
+      "id": 2802,
+      "type": "PrimitiveInt",
+      "pos": [
+        1400,
+        780
+      ],
+      "size": [
+        280,
+        130
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        1
+      ],
+      "title": "RESUME_FRAME_COUNT_02"
+    },
+    {
+      "id": 2902,
       "type": "ComfySwitchNode",
       "pos": [
-        1800,
-        520
+        1400,
+        940
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 22,
+      "order": 23,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
-          "type": "IMAGE",
+          "type": "INT",
           "link": 24
         },
         {
           "name": "on_true",
-          "type": "IMAGE",
+          "type": "INT",
           "link": 25
         },
         {
@@ -1235,9 +1276,61 @@
       "outputs": [
         {
           "name": "output",
+          "type": "INT",
+          "links": [
+            32
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        false
+      ],
+      "title": "START_FRAME_COUNT_02: previous tail (true) / resume frame (false)"
+    },
+    {
+      "id": 1802,
+      "type": "ComfySwitchNode",
+      "pos": [
+        1800,
+        520
+      ],
+      "size": [
+        280,
+        150
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "on_false",
+          "type": "IMAGE",
+          "link": 27
+        },
+        {
+          "name": "on_true",
+          "type": "IMAGE",
+          "link": 28
+        },
+        {
+          "name": "switch",
+          "type": "BOOLEAN",
+          "link": 29,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
           "type": "IMAGE",
           "links": [
-            27
+            30
           ]
         }
       ],
@@ -1255,7 +1348,7 @@
       "type": "84e2cf3f-de93-40ef-ab22-b9375296917b",
       "pos": [
         1400,
-        870
+        1120
       ],
       "size": [
         420,
@@ -1264,14 +1357,14 @@
       "flags": {
         "collapsed": false
       },
-      "order": 23,
+      "order": 25,
       "mode": 0,
       "inputs": [
         {
           "name": "START_IMAGE",
           "label": "segment first image",
           "localized_name": "START_IMAGE",
-          "link": 27,
+          "link": 30,
           "type": "IMAGE"
         },
         {
@@ -1367,14 +1460,14 @@
         {
           "name": "VIDEO",
           "links": [
-            37
+            41
           ],
           "type": "VIDEO"
         },
         {
           "name": "FRAMES",
           "links": [
-            28
+            31
           ],
           "type": "IMAGE"
         }
@@ -1436,47 +1529,36 @@
     },
     {
       "id": 1202,
-      "type": "ImageFromBatch",
+      "type": "Wan22DropLeadingFrames",
       "pos": [
         1860,
-        870
+        1120
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 24,
+      "order": 26,
       "mode": 0,
       "inputs": [
         {
-          "name": "image",
+          "name": "images",
           "type": "IMAGE",
-          "link": 28
+          "link": 31
         },
         {
-          "name": "batch_index",
+          "name": "skip_frames",
           "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "batch_index"
-          }
-        },
-        {
-          "name": "length",
-          "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "length"
-          }
+          "link": 32
         }
       ],
       "outputs": [
         {
-          "name": "IMAGE",
+          "name": "images",
           "type": "IMAGE",
           "links": [
-            29
+            33
           ]
         }
       ],
@@ -1484,41 +1566,38 @@
         "cnr_id": "comfy-core",
         "ver": "0.3.45"
       },
-      "widgets_values": [
-        1,
-        4096
-      ],
-      "title": "APPEND_FRAMES_02 (skip repeated first frame)"
+      "widgets_values": [],
+      "title": "APPEND_FRAMES_02 (skip conditioned tail)"
     },
     {
       "id": 2502,
       "type": "ComfySwitchNode",
       "pos": [
         1860,
-        1040
+        1290
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 25,
+      "order": 27,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 29
+          "link": 33
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 30
+          "link": 34
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 31,
+          "link": 35,
           "widget": {
             "name": "switch"
           }
@@ -1529,7 +1608,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            33
+            37
           ]
         }
       ],
@@ -1547,25 +1626,25 @@
       "type": "ImageBatch",
       "pos": [
         1860,
-        1220
+        1470
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 26,
+      "order": 28,
       "mode": 0,
       "inputs": [
         {
           "name": "image1",
           "type": "IMAGE",
-          "link": 32
+          "link": 36
         },
         {
           "name": "image2",
           "type": "IMAGE",
-          "link": 33
+          "link": 37
         }
       ],
       "outputs": [
@@ -1573,7 +1652,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            35
+            39
           ]
         }
       ],
@@ -1589,30 +1668,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         1860,
-        1400
+        1650
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 27,
+      "order": 29,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 34
+          "link": 38
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 35
+          "link": 39
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 36,
+          "link": 40,
           "widget": {
             "name": "switch"
           }
@@ -1623,9 +1702,9 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            47,
-            56,
-            58
+            51,
+            64,
+            66
           ]
         }
       ],
@@ -1643,30 +1722,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         1860,
-        1600
+        1850
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 28,
+      "order": 30,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 37
+          "link": 41
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 38
+          "link": 42
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 39,
+          "link": 43,
           "widget": {
             "name": "switch"
           }
@@ -1677,7 +1756,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            41
+            45
           ]
         }
       ],
@@ -1695,30 +1774,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         1860,
-        1800
+        2050
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 29,
+      "order": 31,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 40
+          "link": 44
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 41
+          "link": 45
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 42,
+          "link": 46,
           "widget": {
             "name": "switch"
           }
@@ -1729,7 +1808,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            44
+            48
           ]
         }
       ],
@@ -1747,25 +1826,25 @@
       "type": "Wan22ConditionalSaveVideo",
       "pos": [
         1860,
-        2000
+        2250
       ],
       "size": [
         330,
         190
       ],
       "flags": {},
-      "order": 30,
+      "order": 32,
       "mode": 0,
       "inputs": [
         {
           "name": "enabled",
           "type": "BOOLEAN",
-          "link": 43
+          "link": 47
         },
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 44
+          "link": 48
         },
         {
           "name": "filename_prefix",
@@ -1822,7 +1901,7 @@
         130
       ],
       "flags": {},
-      "order": 31,
+      "order": 33,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -1830,9 +1909,9 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            60,
-            66,
-            67
+            68,
+            74,
+            75
           ]
         }
       ],
@@ -1857,7 +1936,7 @@
         130
       ],
       "flags": {},
-      "order": 32,
+      "order": 34,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -1865,8 +1944,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            55,
-            63
+            63,
+            71
           ]
         }
       ],
@@ -1891,7 +1970,7 @@
         250
       ],
       "flags": {},
-      "order": 33,
+      "order": 35,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -1899,7 +1978,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            45
+            49
           ]
         },
         {
@@ -1945,13 +2024,13 @@
         130
       ],
       "flags": {},
-      "order": 34,
+      "order": 36,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 45
+          "link": 49
         },
         {
           "name": "batch_index",
@@ -1975,7 +2054,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            54
+            62
           ]
         }
       ],
@@ -2001,7 +2080,7 @@
         130
       ],
       "flags": {},
-      "order": 35,
+      "order": 37,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -2009,7 +2088,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            50
+            54,
+            57
           ]
         }
       ],
@@ -2034,7 +2114,7 @@
         150
       ],
       "flags": {},
-      "order": 36,
+      "order": 38,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -2042,7 +2122,7 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            46
+            50
           ]
         }
       ],
@@ -2069,13 +2149,13 @@
         130
       ],
       "flags": {},
-      "order": 37,
+      "order": 39,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 46
+          "link": 50
         },
         {
           "name": "batch_index",
@@ -2099,7 +2179,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            48
+            55
           ]
         }
       ],
@@ -2125,13 +2205,13 @@
         130
       ],
       "flags": {},
-      "order": 38,
+      "order": 40,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 47
+          "link": 51
         },
         {
           "name": "tail_frames",
@@ -2147,7 +2227,14 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            49
+            56
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": [
+            53
           ]
         }
       ],
@@ -2161,6 +2248,91 @@
       "title": "CONTINUATION_TAIL_03 (last N frames)"
     },
     {
+      "id": 2803,
+      "type": "PrimitiveInt",
+      "pos": [
+        2300,
+        780
+      ],
+      "size": [
+        280,
+        130
+      ],
+      "flags": {},
+      "order": 41,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            52
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        1
+      ],
+      "title": "RESUME_FRAME_COUNT_03"
+    },
+    {
+      "id": 2903,
+      "type": "ComfySwitchNode",
+      "pos": [
+        2300,
+        940
+      ],
+      "size": [
+        280,
+        150
+      ],
+      "flags": {},
+      "order": 42,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "on_false",
+          "type": "INT",
+          "link": 52
+        },
+        {
+          "name": "on_true",
+          "type": "INT",
+          "link": 53
+        },
+        {
+          "name": "switch",
+          "type": "BOOLEAN",
+          "link": 54,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "INT",
+          "links": [
+            60
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        false
+      ],
+      "title": "START_FRAME_COUNT_03: previous tail (true) / resume frame (false)"
+    },
+    {
       "id": 1803,
       "type": "ComfySwitchNode",
       "pos": [
@@ -2172,23 +2344,23 @@
         150
       ],
       "flags": {},
-      "order": 39,
+      "order": 43,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 48
+          "link": 55
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 49
+          "link": 56
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 50,
+          "link": 57,
           "widget": {
             "name": "switch"
           }
@@ -2199,7 +2371,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            51
+            58
           ]
         }
       ],
@@ -2217,7 +2389,7 @@
       "type": "84e2cf3f-de93-40ef-ab22-b9375296917b",
       "pos": [
         2300,
-        870
+        1120
       ],
       "size": [
         420,
@@ -2226,14 +2398,14 @@
       "flags": {
         "collapsed": false
       },
-      "order": 40,
+      "order": 44,
       "mode": 0,
       "inputs": [
         {
           "name": "START_IMAGE",
           "label": "segment first image",
           "localized_name": "START_IMAGE",
-          "link": 51,
+          "link": 58,
           "type": "IMAGE"
         },
         {
@@ -2329,14 +2501,14 @@
         {
           "name": "VIDEO",
           "links": [
-            61
+            69
           ],
           "type": "VIDEO"
         },
         {
           "name": "FRAMES",
           "links": [
-            52
+            59
           ],
           "type": "IMAGE"
         }
@@ -2398,47 +2570,36 @@
     },
     {
       "id": 1203,
-      "type": "ImageFromBatch",
+      "type": "Wan22DropLeadingFrames",
       "pos": [
         2760,
-        870
+        1120
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 41,
+      "order": 45,
       "mode": 0,
       "inputs": [
         {
-          "name": "image",
+          "name": "images",
           "type": "IMAGE",
-          "link": 52
+          "link": 59
         },
         {
-          "name": "batch_index",
+          "name": "skip_frames",
           "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "batch_index"
-          }
-        },
-        {
-          "name": "length",
-          "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "length"
-          }
+          "link": 60
         }
       ],
       "outputs": [
         {
-          "name": "IMAGE",
+          "name": "images",
           "type": "IMAGE",
           "links": [
-            53
+            61
           ]
         }
       ],
@@ -2446,41 +2607,38 @@
         "cnr_id": "comfy-core",
         "ver": "0.3.45"
       },
-      "widgets_values": [
-        1,
-        4096
-      ],
-      "title": "APPEND_FRAMES_03 (skip repeated first frame)"
+      "widgets_values": [],
+      "title": "APPEND_FRAMES_03 (skip conditioned tail)"
     },
     {
       "id": 2503,
       "type": "ComfySwitchNode",
       "pos": [
         2760,
-        1040
+        1290
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 42,
+      "order": 46,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 53
+          "link": 61
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 54
+          "link": 62
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 55,
+          "link": 63,
           "widget": {
             "name": "switch"
           }
@@ -2491,7 +2649,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            57
+            65
           ]
         }
       ],
@@ -2509,25 +2667,25 @@
       "type": "ImageBatch",
       "pos": [
         2760,
-        1220
+        1470
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 43,
+      "order": 47,
       "mode": 0,
       "inputs": [
         {
           "name": "image1",
           "type": "IMAGE",
-          "link": 56
+          "link": 64
         },
         {
           "name": "image2",
           "type": "IMAGE",
-          "link": 57
+          "link": 65
         }
       ],
       "outputs": [
@@ -2535,7 +2693,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            59
+            67
           ]
         }
       ],
@@ -2551,30 +2709,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         2760,
-        1400
+        1650
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 44,
+      "order": 48,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 58
+          "link": 66
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 59
+          "link": 67
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 60,
+          "link": 68,
           "widget": {
             "name": "switch"
           }
@@ -2585,9 +2743,9 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            71,
-            80,
-            82
+            79,
+            92,
+            94
           ]
         }
       ],
@@ -2605,30 +2763,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         2760,
-        1600
+        1850
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 45,
+      "order": 49,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 61
+          "link": 69
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 62
+          "link": 70
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 63,
+          "link": 71,
           "widget": {
             "name": "switch"
           }
@@ -2639,7 +2797,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            65
+            73
           ]
         }
       ],
@@ -2657,30 +2815,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         2760,
-        1800
+        2050
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 46,
+      "order": 50,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 64
+          "link": 72
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 65
+          "link": 73
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 66,
+          "link": 74,
           "widget": {
             "name": "switch"
           }
@@ -2691,7 +2849,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            68
+            76
           ]
         }
       ],
@@ -2709,25 +2867,25 @@
       "type": "Wan22ConditionalSaveVideo",
       "pos": [
         2760,
-        2000
+        2250
       ],
       "size": [
         330,
         190
       ],
       "flags": {},
-      "order": 47,
+      "order": 51,
       "mode": 0,
       "inputs": [
         {
           "name": "enabled",
           "type": "BOOLEAN",
-          "link": 67
+          "link": 75
         },
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 68
+          "link": 76
         },
         {
           "name": "filename_prefix",
@@ -2784,7 +2942,7 @@
         130
       ],
       "flags": {},
-      "order": 48,
+      "order": 52,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -2792,9 +2950,9 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            84,
-            90,
-            91
+            96,
+            102,
+            103
           ]
         }
       ],
@@ -2819,7 +2977,7 @@
         130
       ],
       "flags": {},
-      "order": 49,
+      "order": 53,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -2827,8 +2985,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            79,
-            87
+            91,
+            99
           ]
         }
       ],
@@ -2853,7 +3011,7 @@
         250
       ],
       "flags": {},
-      "order": 50,
+      "order": 54,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -2861,7 +3019,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            69
+            77
           ]
         },
         {
@@ -2907,13 +3065,13 @@
         130
       ],
       "flags": {},
-      "order": 51,
+      "order": 55,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 69
+          "link": 77
         },
         {
           "name": "batch_index",
@@ -2937,7 +3095,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            78
+            90
           ]
         }
       ],
@@ -2963,7 +3121,7 @@
         130
       ],
       "flags": {},
-      "order": 52,
+      "order": 56,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -2971,7 +3129,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            74
+            82,
+            85
           ]
         }
       ],
@@ -2996,7 +3155,7 @@
         150
       ],
       "flags": {},
-      "order": 53,
+      "order": 57,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -3004,7 +3163,7 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            70
+            78
           ]
         }
       ],
@@ -3031,13 +3190,13 @@
         130
       ],
       "flags": {},
-      "order": 54,
+      "order": 58,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 70
+          "link": 78
         },
         {
           "name": "batch_index",
@@ -3061,7 +3220,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            72
+            83
           ]
         }
       ],
@@ -3087,13 +3246,13 @@
         130
       ],
       "flags": {},
-      "order": 55,
+      "order": 59,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 71
+          "link": 79
         },
         {
           "name": "tail_frames",
@@ -3109,7 +3268,14 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            73
+            84
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": [
+            81
           ]
         }
       ],
@@ -3123,6 +3289,91 @@
       "title": "CONTINUATION_TAIL_04 (last N frames)"
     },
     {
+      "id": 2804,
+      "type": "PrimitiveInt",
+      "pos": [
+        3200,
+        780
+      ],
+      "size": [
+        280,
+        130
+      ],
+      "flags": {},
+      "order": 60,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            80
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        1
+      ],
+      "title": "RESUME_FRAME_COUNT_04"
+    },
+    {
+      "id": 2904,
+      "type": "ComfySwitchNode",
+      "pos": [
+        3200,
+        940
+      ],
+      "size": [
+        280,
+        150
+      ],
+      "flags": {},
+      "order": 61,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "on_false",
+          "type": "INT",
+          "link": 80
+        },
+        {
+          "name": "on_true",
+          "type": "INT",
+          "link": 81
+        },
+        {
+          "name": "switch",
+          "type": "BOOLEAN",
+          "link": 82,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "INT",
+          "links": [
+            88
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        false
+      ],
+      "title": "START_FRAME_COUNT_04: previous tail (true) / resume frame (false)"
+    },
+    {
       "id": 1804,
       "type": "ComfySwitchNode",
       "pos": [
@@ -3134,23 +3385,23 @@
         150
       ],
       "flags": {},
-      "order": 56,
+      "order": 62,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 72
+          "link": 83
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 73
+          "link": 84
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 74,
+          "link": 85,
           "widget": {
             "name": "switch"
           }
@@ -3161,7 +3412,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            75
+            86
           ]
         }
       ],
@@ -3179,7 +3430,7 @@
       "type": "84e2cf3f-de93-40ef-ab22-b9375296917b",
       "pos": [
         3200,
-        870
+        1120
       ],
       "size": [
         420,
@@ -3188,14 +3439,14 @@
       "flags": {
         "collapsed": false
       },
-      "order": 57,
+      "order": 63,
       "mode": 0,
       "inputs": [
         {
           "name": "START_IMAGE",
           "label": "segment first image",
           "localized_name": "START_IMAGE",
-          "link": 75,
+          "link": 86,
           "type": "IMAGE"
         },
         {
@@ -3291,14 +3542,14 @@
         {
           "name": "VIDEO",
           "links": [
-            85
+            97
           ],
           "type": "VIDEO"
         },
         {
           "name": "FRAMES",
           "links": [
-            76
+            87
           ],
           "type": "IMAGE"
         }
@@ -3360,47 +3611,36 @@
     },
     {
       "id": 1204,
-      "type": "ImageFromBatch",
+      "type": "Wan22DropLeadingFrames",
       "pos": [
         3660,
-        870
+        1120
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 58,
+      "order": 64,
       "mode": 0,
       "inputs": [
         {
-          "name": "image",
+          "name": "images",
           "type": "IMAGE",
-          "link": 76
+          "link": 87
         },
         {
-          "name": "batch_index",
+          "name": "skip_frames",
           "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "batch_index"
-          }
-        },
-        {
-          "name": "length",
-          "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "length"
-          }
+          "link": 88
         }
       ],
       "outputs": [
         {
-          "name": "IMAGE",
+          "name": "images",
           "type": "IMAGE",
           "links": [
-            77
+            89
           ]
         }
       ],
@@ -3408,41 +3648,38 @@
         "cnr_id": "comfy-core",
         "ver": "0.3.45"
       },
-      "widgets_values": [
-        1,
-        4096
-      ],
-      "title": "APPEND_FRAMES_04 (skip repeated first frame)"
+      "widgets_values": [],
+      "title": "APPEND_FRAMES_04 (skip conditioned tail)"
     },
     {
       "id": 2504,
       "type": "ComfySwitchNode",
       "pos": [
         3660,
-        1040
+        1290
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 59,
+      "order": 65,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 77
+          "link": 89
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 78
+          "link": 90
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 79,
+          "link": 91,
           "widget": {
             "name": "switch"
           }
@@ -3453,7 +3690,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            81
+            93
           ]
         }
       ],
@@ -3471,25 +3708,25 @@
       "type": "ImageBatch",
       "pos": [
         3660,
-        1220
+        1470
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 60,
+      "order": 66,
       "mode": 0,
       "inputs": [
         {
           "name": "image1",
           "type": "IMAGE",
-          "link": 80
+          "link": 92
         },
         {
           "name": "image2",
           "type": "IMAGE",
-          "link": 81
+          "link": 93
         }
       ],
       "outputs": [
@@ -3497,7 +3734,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            83
+            95
           ]
         }
       ],
@@ -3513,30 +3750,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         3660,
-        1400
+        1650
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 61,
+      "order": 67,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 82
+          "link": 94
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 83
+          "link": 95
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 84,
+          "link": 96,
           "widget": {
             "name": "switch"
           }
@@ -3547,9 +3784,9 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            95,
-            104,
-            106
+            107,
+            120,
+            122
           ]
         }
       ],
@@ -3567,30 +3804,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         3660,
-        1600
+        1850
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 62,
+      "order": 68,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 85
+          "link": 97
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 86
+          "link": 98
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 87,
+          "link": 99,
           "widget": {
             "name": "switch"
           }
@@ -3601,7 +3838,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            89
+            101
           ]
         }
       ],
@@ -3619,30 +3856,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         3660,
-        1800
+        2050
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 63,
+      "order": 69,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 88
+          "link": 100
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 89
+          "link": 101
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 90,
+          "link": 102,
           "widget": {
             "name": "switch"
           }
@@ -3653,7 +3890,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            92
+            104
           ]
         }
       ],
@@ -3671,25 +3908,25 @@
       "type": "Wan22ConditionalSaveVideo",
       "pos": [
         3660,
-        2000
+        2250
       ],
       "size": [
         330,
         190
       ],
       "flags": {},
-      "order": 64,
+      "order": 70,
       "mode": 0,
       "inputs": [
         {
           "name": "enabled",
           "type": "BOOLEAN",
-          "link": 91
+          "link": 103
         },
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 92
+          "link": 104
         },
         {
           "name": "filename_prefix",
@@ -3746,7 +3983,7 @@
         130
       ],
       "flags": {},
-      "order": 65,
+      "order": 71,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -3754,9 +3991,9 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            108,
-            114,
-            115
+            124,
+            130,
+            131
           ]
         }
       ],
@@ -3781,7 +4018,7 @@
         130
       ],
       "flags": {},
-      "order": 66,
+      "order": 72,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -3789,8 +4026,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            103,
-            111
+            119,
+            127
           ]
         }
       ],
@@ -3815,7 +4052,7 @@
         250
       ],
       "flags": {},
-      "order": 67,
+      "order": 73,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -3823,7 +4060,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            93
+            105
           ]
         },
         {
@@ -3869,13 +4106,13 @@
         130
       ],
       "flags": {},
-      "order": 68,
+      "order": 74,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 93
+          "link": 105
         },
         {
           "name": "batch_index",
@@ -3899,7 +4136,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            102
+            118
           ]
         }
       ],
@@ -3925,7 +4162,7 @@
         130
       ],
       "flags": {},
-      "order": 69,
+      "order": 75,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -3933,7 +4170,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            98
+            110,
+            113
           ]
         }
       ],
@@ -3958,7 +4196,7 @@
         150
       ],
       "flags": {},
-      "order": 70,
+      "order": 76,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -3966,7 +4204,7 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            94
+            106
           ]
         }
       ],
@@ -3993,13 +4231,13 @@
         130
       ],
       "flags": {},
-      "order": 71,
+      "order": 77,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 94
+          "link": 106
         },
         {
           "name": "batch_index",
@@ -4023,7 +4261,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            96
+            111
           ]
         }
       ],
@@ -4049,13 +4287,13 @@
         130
       ],
       "flags": {},
-      "order": 72,
+      "order": 78,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 95
+          "link": 107
         },
         {
           "name": "tail_frames",
@@ -4071,7 +4309,14 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            97
+            112
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": [
+            109
           ]
         }
       ],
@@ -4085,6 +4330,91 @@
       "title": "CONTINUATION_TAIL_05 (last N frames)"
     },
     {
+      "id": 2805,
+      "type": "PrimitiveInt",
+      "pos": [
+        4100,
+        780
+      ],
+      "size": [
+        280,
+        130
+      ],
+      "flags": {},
+      "order": 79,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            108
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        1
+      ],
+      "title": "RESUME_FRAME_COUNT_05"
+    },
+    {
+      "id": 2905,
+      "type": "ComfySwitchNode",
+      "pos": [
+        4100,
+        940
+      ],
+      "size": [
+        280,
+        150
+      ],
+      "flags": {},
+      "order": 80,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "on_false",
+          "type": "INT",
+          "link": 108
+        },
+        {
+          "name": "on_true",
+          "type": "INT",
+          "link": 109
+        },
+        {
+          "name": "switch",
+          "type": "BOOLEAN",
+          "link": 110,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "INT",
+          "links": [
+            116
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        false
+      ],
+      "title": "START_FRAME_COUNT_05: previous tail (true) / resume frame (false)"
+    },
+    {
       "id": 1805,
       "type": "ComfySwitchNode",
       "pos": [
@@ -4096,23 +4426,23 @@
         150
       ],
       "flags": {},
-      "order": 73,
+      "order": 81,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 96
+          "link": 111
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 97
+          "link": 112
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 98,
+          "link": 113,
           "widget": {
             "name": "switch"
           }
@@ -4123,7 +4453,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            99
+            114
           ]
         }
       ],
@@ -4141,7 +4471,7 @@
       "type": "84e2cf3f-de93-40ef-ab22-b9375296917b",
       "pos": [
         4100,
-        870
+        1120
       ],
       "size": [
         420,
@@ -4150,14 +4480,14 @@
       "flags": {
         "collapsed": false
       },
-      "order": 74,
+      "order": 82,
       "mode": 0,
       "inputs": [
         {
           "name": "START_IMAGE",
           "label": "segment first image",
           "localized_name": "START_IMAGE",
-          "link": 99,
+          "link": 114,
           "type": "IMAGE"
         },
         {
@@ -4253,14 +4583,14 @@
         {
           "name": "VIDEO",
           "links": [
-            109
+            125
           ],
           "type": "VIDEO"
         },
         {
           "name": "FRAMES",
           "links": [
-            100
+            115
           ],
           "type": "IMAGE"
         }
@@ -4322,47 +4652,36 @@
     },
     {
       "id": 1205,
-      "type": "ImageFromBatch",
+      "type": "Wan22DropLeadingFrames",
       "pos": [
         4560,
-        870
+        1120
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 75,
+      "order": 83,
       "mode": 0,
       "inputs": [
         {
-          "name": "image",
+          "name": "images",
           "type": "IMAGE",
-          "link": 100
+          "link": 115
         },
         {
-          "name": "batch_index",
+          "name": "skip_frames",
           "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "batch_index"
-          }
-        },
-        {
-          "name": "length",
-          "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "length"
-          }
+          "link": 116
         }
       ],
       "outputs": [
         {
-          "name": "IMAGE",
+          "name": "images",
           "type": "IMAGE",
           "links": [
-            101
+            117
           ]
         }
       ],
@@ -4370,41 +4689,38 @@
         "cnr_id": "comfy-core",
         "ver": "0.3.45"
       },
-      "widgets_values": [
-        1,
-        4096
-      ],
-      "title": "APPEND_FRAMES_05 (skip repeated first frame)"
+      "widgets_values": [],
+      "title": "APPEND_FRAMES_05 (skip conditioned tail)"
     },
     {
       "id": 2505,
       "type": "ComfySwitchNode",
       "pos": [
         4560,
-        1040
+        1290
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 76,
+      "order": 84,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 101
+          "link": 117
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 102
+          "link": 118
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 103,
+          "link": 119,
           "widget": {
             "name": "switch"
           }
@@ -4415,7 +4731,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            105
+            121
           ]
         }
       ],
@@ -4433,25 +4749,25 @@
       "type": "ImageBatch",
       "pos": [
         4560,
-        1220
+        1470
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 77,
+      "order": 85,
       "mode": 0,
       "inputs": [
         {
           "name": "image1",
           "type": "IMAGE",
-          "link": 104
+          "link": 120
         },
         {
           "name": "image2",
           "type": "IMAGE",
-          "link": 105
+          "link": 121
         }
       ],
       "outputs": [
@@ -4459,7 +4775,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            107
+            123
           ]
         }
       ],
@@ -4475,30 +4791,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         4560,
-        1400
+        1650
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 78,
+      "order": 86,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 106
+          "link": 122
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 107
+          "link": 123
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 108,
+          "link": 124,
           "widget": {
             "name": "switch"
           }
@@ -4509,9 +4825,9 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            119,
-            128,
-            130
+            135,
+            148,
+            150
           ]
         }
       ],
@@ -4529,30 +4845,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         4560,
-        1600
+        1850
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 79,
+      "order": 87,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 109
+          "link": 125
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 110
+          "link": 126
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 111,
+          "link": 127,
           "widget": {
             "name": "switch"
           }
@@ -4563,7 +4879,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            113
+            129
           ]
         }
       ],
@@ -4581,30 +4897,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         4560,
-        1800
+        2050
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 80,
+      "order": 88,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 112
+          "link": 128
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 113
+          "link": 129
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 114,
+          "link": 130,
           "widget": {
             "name": "switch"
           }
@@ -4615,7 +4931,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            116
+            132
           ]
         }
       ],
@@ -4633,25 +4949,25 @@
       "type": "Wan22ConditionalSaveVideo",
       "pos": [
         4560,
-        2000
+        2250
       ],
       "size": [
         330,
         190
       ],
       "flags": {},
-      "order": 81,
+      "order": 89,
       "mode": 0,
       "inputs": [
         {
           "name": "enabled",
           "type": "BOOLEAN",
-          "link": 115
+          "link": 131
         },
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 116
+          "link": 132
         },
         {
           "name": "filename_prefix",
@@ -4708,7 +5024,7 @@
         130
       ],
       "flags": {},
-      "order": 82,
+      "order": 90,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -4716,9 +5032,9 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            132,
-            138,
-            139
+            152,
+            158,
+            159
           ]
         }
       ],
@@ -4743,7 +5059,7 @@
         130
       ],
       "flags": {},
-      "order": 83,
+      "order": 91,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -4751,8 +5067,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            127,
-            135
+            147,
+            155
           ]
         }
       ],
@@ -4777,7 +5093,7 @@
         250
       ],
       "flags": {},
-      "order": 84,
+      "order": 92,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -4785,7 +5101,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            117
+            133
           ]
         },
         {
@@ -4831,13 +5147,13 @@
         130
       ],
       "flags": {},
-      "order": 85,
+      "order": 93,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 117
+          "link": 133
         },
         {
           "name": "batch_index",
@@ -4861,7 +5177,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            126
+            146
           ]
         }
       ],
@@ -4887,7 +5203,7 @@
         130
       ],
       "flags": {},
-      "order": 86,
+      "order": 94,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -4895,7 +5211,8 @@
           "name": "BOOLEAN",
           "type": "BOOLEAN",
           "links": [
-            122
+            138,
+            141
           ]
         }
       ],
@@ -4920,7 +5237,7 @@
         150
       ],
       "flags": {},
-      "order": 87,
+      "order": 95,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -4928,7 +5245,7 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            118
+            134
           ]
         }
       ],
@@ -4955,13 +5272,13 @@
         130
       ],
       "flags": {},
-      "order": 88,
+      "order": 96,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 118
+          "link": 134
         },
         {
           "name": "batch_index",
@@ -4985,7 +5302,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            120
+            139
           ]
         }
       ],
@@ -5011,13 +5328,13 @@
         130
       ],
       "flags": {},
-      "order": 89,
+      "order": 97,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 119
+          "link": 135
         },
         {
           "name": "tail_frames",
@@ -5033,7 +5350,14 @@
           "name": "tail_frames",
           "type": "IMAGE",
           "links": [
-            121
+            140
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": [
+            137
           ]
         }
       ],
@@ -5047,6 +5371,91 @@
       "title": "CONTINUATION_TAIL_06 (last N frames)"
     },
     {
+      "id": 2806,
+      "type": "PrimitiveInt",
+      "pos": [
+        5000,
+        780
+      ],
+      "size": [
+        280,
+        130
+      ],
+      "flags": {},
+      "order": 98,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            136
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        1
+      ],
+      "title": "RESUME_FRAME_COUNT_06"
+    },
+    {
+      "id": 2906,
+      "type": "ComfySwitchNode",
+      "pos": [
+        5000,
+        940
+      ],
+      "size": [
+        280,
+        150
+      ],
+      "flags": {},
+      "order": 99,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "on_false",
+          "type": "INT",
+          "link": 136
+        },
+        {
+          "name": "on_true",
+          "type": "INT",
+          "link": 137
+        },
+        {
+          "name": "switch",
+          "type": "BOOLEAN",
+          "link": 138,
+          "widget": {
+            "name": "switch"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "INT",
+          "links": [
+            144
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.45"
+      },
+      "widgets_values": [
+        false
+      ],
+      "title": "START_FRAME_COUNT_06: previous tail (true) / resume frame (false)"
+    },
+    {
       "id": 1806,
       "type": "ComfySwitchNode",
       "pos": [
@@ -5058,23 +5467,23 @@
         150
       ],
       "flags": {},
-      "order": 90,
+      "order": 100,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 120
+          "link": 139
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 121
+          "link": 140
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 122,
+          "link": 141,
           "widget": {
             "name": "switch"
           }
@@ -5085,7 +5494,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            123
+            142
           ]
         }
       ],
@@ -5103,7 +5512,7 @@
       "type": "84e2cf3f-de93-40ef-ab22-b9375296917b",
       "pos": [
         5000,
-        870
+        1120
       ],
       "size": [
         420,
@@ -5112,14 +5521,14 @@
       "flags": {
         "collapsed": false
       },
-      "order": 91,
+      "order": 101,
       "mode": 0,
       "inputs": [
         {
           "name": "START_IMAGE",
           "label": "segment first image",
           "localized_name": "START_IMAGE",
-          "link": 123,
+          "link": 142,
           "type": "IMAGE"
         },
         {
@@ -5215,14 +5624,14 @@
         {
           "name": "VIDEO",
           "links": [
-            133
+            153
           ],
           "type": "VIDEO"
         },
         {
           "name": "FRAMES",
           "links": [
-            124
+            143
           ],
           "type": "IMAGE"
         }
@@ -5284,47 +5693,36 @@
     },
     {
       "id": 1206,
-      "type": "ImageFromBatch",
+      "type": "Wan22DropLeadingFrames",
       "pos": [
         5460,
-        870
+        1120
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 92,
+      "order": 102,
       "mode": 0,
       "inputs": [
         {
-          "name": "image",
+          "name": "images",
           "type": "IMAGE",
-          "link": 124
+          "link": 143
         },
         {
-          "name": "batch_index",
+          "name": "skip_frames",
           "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "batch_index"
-          }
-        },
-        {
-          "name": "length",
-          "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "length"
-          }
+          "link": 144
         }
       ],
       "outputs": [
         {
-          "name": "IMAGE",
+          "name": "images",
           "type": "IMAGE",
           "links": [
-            125
+            145
           ]
         }
       ],
@@ -5332,41 +5730,38 @@
         "cnr_id": "comfy-core",
         "ver": "0.3.45"
       },
-      "widgets_values": [
-        1,
-        4096
-      ],
-      "title": "APPEND_FRAMES_06 (skip repeated first frame)"
+      "widgets_values": [],
+      "title": "APPEND_FRAMES_06 (skip conditioned tail)"
     },
     {
       "id": 2506,
       "type": "ComfySwitchNode",
       "pos": [
         5460,
-        1040
+        1290
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 93,
+      "order": 103,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 125
+          "link": 145
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 126
+          "link": 146
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 127,
+          "link": 147,
           "widget": {
             "name": "switch"
           }
@@ -5377,7 +5772,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            129
+            149
           ]
         }
       ],
@@ -5395,25 +5790,25 @@
       "type": "ImageBatch",
       "pos": [
         5460,
-        1220
+        1470
       ],
       "size": [
         280,
         130
       ],
       "flags": {},
-      "order": 94,
+      "order": 104,
       "mode": 0,
       "inputs": [
         {
           "name": "image1",
           "type": "IMAGE",
-          "link": 128
+          "link": 148
         },
         {
           "name": "image2",
           "type": "IMAGE",
-          "link": 129
+          "link": 149
         }
       ],
       "outputs": [
@@ -5421,7 +5816,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            131
+            151
           ]
         }
       ],
@@ -5437,30 +5832,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         5460,
-        1400
+        1650
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 95,
+      "order": 105,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "IMAGE",
-          "link": 130
+          "link": 150
         },
         {
           "name": "on_true",
           "type": "IMAGE",
-          "link": 131
+          "link": 151
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 132,
+          "link": 152,
           "widget": {
             "name": "switch"
           }
@@ -5471,7 +5866,7 @@
           "name": "output",
           "type": "IMAGE",
           "links": [
-            141
+            161
           ]
         }
       ],
@@ -5489,30 +5884,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         5460,
-        1600
+        1850
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 96,
+      "order": 106,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 133
+          "link": 153
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 134
+          "link": 154
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 135,
+          "link": 155,
           "widget": {
             "name": "switch"
           }
@@ -5523,7 +5918,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            137
+            157
           ]
         }
       ],
@@ -5541,30 +5936,30 @@
       "type": "ComfySwitchNode",
       "pos": [
         5460,
-        1800
+        2050
       ],
       "size": [
         280,
         150
       ],
       "flags": {},
-      "order": 97,
+      "order": 107,
       "mode": 0,
       "inputs": [
         {
           "name": "on_false",
           "type": "VIDEO",
-          "link": 136
+          "link": 156
         },
         {
           "name": "on_true",
           "type": "VIDEO",
-          "link": 137
+          "link": 157
         },
         {
           "name": "switch",
           "type": "BOOLEAN",
-          "link": 138,
+          "link": 158,
           "widget": {
             "name": "switch"
           }
@@ -5575,7 +5970,7 @@
           "name": "output",
           "type": "VIDEO",
           "links": [
-            140
+            160
           ]
         }
       ],
@@ -5593,25 +5988,25 @@
       "type": "Wan22ConditionalSaveVideo",
       "pos": [
         5460,
-        2000
+        2250
       ],
       "size": [
         330,
         190
       ],
       "flags": {},
-      "order": 98,
+      "order": 108,
       "mode": 0,
       "inputs": [
         {
           "name": "enabled",
           "type": "BOOLEAN",
-          "link": 139
+          "link": 159
         },
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 140
+          "link": 160
         },
         {
           "name": "filename_prefix",
@@ -5668,13 +6063,13 @@
         130
       ],
       "flags": {},
-      "order": 99,
+      "order": 109,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 141
+          "link": 161
         },
         {
           "name": "audio",
@@ -5695,7 +6090,7 @@
           "name": "VIDEO",
           "type": "VIDEO",
           "links": [
-            142
+            162
           ]
         }
       ],
@@ -5720,13 +6115,13 @@
         180
       ],
       "flags": {},
-      "order": 100,
+      "order": 110,
       "mode": 0,
       "inputs": [
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 142
+          "link": 162
         },
         {
           "name": "filename_prefix",
@@ -5953,6 +6348,30 @@
     ],
     [
       24,
+      2802,
+      0,
+      2902,
+      0,
+      "INT"
+    ],
+    [
+      25,
+      2702,
+      1,
+      2902,
+      1,
+      "INT"
+    ],
+    [
+      26,
+      2102,
+      0,
+      2902,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      27,
       1702,
       0,
       1802,
@@ -5960,7 +6379,7 @@
       "IMAGE"
     ],
     [
-      25,
+      28,
       2702,
       0,
       1802,
@@ -5968,7 +6387,7 @@
       "IMAGE"
     ],
     [
-      26,
+      29,
       2102,
       0,
       1802,
@@ -5976,7 +6395,7 @@
       "BOOLEAN"
     ],
     [
-      27,
+      30,
       1802,
       0,
       1102,
@@ -5984,7 +6403,7 @@
       "IMAGE"
     ],
     [
-      28,
+      31,
       1102,
       1,
       1202,
@@ -5992,7 +6411,15 @@
       "IMAGE"
     ],
     [
-      29,
+      32,
+      2902,
+      0,
+      1202,
+      1,
+      "INT"
+    ],
+    [
+      33,
       1202,
       0,
       2502,
@@ -6000,7 +6427,7 @@
       "IMAGE"
     ],
     [
-      30,
+      34,
       2402,
       0,
       2502,
@@ -6008,7 +6435,7 @@
       "IMAGE"
     ],
     [
-      31,
+      35,
       2202,
       0,
       2502,
@@ -6016,7 +6443,7 @@
       "BOOLEAN"
     ],
     [
-      32,
+      36,
       1301,
       0,
       1902,
@@ -6024,7 +6451,7 @@
       "IMAGE"
     ],
     [
-      33,
+      37,
       2502,
       0,
       1902,
@@ -6032,7 +6459,7 @@
       "IMAGE"
     ],
     [
-      34,
+      38,
       1301,
       0,
       1302,
@@ -6040,7 +6467,7 @@
       "IMAGE"
     ],
     [
-      35,
+      39,
       1902,
       0,
       1302,
@@ -6048,7 +6475,7 @@
       "IMAGE"
     ],
     [
-      36,
+      40,
       1002,
       0,
       1302,
@@ -6056,7 +6483,7 @@
       "BOOLEAN"
     ],
     [
-      37,
+      41,
       1102,
       0,
       2602,
@@ -6064,7 +6491,7 @@
       "VIDEO"
     ],
     [
-      38,
+      42,
       2,
       0,
       2602,
@@ -6072,7 +6499,7 @@
       "VIDEO"
     ],
     [
-      39,
+      43,
       2202,
       0,
       2602,
@@ -6080,7 +6507,7 @@
       "BOOLEAN"
     ],
     [
-      40,
+      44,
       2,
       0,
       1402,
@@ -6088,7 +6515,7 @@
       "VIDEO"
     ],
     [
-      41,
+      45,
       2602,
       0,
       1402,
@@ -6096,7 +6523,7 @@
       "VIDEO"
     ],
     [
-      42,
+      46,
       1002,
       0,
       1402,
@@ -6104,7 +6531,7 @@
       "BOOLEAN"
     ],
     [
-      43,
+      47,
       1002,
       0,
       1502,
@@ -6112,7 +6539,7 @@
       "BOOLEAN"
     ],
     [
-      44,
+      48,
       1402,
       0,
       1502,
@@ -6120,7 +6547,7 @@
       "VIDEO"
     ],
     [
-      45,
+      49,
       2303,
       0,
       2403,
@@ -6128,7 +6555,7 @@
       "IMAGE"
     ],
     [
-      46,
+      50,
       1603,
       0,
       1703,
@@ -6136,7 +6563,7 @@
       "IMAGE"
     ],
     [
-      47,
+      51,
       1302,
       0,
       2703,
@@ -6144,7 +6571,31 @@
       "IMAGE"
     ],
     [
-      48,
+      52,
+      2803,
+      0,
+      2903,
+      0,
+      "INT"
+    ],
+    [
+      53,
+      2703,
+      1,
+      2903,
+      1,
+      "INT"
+    ],
+    [
+      54,
+      2103,
+      0,
+      2903,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      55,
       1703,
       0,
       1803,
@@ -6152,7 +6603,7 @@
       "IMAGE"
     ],
     [
-      49,
+      56,
       2703,
       0,
       1803,
@@ -6160,7 +6611,7 @@
       "IMAGE"
     ],
     [
-      50,
+      57,
       2103,
       0,
       1803,
@@ -6168,7 +6619,7 @@
       "BOOLEAN"
     ],
     [
-      51,
+      58,
       1803,
       0,
       1103,
@@ -6176,7 +6627,7 @@
       "IMAGE"
     ],
     [
-      52,
+      59,
       1103,
       1,
       1203,
@@ -6184,7 +6635,15 @@
       "IMAGE"
     ],
     [
-      53,
+      60,
+      2903,
+      0,
+      1203,
+      1,
+      "INT"
+    ],
+    [
+      61,
       1203,
       0,
       2503,
@@ -6192,7 +6651,7 @@
       "IMAGE"
     ],
     [
-      54,
+      62,
       2403,
       0,
       2503,
@@ -6200,7 +6659,7 @@
       "IMAGE"
     ],
     [
-      55,
+      63,
       2203,
       0,
       2503,
@@ -6208,7 +6667,7 @@
       "BOOLEAN"
     ],
     [
-      56,
+      64,
       1302,
       0,
       1903,
@@ -6216,7 +6675,7 @@
       "IMAGE"
     ],
     [
-      57,
+      65,
       2503,
       0,
       1903,
@@ -6224,7 +6683,7 @@
       "IMAGE"
     ],
     [
-      58,
+      66,
       1302,
       0,
       1303,
@@ -6232,7 +6691,7 @@
       "IMAGE"
     ],
     [
-      59,
+      67,
       1903,
       0,
       1303,
@@ -6240,7 +6699,7 @@
       "IMAGE"
     ],
     [
-      60,
+      68,
       1003,
       0,
       1303,
@@ -6248,7 +6707,7 @@
       "BOOLEAN"
     ],
     [
-      61,
+      69,
       1103,
       0,
       2603,
@@ -6256,7 +6715,7 @@
       "VIDEO"
     ],
     [
-      62,
+      70,
       2,
       0,
       2603,
@@ -6264,7 +6723,7 @@
       "VIDEO"
     ],
     [
-      63,
+      71,
       2203,
       0,
       2603,
@@ -6272,7 +6731,7 @@
       "BOOLEAN"
     ],
     [
-      64,
+      72,
       2,
       0,
       1403,
@@ -6280,7 +6739,7 @@
       "VIDEO"
     ],
     [
-      65,
+      73,
       2603,
       0,
       1403,
@@ -6288,7 +6747,7 @@
       "VIDEO"
     ],
     [
-      66,
+      74,
       1003,
       0,
       1403,
@@ -6296,7 +6755,7 @@
       "BOOLEAN"
     ],
     [
-      67,
+      75,
       1003,
       0,
       1503,
@@ -6304,7 +6763,7 @@
       "BOOLEAN"
     ],
     [
-      68,
+      76,
       1403,
       0,
       1503,
@@ -6312,7 +6771,7 @@
       "VIDEO"
     ],
     [
-      69,
+      77,
       2304,
       0,
       2404,
@@ -6320,7 +6779,7 @@
       "IMAGE"
     ],
     [
-      70,
+      78,
       1604,
       0,
       1704,
@@ -6328,7 +6787,7 @@
       "IMAGE"
     ],
     [
-      71,
+      79,
       1303,
       0,
       2704,
@@ -6336,7 +6795,31 @@
       "IMAGE"
     ],
     [
-      72,
+      80,
+      2804,
+      0,
+      2904,
+      0,
+      "INT"
+    ],
+    [
+      81,
+      2704,
+      1,
+      2904,
+      1,
+      "INT"
+    ],
+    [
+      82,
+      2104,
+      0,
+      2904,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      83,
       1704,
       0,
       1804,
@@ -6344,7 +6827,7 @@
       "IMAGE"
     ],
     [
-      73,
+      84,
       2704,
       0,
       1804,
@@ -6352,7 +6835,7 @@
       "IMAGE"
     ],
     [
-      74,
+      85,
       2104,
       0,
       1804,
@@ -6360,7 +6843,7 @@
       "BOOLEAN"
     ],
     [
-      75,
+      86,
       1804,
       0,
       1104,
@@ -6368,7 +6851,7 @@
       "IMAGE"
     ],
     [
-      76,
+      87,
       1104,
       1,
       1204,
@@ -6376,7 +6859,15 @@
       "IMAGE"
     ],
     [
-      77,
+      88,
+      2904,
+      0,
+      1204,
+      1,
+      "INT"
+    ],
+    [
+      89,
       1204,
       0,
       2504,
@@ -6384,7 +6875,7 @@
       "IMAGE"
     ],
     [
-      78,
+      90,
       2404,
       0,
       2504,
@@ -6392,7 +6883,7 @@
       "IMAGE"
     ],
     [
-      79,
+      91,
       2204,
       0,
       2504,
@@ -6400,7 +6891,7 @@
       "BOOLEAN"
     ],
     [
-      80,
+      92,
       1303,
       0,
       1904,
@@ -6408,7 +6899,7 @@
       "IMAGE"
     ],
     [
-      81,
+      93,
       2504,
       0,
       1904,
@@ -6416,7 +6907,7 @@
       "IMAGE"
     ],
     [
-      82,
+      94,
       1303,
       0,
       1304,
@@ -6424,7 +6915,7 @@
       "IMAGE"
     ],
     [
-      83,
+      95,
       1904,
       0,
       1304,
@@ -6432,7 +6923,7 @@
       "IMAGE"
     ],
     [
-      84,
+      96,
       1004,
       0,
       1304,
@@ -6440,7 +6931,7 @@
       "BOOLEAN"
     ],
     [
-      85,
+      97,
       1104,
       0,
       2604,
@@ -6448,7 +6939,7 @@
       "VIDEO"
     ],
     [
-      86,
+      98,
       2,
       0,
       2604,
@@ -6456,7 +6947,7 @@
       "VIDEO"
     ],
     [
-      87,
+      99,
       2204,
       0,
       2604,
@@ -6464,7 +6955,7 @@
       "BOOLEAN"
     ],
     [
-      88,
+      100,
       2,
       0,
       1404,
@@ -6472,7 +6963,7 @@
       "VIDEO"
     ],
     [
-      89,
+      101,
       2604,
       0,
       1404,
@@ -6480,7 +6971,7 @@
       "VIDEO"
     ],
     [
-      90,
+      102,
       1004,
       0,
       1404,
@@ -6488,7 +6979,7 @@
       "BOOLEAN"
     ],
     [
-      91,
+      103,
       1004,
       0,
       1504,
@@ -6496,7 +6987,7 @@
       "BOOLEAN"
     ],
     [
-      92,
+      104,
       1404,
       0,
       1504,
@@ -6504,7 +6995,7 @@
       "VIDEO"
     ],
     [
-      93,
+      105,
       2305,
       0,
       2405,
@@ -6512,7 +7003,7 @@
       "IMAGE"
     ],
     [
-      94,
+      106,
       1605,
       0,
       1705,
@@ -6520,7 +7011,7 @@
       "IMAGE"
     ],
     [
-      95,
+      107,
       1304,
       0,
       2705,
@@ -6528,7 +7019,31 @@
       "IMAGE"
     ],
     [
-      96,
+      108,
+      2805,
+      0,
+      2905,
+      0,
+      "INT"
+    ],
+    [
+      109,
+      2705,
+      1,
+      2905,
+      1,
+      "INT"
+    ],
+    [
+      110,
+      2105,
+      0,
+      2905,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      111,
       1705,
       0,
       1805,
@@ -6536,7 +7051,7 @@
       "IMAGE"
     ],
     [
-      97,
+      112,
       2705,
       0,
       1805,
@@ -6544,7 +7059,7 @@
       "IMAGE"
     ],
     [
-      98,
+      113,
       2105,
       0,
       1805,
@@ -6552,7 +7067,7 @@
       "BOOLEAN"
     ],
     [
-      99,
+      114,
       1805,
       0,
       1105,
@@ -6560,7 +7075,7 @@
       "IMAGE"
     ],
     [
-      100,
+      115,
       1105,
       1,
       1205,
@@ -6568,7 +7083,15 @@
       "IMAGE"
     ],
     [
-      101,
+      116,
+      2905,
+      0,
+      1205,
+      1,
+      "INT"
+    ],
+    [
+      117,
       1205,
       0,
       2505,
@@ -6576,7 +7099,7 @@
       "IMAGE"
     ],
     [
-      102,
+      118,
       2405,
       0,
       2505,
@@ -6584,7 +7107,7 @@
       "IMAGE"
     ],
     [
-      103,
+      119,
       2205,
       0,
       2505,
@@ -6592,7 +7115,7 @@
       "BOOLEAN"
     ],
     [
-      104,
+      120,
       1304,
       0,
       1905,
@@ -6600,7 +7123,7 @@
       "IMAGE"
     ],
     [
-      105,
+      121,
       2505,
       0,
       1905,
@@ -6608,7 +7131,7 @@
       "IMAGE"
     ],
     [
-      106,
+      122,
       1304,
       0,
       1305,
@@ -6616,7 +7139,7 @@
       "IMAGE"
     ],
     [
-      107,
+      123,
       1905,
       0,
       1305,
@@ -6624,7 +7147,7 @@
       "IMAGE"
     ],
     [
-      108,
+      124,
       1005,
       0,
       1305,
@@ -6632,7 +7155,7 @@
       "BOOLEAN"
     ],
     [
-      109,
+      125,
       1105,
       0,
       2605,
@@ -6640,7 +7163,7 @@
       "VIDEO"
     ],
     [
-      110,
+      126,
       2,
       0,
       2605,
@@ -6648,7 +7171,7 @@
       "VIDEO"
     ],
     [
-      111,
+      127,
       2205,
       0,
       2605,
@@ -6656,7 +7179,7 @@
       "BOOLEAN"
     ],
     [
-      112,
+      128,
       2,
       0,
       1405,
@@ -6664,7 +7187,7 @@
       "VIDEO"
     ],
     [
-      113,
+      129,
       2605,
       0,
       1405,
@@ -6672,7 +7195,7 @@
       "VIDEO"
     ],
     [
-      114,
+      130,
       1005,
       0,
       1405,
@@ -6680,7 +7203,7 @@
       "BOOLEAN"
     ],
     [
-      115,
+      131,
       1005,
       0,
       1505,
@@ -6688,7 +7211,7 @@
       "BOOLEAN"
     ],
     [
-      116,
+      132,
       1405,
       0,
       1505,
@@ -6696,7 +7219,7 @@
       "VIDEO"
     ],
     [
-      117,
+      133,
       2306,
       0,
       2406,
@@ -6704,7 +7227,7 @@
       "IMAGE"
     ],
     [
-      118,
+      134,
       1606,
       0,
       1706,
@@ -6712,7 +7235,7 @@
       "IMAGE"
     ],
     [
-      119,
+      135,
       1305,
       0,
       2706,
@@ -6720,7 +7243,31 @@
       "IMAGE"
     ],
     [
-      120,
+      136,
+      2806,
+      0,
+      2906,
+      0,
+      "INT"
+    ],
+    [
+      137,
+      2706,
+      1,
+      2906,
+      1,
+      "INT"
+    ],
+    [
+      138,
+      2106,
+      0,
+      2906,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      139,
       1706,
       0,
       1806,
@@ -6728,7 +7275,7 @@
       "IMAGE"
     ],
     [
-      121,
+      140,
       2706,
       0,
       1806,
@@ -6736,7 +7283,7 @@
       "IMAGE"
     ],
     [
-      122,
+      141,
       2106,
       0,
       1806,
@@ -6744,7 +7291,7 @@
       "BOOLEAN"
     ],
     [
-      123,
+      142,
       1806,
       0,
       1106,
@@ -6752,7 +7299,7 @@
       "IMAGE"
     ],
     [
-      124,
+      143,
       1106,
       1,
       1206,
@@ -6760,7 +7307,15 @@
       "IMAGE"
     ],
     [
-      125,
+      144,
+      2906,
+      0,
+      1206,
+      1,
+      "INT"
+    ],
+    [
+      145,
       1206,
       0,
       2506,
@@ -6768,7 +7323,7 @@
       "IMAGE"
     ],
     [
-      126,
+      146,
       2406,
       0,
       2506,
@@ -6776,7 +7331,7 @@
       "IMAGE"
     ],
     [
-      127,
+      147,
       2206,
       0,
       2506,
@@ -6784,7 +7339,7 @@
       "BOOLEAN"
     ],
     [
-      128,
+      148,
       1305,
       0,
       1906,
@@ -6792,7 +7347,7 @@
       "IMAGE"
     ],
     [
-      129,
+      149,
       2506,
       0,
       1906,
@@ -6800,7 +7355,7 @@
       "IMAGE"
     ],
     [
-      130,
+      150,
       1305,
       0,
       1306,
@@ -6808,7 +7363,7 @@
       "IMAGE"
     ],
     [
-      131,
+      151,
       1906,
       0,
       1306,
@@ -6816,7 +7371,7 @@
       "IMAGE"
     ],
     [
-      132,
+      152,
       1006,
       0,
       1306,
@@ -6824,7 +7379,7 @@
       "BOOLEAN"
     ],
     [
-      133,
+      153,
       1106,
       0,
       2606,
@@ -6832,7 +7387,7 @@
       "VIDEO"
     ],
     [
-      134,
+      154,
       2,
       0,
       2606,
@@ -6840,7 +7395,7 @@
       "VIDEO"
     ],
     [
-      135,
+      155,
       2206,
       0,
       2606,
@@ -6848,7 +7403,7 @@
       "BOOLEAN"
     ],
     [
-      136,
+      156,
       2,
       0,
       1406,
@@ -6856,7 +7411,7 @@
       "VIDEO"
     ],
     [
-      137,
+      157,
       2606,
       0,
       1406,
@@ -6864,7 +7419,7 @@
       "VIDEO"
     ],
     [
-      138,
+      158,
       1006,
       0,
       1406,
@@ -6872,7 +7427,7 @@
       "BOOLEAN"
     ],
     [
-      139,
+      159,
       1006,
       0,
       1506,
@@ -6880,7 +7435,7 @@
       "BOOLEAN"
     ],
     [
-      140,
+      160,
       1406,
       0,
       1506,
@@ -6888,7 +7443,7 @@
       "VIDEO"
     ],
     [
-      141,
+      161,
       1306,
       0,
       2001,
@@ -6896,7 +7451,7 @@
       "IMAGE"
     ],
     [
-      142,
+      162,
       2001,
       0,
       2002,
@@ -6925,7 +7480,7 @@
         465,
         -70,
         800,
-        2320
+        2570
       ],
       "color": "#3f789e",
       "font_size": 24,
@@ -6938,7 +7493,7 @@
         1365,
         -70,
         800,
-        2320
+        2570
       ],
       "color": "#3f789e",
       "font_size": 24,
@@ -6951,7 +7506,7 @@
         2265,
         -70,
         800,
-        2320
+        2570
       ],
       "color": "#3f789e",
       "font_size": 24,
@@ -6964,7 +7519,7 @@
         3165,
         -70,
         800,
-        2320
+        2570
       ],
       "color": "#3f789e",
       "font_size": 24,
@@ -6977,7 +7532,7 @@
         4065,
         -70,
         800,
-        2320
+        2570
       ],
       "color": "#3f789e",
       "font_size": 24,
@@ -6990,7 +7545,7 @@
         4965,
         -70,
         800,
-        2320
+        2570
       ],
       "color": "#3f789e",
       "font_size": 24,

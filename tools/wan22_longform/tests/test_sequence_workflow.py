@@ -47,6 +47,13 @@ class SequenceWorkflowTests(unittest.TestCase):
         tail_node = getattr(sequence_nodes, "Wan22TailFramesFromBatch", None)
         if tail_node is not None:
             result = tail_node().select_tail(("one", "two", "three", "four"), 2)
+            self.assertEqual(result, (("three", "four"), 2))
+
+    def test_drop_leading_frames_node_removes_conditioned_overlap(self) -> None:
+        self.assertTrue(hasattr(sequence_nodes, "Wan22DropLeadingFrames"))
+        drop_node = getattr(sequence_nodes, "Wan22DropLeadingFrames", None)
+        if drop_node is not None:
+            result = drop_node().drop_frames(("one", "two", "three", "four"), 2)
             self.assertEqual(result, (("three", "four"),))
 
     def test_sequence_has_six_lazy_segments_and_one_final_video(self) -> None:
@@ -85,7 +92,7 @@ class SequenceWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             len([node for node in nodes if node["type"] == "ComfySwitchNode"]),
-            29,
+            34,
         )
         self.assertEqual(by_title["SAVE_FINAL_VIDEO"]["type"], "SaveVideo")
 
@@ -156,6 +163,15 @@ class SequenceWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 links[source["inputs"][1]["link"]][1],
                 tail["id"],
+            )
+            self.assertEqual(tail["outputs"][1]["type"], "INT")
+            count_switch = by_title[
+                f"START_FRAME_COUNT_{index:02}: previous tail (true) / resume frame (false)"
+            ]
+            append = by_title[f"APPEND_FRAMES_{index:02} (skip conditioned tail)"]
+            self.assertEqual(
+                links[append["inputs"][1]["link"]][1],
+                count_switch["id"],
             )
 
 

@@ -67,7 +67,9 @@ enter the final assembly, while existing sections load their selected MP4 via
 accumulated prior sequence (default: 8) or the final frame from `RESUME_VIDEO_nn`.
 Every `ComfySwitchNode` supplies both branches, so its
 lazy branch selection protects disabled Wan and resume-video work. Fresh enabled
-sections pass through `Wan22ConditionalSaveVideo`; cached sections are not
-rewritten. `ASSEMBLE_ENABLED_SEGMENTS` and `SAVE_FINAL_VIDEO` make one direct
-frame-concatenated MP4. Generated FLF transitions remain deliberate separate
-operations rather than silently inserted cuts.
+sections remove the exact number of conditioned input frames before frame
+assembly: the selected tail length for a previous-tail continuation or one for
+a saved-MP4 resume. They then pass through `Wan22ConditionalSaveVideo`; cached
+sections are not rewritten. `ASSEMBLE_ENABLED_SEGMENTS` and `SAVE_FINAL_VIDEO`
+make one direct frame-concatenated MP4. Generated FLF transitions remain
+deliberate separate operations rather than silently inserted cuts.

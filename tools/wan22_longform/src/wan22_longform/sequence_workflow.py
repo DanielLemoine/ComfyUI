@@ -237,11 +237,14 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
 
         if index == 1:
             start_source_id, start_source_slot = seed["id"], 0
+            continuation_count_id, continuation_count_slot = None, None
         else:
             resume_tail_id = 1600 + index
             resume_last_id = 1700 + index
             start_switch_id = 1800 + index
             continuation_tail_id = 2700 + index
+            resume_count_id = 2800 + index
+            start_count_switch_id = 2900 + index
             use_previous_id = 2100 + index
             use_previous = add(
                 _node(
@@ -292,12 +295,34 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                         _input("images", "IMAGE"),
                         _input("tail_frames", "INT", widget=True),
                     ],
-                    [_output("tail_frames", "IMAGE")],
+                    [_output("tail_frames", "IMAGE"), _output("count", "INT")],
                     [8],
                     (300, 130),
                 )
             )
             connect(active_frames_id, active_frames_slot, continuation_tail["id"], 0, "IMAGE")
+            resume_count = add(
+                _node(
+                    resume_count_id,
+                    "PrimitiveInt",
+                    f"RESUME_FRAME_COUNT_{index:02}",
+                    (x, 780),
+                    [],
+                    [_output("INT", "INT")],
+                    [1],
+                )
+            )
+            start_count_switch = add(
+                _switch(
+                    start_count_switch_id,
+                    f"START_FRAME_COUNT_{index:02}: previous tail (true) / resume frame (false)",
+                    (x, 940),
+                    "INT",
+                )
+            )
+            connect(resume_count["id"], 0, start_count_switch["id"], 0, "INT")
+            connect(continuation_tail["id"], 1, start_count_switch["id"], 1, "INT")
+            connect(use_previous["id"], 0, start_count_switch["id"], 2, "BOOLEAN")
             start_switch = add(
                 _switch(
                     start_switch_id,
@@ -310,32 +335,53 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             connect(continuation_tail["id"], 0, start_switch["id"], 1, "IMAGE")
             connect(use_previous["id"], 0, start_switch["id"], 2, "BOOLEAN")
             start_source_id, start_source_slot = start_switch["id"], 0
+            continuation_count_id, continuation_count_slot = start_count_switch["id"], 0
 
-        segment = add(_segment_instance(segment_template, segment_id, index, (x, 870)))
+        segment = add(_segment_instance(segment_template, segment_id, index, (x, 1120)))
         connect(start_source_id, start_source_slot, segment["id"], 0, "IMAGE")
 
-        append = add(
-            _node(
-                append_id,
-                "ImageFromBatch",
-                f"APPEND_FRAMES_{index:02} (skip repeated first frame)",
-                (x + 460, 870),
-                [
-                    _input("image", "IMAGE"),
-                    _input("batch_index", "INT", widget=True),
-                    _input("length", "INT", widget=True),
-                ],
-                [_output("IMAGE", "IMAGE")],
-                [1, 4096],
+        if index == 1:
+            append = add(
+                _node(
+                    append_id,
+                    "ImageFromBatch",
+                    "APPEND_FRAMES_01 (skip repeated first frame)",
+                    (x + 460, 1120),
+                    [
+                        _input("image", "IMAGE"),
+                        _input("batch_index", "INT", widget=True),
+                        _input("length", "INT", widget=True),
+                    ],
+                    [_output("IMAGE", "IMAGE")],
+                    [1, 4096],
+                )
             )
-        )
+        else:
+            append = add(
+                _node(
+                    append_id,
+                    "Wan22DropLeadingFrames",
+                    f"APPEND_FRAMES_{index:02} (skip conditioned tail)",
+                    (x + 460, 1120),
+                    [_input("images", "IMAGE"), _input("skip_frames", "INT")],
+                    [_output("images", "IMAGE")],
+                )
+            )
         connect(segment["id"], 1, append["id"], 0, "IMAGE")
+        if continuation_count_id is not None:
+            connect(
+                continuation_count_id,
+                continuation_count_slot,
+                append["id"],
+                1,
+                "INT",
+            )
 
         content_switch = add(
             _switch(
                 content_switch_id,
                 f"CONTENT_FOR_SEGMENT_{index:02}: generated (false) / cached (true)",
-                (x + 460, 1040),
+                (x + 460, 1290),
                 "IMAGE",
             )
         )
@@ -348,7 +394,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 1900 + index,
                 "ImageBatch",
                 f"MERGE_ACTIVE_WITH_SEGMENT_{index:02}",
-                (x + 460, 1220),
+                (x + 460, 1470),
                 [_input("image1", "IMAGE"), _input("image2", "IMAGE")],
                 [_output("IMAGE", "IMAGE")],
             )
@@ -360,7 +406,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 active_switch_id,
                 f"ACTIVE_FRAMES_AFTER_SEGMENT_{index:02}",
-                (x + 460, 1400),
+                (x + 460, 1650),
                 "IMAGE",
             )
         )
@@ -372,7 +418,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 generated_save_switch_id,
                 f"GENERATED_VIDEO_FOR_SEGMENT_{index:02}_SAVE",
-                (x + 460, 1600),
+                (x + 460, 1850),
                 "VIDEO",
             )
         )
@@ -383,7 +429,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             _switch(
                 save_switch_id,
                 f"VIDEO_FOR_SEGMENT_{index:02}_SAVE",
-                (x + 460, 1800),
+                (x + 460, 2050),
                 "VIDEO",
             )
         )
@@ -396,7 +442,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
                 saver_id,
                 "Wan22ConditionalSaveVideo",
                 f"SAVE_SEGMENT_{index:02} (enabled only)",
-                (x + 460, 2000),
+                (x + 460, 2250),
                 [
                     _input("enabled", "BOOLEAN"),
                     _input("video", "VIDEO"),
@@ -416,7 +462,7 @@ def build_sequence_workflow(native_workflow: Workflow) -> Workflow:
             {
                 "id": index,
                 "title": f"Segment {index:02}: generate, reuse, continue, and save",
-                "bounding": [x - 35, -70, 800, 2320],
+                "bounding": [x - 35, -70, 800, 2570],
                 "color": "#3f789e",
                 "font_size": 24,
                 "flags": {},

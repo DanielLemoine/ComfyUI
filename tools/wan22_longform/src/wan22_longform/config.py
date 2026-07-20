@@ -8,6 +8,9 @@ from typing import Any, Mapping
 
 import yaml
 
+from .atomic import write_text
+from .hashing import sha256_file
+
 
 PERMISSIVENESS_MODES = frozenset({"none", "mystic", "wan_general"})
 PROJECT_SCHEMA_VERSION = 1
@@ -188,13 +191,37 @@ def load_project(path: Path) -> ProjectConfig:
     return ProjectConfig(path=path.resolve(), source=_freeze(source))
 
 
-def validate_project_contract(project: ProjectConfig) -> None:
+def bind_project_object_info(project_path: Path, object_info_path: Path) -> ProjectConfig:
+    """Atomically bind a completed preflight snapshot into one project manifest."""
+    project_path = project_path.resolve()
+    object_info_path = object_info_path.resolve()
+    if not object_info_path.is_file():
+        raise ConfigError(f"preflight object_info snapshot does not exist: {object_info_path}")
+    source = _read_mapping(project_path)
+    try:
+        reference = str(object_info_path.relative_to(project_path.parent))
+    except ValueError:
+        reference = str(object_info_path)
+    source["object_info"] = reference
+    source["object_info_sha256"] = sha256_file(object_info_path)
+    write_text(
+        project_path,
+        yaml.safe_dump(source, allow_unicode=True, sort_keys=False),
+        replace_existing=True,
+    )
+    return load_project(project_path)
+
+
+def validate_project_contract(
+    project: ProjectConfig, *, require_object_info_binding: bool = True
+) -> None:
     """Check the versioned operator manifest shape without changing source state."""
     source = project.source
     if source.get("schema_version") != PROJECT_SCHEMA_VERSION:
         raise ConfigError(f"schema_version must be {PROJECT_SCHEMA_VERSION}")
     _string(source.get("project_id"), "project_id")
     _string(source.get("title"), "title")
+    _string(source.get("preset"), "preset")
     mode = _string(source.get("mode"), "mode")
     if mode not in {"cinematic", "continuous"}:
         raise ConfigError("mode must be cinematic or continuous")
@@ -207,11 +234,14 @@ def validate_project_contract(project: ProjectConfig) -> None:
     _string(source.get("workflow_api"), "workflow_api")
     _string(source.get("bridge_workflow_api"), "bridge_workflow_api")
     _workflow_hashes(_required_mapping(source, "workflow_hashes"))
+    if require_object_info_binding:
+        _object_info_binding_contract(source)
     _environment_snapshot(_required_mapping(source, "environment_snapshot"))
     _lora_contract(_required_mapping(source, "loras"))
     _policy_contract(_required_mapping(source, "policy"))
     _continuation_contract(_required_mapping(source, "continuation"))
     _qc_contract(source, _required_mapping(source, "qc"))
+    _request_contract(source.get("request"))
     _manifest_inputs(source)
     shot_segments = _shots_contract(source)
     bridge_shots = _bridges_contract(source, shot_segments)
@@ -241,7 +271,8 @@ def _output_paths(project: ProjectConfig, output_root: str, outputs: Mapping[str
 
 
 def _render_contract(render: Mapping[str, Any]) -> None:
-    _string(render.get("workflow"), "render.workflow")
+    if "workflow" in render:
+        raise ConfigError("render.workflow is obsolete; use workflow_api")
     for key in ("width", "height", "frames"):
         _positive_int(render.get(key), f"render.{key}")
     _positive_number(render.get("generation_fps"), "render.generation_fps")
@@ -294,6 +325,13 @@ def _workflow_hashes(hashes: Mapping[str, Any]) -> None:
             raise ConfigError(f"workflow_hashes.{key} must be a SHA-256 hex digest")
 
 
+def _object_info_binding_contract(source: Mapping[str, Any]) -> None:
+    _string(source.get("object_info"), "object_info")
+    value = _string(source.get("object_info_sha256"), "object_info_sha256")
+    if len(value) != 64 or any(character not in "0123456789abcdefABCDEF" for character in value):
+        raise ConfigError("object_info_sha256 must be a SHA-256 hex digest")
+
+
 def _environment_snapshot(snapshot: Mapping[str, Any]) -> None:
     for key in ("captured_at", "platform", "python", "gpu"):
         _string(snapshot.get(key), f"environment_snapshot.{key}")
@@ -326,6 +364,19 @@ def _qc_contract(source: Mapping[str, Any], qc: Mapping[str, Any]) -> None:
         if legacy_candidate_count != candidate_count:
             raise ConfigError("candidate_count conflicts with qc.candidate_count")
     _non_negative_int(qc.get("retry_limit"), "qc.retry_limit")
+
+
+def _request_contract(request: Any) -> None:
+    if request is None:
+        return
+    if not isinstance(request, Mapping):
+        raise ConfigError("request must be a mapping")
+    for key in ("frames", "length"):
+        if key in request:
+            raise ConfigError(
+                f"request.{key} frame override is not supported in strict v1; "
+                "use render.frames or bridge.frames"
+            )
 
 
 def _manifest_inputs(source: Mapping[str, Any]) -> None:
@@ -372,6 +423,11 @@ def _shots_contract(source: Mapping[str, Any]) -> dict[str, frozenset[str]]:
             _string(segment.get("action"), f"segment {segment_id} action")
             _positive_number(segment.get("expected_seconds"), f"segment {segment_id} expected_seconds")
             _non_negative_int(segment.get("seed_offset"), f"segment {segment_id} seed_offset")
+            if "frames" in segment or "length" in segment:
+                raise ConfigError(
+                    f"segment {segment_id} frame override is not supported in strict v1; "
+                    "use render.frames"
+                )
             continuation = segment.get("continue_from")
             if continuation is not None:
                 reference = _string(continuation, f"segment {segment_id} continue_from")
@@ -499,6 +555,10 @@ def _bridges_contract(
             if strategy == "flf2v"
             else None
         )
+        if strategy == "flf2v" and "length" in bridge:
+            raise ConfigError(
+                f"bridge {bridge_id} length override is not supported; use bridge frames"
+            )
         bridge_shots[bridge_id] = BridgeContract(
             shot_id=shot_id,
             strategy=strategy,

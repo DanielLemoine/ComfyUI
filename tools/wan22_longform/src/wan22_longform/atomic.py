@@ -22,9 +22,12 @@ def write_text(
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        if destination.exists() and not replace_existing:
-            raise FileExistsError(destination)
-        os.replace(staging, destination)
+        if replace_existing:
+            os.replace(staging, destination)
+        else:
+            # Linking the fully flushed staging file claims a new destination
+            # without the check-to-replace overwrite race.
+            os.link(staging, destination)
     finally:
         if staging.exists():
             staging.unlink()
@@ -47,9 +50,10 @@ def copy_file(
             shutil.copyfileobj(input_stream, output_stream)
             output_stream.flush()
             os.fsync(output_stream.fileno())
-        if destination.exists() and not replace_existing:
-            raise FileExistsError(destination)
-        os.replace(staging, destination)
+        if replace_existing:
+            os.replace(staging, destination)
+        else:
+            os.link(staging, destination)
     finally:
         if staging.exists():
             staging.unlink()
@@ -72,9 +76,10 @@ def write_bytes(
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        if destination.exists() and not replace_existing:
-            raise FileExistsError(destination)
-        os.replace(staging, destination)
+        if replace_existing:
+            os.replace(staging, destination)
+        else:
+            os.link(staging, destination)
     finally:
         if staging.exists():
             staging.unlink()

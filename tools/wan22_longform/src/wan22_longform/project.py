@@ -259,14 +259,7 @@ def transition_attempt(
             f"attempt decision claim lost; persisted state is {current.state}"
         ) from error
     if target is AttemptState.ACCEPTED:
-        _write_json(
-            attempt.path / "acceptance.json",
-            {
-                "accepted_evidence": payload["accepted_evidence"],
-                "attempt_id": persisted.attempt_id,
-                "decision": _attempt_artifact(decision_path, "acceptance decision"),
-            },
-        )
+        _write_acceptance_marker(persisted, payload["accepted_evidence"], decision_path)
     return replace(persisted, state=target)
 
 
@@ -921,17 +914,21 @@ def _accepted_attempt_evidence(
         raise ProjectStateError("legacy accepted attempt has unverified artifact evidence")
     if _json_ready(sealed) != current:
         raise ProjectStateError("accepted attempt immutable artifact evidence changed")
-    seal = _read_json(persisted.path / "acceptance.json")
+    seal = _load_or_recover_acceptance_marker(
+        persisted, acceptance_path, current
+    )
     if seal.get("attempt_id") != persisted.attempt_id:
-        raise ProjectStateError("acceptance seal belongs to a different attempt")
+        raise ProjectStateError("acceptance marker belongs to a different attempt")
     if _json_ready(seal.get("accepted_evidence")) != current:
-        raise ProjectStateError("acceptance seal immutable artifact evidence changed")
+        raise ProjectStateError("acceptance marker immutable artifact evidence changed")
     decision_evidence = _hashed_entry(
         seal.get("decision") if isinstance(seal.get("decision"), Mapping) else {},
         "terminal acceptance decision",
     )
     if Path(decision_evidence["path"]) != acceptance_path.resolve():
-        raise ProjectStateError("acceptance seal references a different terminal decision")
+        raise ProjectStateError(
+            "acceptance marker references a different terminal decision"
+        )
     return {
         "acceptance_decision": decision_evidence,
         "attempt_id": persisted.attempt_id,
@@ -940,6 +937,35 @@ def _accepted_attempt_evidence(
         "segment_id": persisted.segment_id,
         "shot_id": persisted.shot_id,
     }
+
+
+def _write_acceptance_marker(
+    attempt: Attempt, accepted_evidence: Any, acceptance_path: Path
+) -> None:
+    """Publish the immutable terminal-decision marker after its decision exists."""
+    _write_json(
+        attempt.path / "acceptance.json",
+        {
+            "accepted_evidence": accepted_evidence,
+            "attempt_id": attempt.attempt_id,
+            "decision": _attempt_artifact(acceptance_path, "acceptance decision"),
+        },
+    )
+
+
+def _load_or_recover_acceptance_marker(
+    attempt: Attempt,
+    acceptance_path: Path,
+    accepted_evidence: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Recover only the marker omitted by a crash after a sealed decision write."""
+    marker = attempt.path / "acceptance.json"
+    if not marker.exists():
+        try:
+            _write_acceptance_marker(attempt, accepted_evidence, acceptance_path)
+        except FileExistsError:
+            pass
+    return _read_json(marker)
 
 
 def _source_manifest_evidence(

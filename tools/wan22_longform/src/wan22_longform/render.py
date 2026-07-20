@@ -52,6 +52,7 @@ from .workflow import (
     WorkflowError,
     build_api_graph,
     find_unique_node,
+    trusted_load_image_placeholders,
     validate_graph_against_object_info,
     validate_two_stage_graph,
 )
@@ -160,6 +161,8 @@ def render_segment(
             extra_details={},
             rendered_note="local render complete",
             expected_frames=segment.frames,
+            expected_width=segment.width,
+            expected_height=segment.height,
         )
     _reject_unknown_submit_outcome(attempt)
     base_graph = _read_graph(attempt.path / "workflow-api.json")
@@ -170,8 +173,10 @@ def render_segment(
         {"opening_frame": segment.opening.provenance()},
     )
     uploaded_opening = _safe_uploaded_name(client.upload_image(segment.opening.path))
-    _patch_segment_graph(graph, segment, uploaded_opening)
-    _validate_submission_graph(project, graph)
+    trusted_dynamic_images = _patch_segment_graph(graph, segment, uploaded_opening)
+    _validate_submission_graph(
+        project, graph, trusted_dynamic_images=trusted_dynamic_images
+    )
     _write_or_verify_json(attempt.path / "configured-workflow-api.json", graph)
     submission = {"prompt": graph}
     submission_path = attempt.path / "submission-request.json"
@@ -200,6 +205,8 @@ def render_segment(
         extra_details={},
         rendered_note="local render complete",
         expected_frames=segment.frames,
+        expected_width=segment.width,
+        expected_height=segment.height,
     )
 
 
@@ -254,6 +261,8 @@ def render_bridge(
             extra_details={"bridge_id": bridge.bridge_id},
             rendered_note="local bridge render complete",
             expected_frames=bridge.frames,
+            expected_width=bridge.width,
+            expected_height=bridge.height,
         )
     _reject_unknown_submit_outcome(attempt)
     base_graph = _read_graph(attempt.path / "workflow-api.json")
@@ -268,8 +277,12 @@ def render_bridge(
     )
     uploaded_first = _safe_uploaded_name(client.upload_image(bridge.first_image.path))
     uploaded_last = _safe_uploaded_name(client.upload_image(bridge.last_image.path))
-    _patch_bridge_graph(graph, bridge, uploaded_first, uploaded_last)
-    _validate_submission_graph(bridge_project, graph)
+    trusted_dynamic_images = _patch_bridge_graph(
+        graph, bridge, uploaded_first, uploaded_last
+    )
+    _validate_submission_graph(
+        bridge_project, graph, trusted_dynamic_images=trusted_dynamic_images
+    )
     _write_or_verify_json(attempt.path / "configured-workflow-api.json", graph)
     submission = {"prompt": graph}
     submission_path = attempt.path / "submission-request.json"
@@ -301,6 +314,8 @@ def render_bridge(
         extra_details={"bridge_id": bridge.bridge_id},
         rendered_note="local bridge render complete",
         expected_frames=bridge.frames,
+        expected_width=bridge.width,
+        expected_height=bridge.height,
     )
 
 
@@ -437,6 +452,8 @@ def _complete_render(
     extra_details: Mapping[str, Any],
     rendered_note: str,
     expected_frames: int,
+    expected_width: int,
+    expected_height: int,
 ) -> Attempt:
     """Poll a recorded prompt ID and write the terminal local evidence once."""
     try:
@@ -452,7 +469,14 @@ def _complete_render(
     if persisted.state is AttemptState.PLANNED:
         persisted = transition_attempt(persisted, AttemptState.RENDERING, "reattached queue")
     if persisted.state is AttemptState.RENDERED:
-        return _finish_rendered_attempt(project, persisted, kind=kind)
+        return _finish_rendered_attempt(
+            project,
+            persisted,
+            kind=kind,
+            expected_frames=expected_frames,
+            expected_width=expected_width,
+            expected_height=expected_height,
+        )
     if persisted.state is not AttemptState.RENDERING:
         raise RenderError(f"queued attempt has invalid state: {persisted.state}")
     metadata_path = persisted.path / "render-metadata.json"
@@ -464,7 +488,14 @@ def _complete_render(
                 f"interrupted rendered attempt evidence is invalid: {error}"
             ) from error
         rendered = transition_attempt(persisted, AttemptState.RENDERED, rendered_note)
-        return _finish_rendered_attempt(project, rendered, kind=kind)
+        return _finish_rendered_attempt(
+            project,
+            rendered,
+            kind=kind,
+            expected_frames=expected_frames,
+            expected_width=expected_width,
+            expected_height=expected_height,
+        )
     history = client.wait(prompt_id)
     if history.prompt_id != prompt_id:
         raise RenderError("ComfyUI history prompt ID does not match the persisted queue identity")
@@ -480,7 +511,12 @@ def _complete_render(
     if not video.is_file() or video.stat().st_size == 0:
         raise RenderError("Local ComfyUI history output did not produce a video")
     timing = _validate_rendered_clip_timing(
-        project, persisted, video, expected_frames=expected_frames
+        project,
+        persisted,
+        video,
+        expected_frames=expected_frames,
+        expected_width=expected_width,
+        expected_height=expected_height,
     )
     candidate_count = _candidate_count(project)
     head_frames, tail_frames, contact_sheet = _stage_candidate_outputs(
@@ -516,20 +552,46 @@ def _complete_render(
         replace_invalid=metadata_path.is_file(),
     )
     rendered = transition_attempt(persisted, AttemptState.RENDERED, rendered_note)
-    return _finish_rendered_attempt(project, rendered, kind=kind)
+    return _finish_rendered_attempt(
+        project,
+        rendered,
+        kind=kind,
+        expected_frames=expected_frames,
+        expected_width=expected_width,
+        expected_height=expected_height,
+    )
 
 
 def _finish_rendered_attempt(
-    project: ProjectConfig, attempt: Attempt, *, kind: str
+    project: ProjectConfig,
+    attempt: Attempt,
+    *,
+    kind: str,
+    expected_frames: int,
+    expected_width: int,
+    expected_height: int,
 ) -> Attempt:
     """Initialize QC once and finish an interrupted rendered lifecycle transition."""
     persisted = load_attempt(attempt.path)
     if persisted.state is not AttemptState.RENDERED:
         raise RenderError(f"rendered attempt has invalid state: {persisted.state}")
     try:
-        verify_rendered_attempt_evidence(project, persisted, require_qc=False)
+        rendered_evidence = verify_rendered_attempt_evidence(
+            project, persisted, require_qc=False
+        )
     except ProjectStateError as error:
         raise RenderError(f"rendered attempt evidence is invalid: {error}") from error
+    output = rendered_evidence.get("output")
+    if not isinstance(output, Mapping) or not isinstance(output.get("path"), str):
+        raise RenderError("rendered attempt has no sealed video output evidence")
+    _verify_sealed_media_timing(
+        project,
+        persisted,
+        Path(output["path"]),
+        expected_frames=expected_frames,
+        expected_width=expected_width,
+        expected_height=expected_height,
+    )
     qc_path = persisted.path / "qc.yaml"
     replace_invalid_qc = qc_path.is_file() and _is_unsealed_qc(qc_path)
     if not qc_path.is_file() or replace_invalid_qc:
@@ -550,6 +612,39 @@ def _finish_rendered_attempt(
     except ProjectStateError as error:
         raise RenderError(f"rendered QC evidence is invalid: {error}") from error
     return transition_attempt(persisted, AttemptState.NEEDS_REVIEW, None)
+
+
+def _verify_sealed_media_timing(
+    project: ProjectConfig,
+    attempt: Attempt,
+    video: Path,
+    *,
+    expected_frames: int,
+    expected_width: int,
+    expected_height: int,
+) -> None:
+    """Fail closed when a resumable result lacks the timing gate written at fetch."""
+    metadata_path = attempt.path / "render-metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RenderError(f"render metadata cannot provide sealed media timing: {error}") from error
+    if not isinstance(metadata, Mapping):
+        raise RenderError("render metadata cannot provide sealed media timing")
+    details = metadata.get("details")
+    timing = details.get("media_timing") if isinstance(details, Mapping) else None
+    if not isinstance(timing, Mapping):
+        raise RenderError("render metadata has no sealed media timing")
+    reverified = _validate_rendered_clip_timing(
+        project,
+        attempt,
+        video,
+        expected_frames=expected_frames,
+        expected_width=expected_width,
+        expected_height=expected_height,
+    )
+    if timing != reverified:
+        raise RenderError("sealed media timing does not match the reverified render contract")
 
 
 def _fetch_output_atomically(
@@ -665,6 +760,8 @@ def _validate_rendered_clip_timing(
     video: Path,
     *,
     expected_frames: int,
+    expected_width: int,
+    expected_height: int,
 ) -> dict[str, object]:
     render = _mapping(project.source.get("render"), "render")
     expected_fps_value = _positive_number(
@@ -673,7 +770,7 @@ def _validate_rendered_clip_timing(
     expected_fps = Fraction(str(expected_fps_value))
     configured = _read_graph(attempt.path / "configured-workflow-api.json")
     create_video = _unique_target(
-        configured, ("CREATE_VIDEO", "BRIDGE_CREATE_VIDEO"), "CreateVideo"
+        configured, ("VIDEO_PREVIEW", "BRIDGE_CREATE_VIDEO"), "CreateVideo"
     )
     configured_fps = _positive_number(
         create_video.node.get("inputs", {}).get("fps"), "configured CreateVideo fps"
@@ -692,6 +789,10 @@ def _validate_rendered_clip_timing(
     configured_frames = conditioning.node.get("inputs", {}).get("length")
     if configured_frames != expected_frames:
         raise RenderError("configured native length does not match the requested frame count")
+    configured_width = conditioning.node.get("inputs", {}).get("width")
+    configured_height = conditioning.node.get("inputs", {}).get("height")
+    if configured_width != expected_width or configured_height != expected_height:
+        raise RenderError("configured native dimensions do not match the requested dimensions")
     canonical_duration = canonical_duration_seconds(expected_frames, expected_fps_value)
     if canonical_frame_count(canonical_duration, expected_fps_value) != expected_frames:
         raise RenderError("configured native length does not satisfy the canonical duration/FPS formula")
@@ -705,6 +806,12 @@ def _validate_rendered_clip_timing(
         raise RenderError(
             f"rendered clip FPS {media.fps} does not match configured {expected_fps}"
         )
+    if media.width != expected_width or media.height != expected_height:
+        raise RenderError(
+            "rendered clip dimensions "
+            f"{media.width}x{media.height} do not match configured "
+            f"{expected_width}x{expected_height}"
+        )
     if abs(actual_duration - expected_duration) > Fraction(1, 1) / expected_fps:
         raise RenderError(
             "rendered clip duration differs from the configured frame/FPS contract by "
@@ -715,12 +822,16 @@ def _validate_rendered_clip_timing(
             "duration_seconds": str(actual_duration),
             "frame_count": media.frame_count,
             "fps": str(media.fps),
+            "height": media.height,
+            "width": media.width,
         },
         "canonical_duration_seconds": str(Fraction(str(canonical_duration))),
         "expected": {
             "duration_seconds": str(expected_duration),
             "frame_count": expected_frames,
             "fps": str(expected_fps),
+            "height": expected_height,
+            "width": expected_width,
         },
     }
 
@@ -795,7 +906,12 @@ def _resolved_submission_config(project: ProjectConfig):
     return resolved, available_files
 
 
-def _validate_submission_graph(project: ProjectConfig, graph: ApiGraph) -> None:
+def _validate_submission_graph(
+    project: ProjectConfig,
+    graph: ApiGraph,
+    *,
+    trusted_dynamic_images: Mapping[str, str] | None = None,
+) -> None:
     validate_two_stage_graph(graph)
     object_info = project.source.get("object_info")
     expected_hash = project.source.get("object_info_sha256")
@@ -812,7 +928,9 @@ def _validate_submission_graph(project: ProjectConfig, graph: ApiGraph) -> None:
         raise RenderError(f"invalid local object_info snapshot: {object_info_path}") from error
     if not isinstance(schema, Mapping):
         raise RenderError("local object_info snapshot must be a JSON object")
-    validate_graph_against_object_info(graph, schema)
+    validate_graph_against_object_info(
+        graph, schema, trusted_dynamic_images=trusted_dynamic_images
+    )
 
 
 def validate_project(project: ProjectConfig) -> dict[str, int]:
@@ -823,7 +941,11 @@ def validate_project(project: ProjectConfig) -> dict[str, int]:
     resolved, available_files = _resolved_submission_config(project)
     base_graph = _project_workflow_graph(project)
     graph = build_api_graph(base_graph, resolved, available_files)
-    _validate_submission_graph(project, graph)
+    _validate_submission_graph(
+        project,
+        graph,
+        trusted_dynamic_images=trusted_load_image_placeholders(graph),
+    )
     segment_count = 0
     shots = project.source.get("shots", ())
     if not isinstance(shots, (list, tuple)):
@@ -856,7 +978,11 @@ def validate_project(project: ProjectConfig) -> dict[str, int]:
         bridge_graph = build_api_graph(
             _project_workflow_graph(bridge_project), resolved, available_files
         )
-        _validate_submission_graph(bridge_project, bridge_graph)
+        _validate_submission_graph(
+            bridge_project,
+            bridge_graph,
+            trusted_dynamic_images=trusted_load_image_placeholders(bridge_graph),
+        )
         bridge_count = len(renderable_bridges)
     return {"bridges": bridge_count, "segments": segment_count}
 
@@ -950,10 +1076,7 @@ def _segment_request(
     height = _positive_int(
         _first_value(segment, request, render, keys=("height",)), "render height"
     )
-    frames = _positive_int(
-        _first_value(segment, request, render, keys=("frames", "length")),
-        "render frames",
-    )
+    frames = _positive_int(render.get("frames"), "render frames")
     return SegmentRequest(
         positive=positive,
         negative=negative,
@@ -991,10 +1114,7 @@ def _bridge_request(
     request = _mapping(project.source.get("request", {}), "request")
     render = _mapping(project.source.get("render", {}), "render")
     prompt_blocks = _mapping(project.source.get("prompt_blocks", {}), "prompt_blocks")
-    frames = _positive_int(
-        _first_value(bridge, request, render, keys=("frames", "length")),
-        "bridge frames",
-    )
+    frames = _positive_int(bridge.get("frames"), "bridge frames")
     if frames not in {17, 33, 49, 65, 81}:
         raise RenderError("bridge frames must be one of 17, 33, 49, 65, or 81")
     shot_id = bridge.get("shot_id")
@@ -1497,16 +1617,15 @@ def _existing_local_path(project: ProjectConfig, value: object, label: str) -> P
 
 def _patch_segment_graph(
     graph: ApiGraph, segment: SegmentRequest, uploaded_opening: str
-) -> None:
-    _unique_target(graph, ("POSITIVE_PROMPT", "PROMPT_POSITIVE"), "CLIPTextEncode").node[
-        "inputs"
-    ]["text"] = segment.positive
-    _unique_target(graph, ("NEGATIVE_PROMPT", "PROMPT_NEGATIVE"), "CLIPTextEncode").node[
-        "inputs"
-    ]["text"] = segment.negative
-    _unique_target(graph, ("SEGMENT_FIRST_IMAGE", "START_IMAGE"), "LoadImage").node[
-        "inputs"
-    ]["image"] = uploaded_opening
+) -> dict[str, str]:
+    _unique_target(graph, ("PROMPT_POSITIVE",), "CLIPTextEncode").node["inputs"][
+        "text"
+    ] = segment.positive
+    _unique_target(graph, ("PROMPT_NEGATIVE",), "CLIPTextEncode").node["inputs"][
+        "text"
+    ] = segment.negative
+    opening = _unique_target(graph, ("START_IMAGE",), "LoadImage")
+    opening.node["inputs"]["image"] = uploaded_opening
     conditioning = _unique_target(graph, ("I2V_CONDITIONING",), "WanImageToVideo").node[
         "inputs"
     ]
@@ -1517,6 +1636,7 @@ def _patch_segment_graph(
         _unique_target(graph, (title,), "KSamplerAdvanced").node["inputs"][
             "noise_seed"
         ] = segment.seed
+    return {opening.node_id: uploaded_opening}
 
 
 def _patch_bridge_graph(
@@ -1524,19 +1644,17 @@ def _patch_bridge_graph(
     bridge: BridgeRequest,
     uploaded_first: str,
     uploaded_last: str,
-) -> None:
-    _unique_target(graph, ("POSITIVE_PROMPT", "PROMPT_POSITIVE"), "CLIPTextEncode").node[
-        "inputs"
-    ]["text"] = bridge.positive
-    _unique_target(graph, ("NEGATIVE_PROMPT", "PROMPT_NEGATIVE"), "CLIPTextEncode").node[
-        "inputs"
-    ]["text"] = bridge.negative
-    _unique_target(graph, ("BRIDGE_FIRST_IMAGE",), "LoadImage").node["inputs"][
-        "image"
-    ] = uploaded_first
-    _unique_target(graph, ("BRIDGE_LAST_IMAGE",), "LoadImage").node["inputs"][
-        "image"
-    ] = uploaded_last
+) -> dict[str, str]:
+    _unique_target(graph, ("PROMPT_POSITIVE",), "CLIPTextEncode").node["inputs"][
+        "text"
+    ] = bridge.positive
+    _unique_target(graph, ("PROMPT_NEGATIVE",), "CLIPTextEncode").node["inputs"][
+        "text"
+    ] = bridge.negative
+    first = _unique_target(graph, ("BRIDGE_FIRST_IMAGE",), "LoadImage")
+    first.node["inputs"]["image"] = uploaded_first
+    last = _unique_target(graph, ("BRIDGE_LAST_IMAGE",), "LoadImage")
+    last.node["inputs"]["image"] = uploaded_last
     conditioning = _unique_target(
         graph, ("FLF_CONDITIONING",), "WanFirstLastFrameToVideo"
     ).node["inputs"]
@@ -1547,6 +1665,7 @@ def _patch_bridge_graph(
         _unique_target(graph, (title,), "KSamplerAdvanced").node["inputs"][
             "noise_seed"
         ] = bridge.seed
+    return {first.node_id: uploaded_first, last.node_id: uploaded_last}
 
 
 def _unique_target(

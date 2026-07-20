@@ -321,3 +321,33 @@ OK (skipped=1)
 - Canonical UI provenance/hash/topology verification — passed (`25` retained normal-branch nodes, `50` links).
 
 This supplement remained static/unit-test only. It did not start, stop, query, or modify ComfyUI, the GPU, external services, or the ignored runtime-artifact directory.
+
+## Supplement: Post-Repair P1/P2 Contract Closure
+
+Date: 2026-07-20
+
+### Closed review findings
+
+- Dynamic `LoadImage.image` choices now bypass stale schema enums only for an explicitly trusted raw placeholder during preflight or the exact sanitized upload value returned by the active submission path.
+- `preflight --project ... --bind-project` is the documented READY-only atomic binding route for the local `object_info` snapshot and SHA-256. Strict validate/render rejects an unbound manifest.
+- Segment and request frame aliases are rejected, bridge frame/duration/FPS values are cross-checked, and fetched media must match native dimensions as well as frames/FPS/duration before metadata or QC. Resume re-probes sealed media with the same one-frame timing tolerance.
+- The terminal acceptance decision is append-only, its marker is recoverable after evidence revalidation, and all non-replacing evidence publication now claims its destination without replacement.
+- Strict manifests require a preset when optional LoRAs are configured; ordinary preflight resolves/materializes those adapters and verifies their role-correct local inventory and schema. Dead `render.workflow` is rejected, and the persisted I2V titles are normalized.
+
+### Late full-suite race correction
+
+Fresh complete discovery exposed a real check-to-replace race in the shared immutable publisher: concurrent transition writers could both pass an existence check and `os.replace()` the same numeric decision. A deterministic `test_atomic` barrier reproduced the old last-writer-wins behavior. New-file publication now links the fully flushed same-directory staging file to the final path, which atomically yields one success and one `FileExistsError`; `os.replace` remains only for explicit replacement.
+
+### Final verification
+
+```text
+Ran 259 tests in 57.557s
+OK (skipped=1)
+```
+
+- `python -m compileall -q tools/wan22_longform/src` — exit 0.
+- `python -m ruff check tools/wan22_longform/src tools/wan22_longform/tests` — all checks passed.
+- `git -c core.safecrlf=false diff --check` — exit 0.
+- Independent static re-review found no remaining P1/P2 blocker in the requested correction scope; the subsequent publisher-race correction was independently traced and reviewed as the minimal safe fix.
+
+No ComfyUI request, GPU activity, service operation, network action, or runtime-artifact mutation occurred.

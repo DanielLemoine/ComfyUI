@@ -398,6 +398,17 @@ class ProjectStateTests(unittest.TestCase):
                 with self.assertRaises(ProjectStateError):
                     accepted_attempt_evidence(self.project, accepted)
 
+    def test_terminal_acceptance_decision_recovers_a_missing_atomic_marker(self) -> None:
+        accepted, _output, expected = self._accepted_source()
+        (accepted.path / "acceptance.json").unlink(missing_ok=True)
+
+        recovered = accepted_attempt_evidence(self.project, load_attempt(accepted.path))
+
+        self.assertEqual(recovered, expected)
+        self.assertTrue((accepted.path / "acceptance.json").exists())
+        seal = json.loads((accepted.path / "acceptance.json").read_text(encoding="utf-8"))
+        self.assertEqual(seal["decision"], expected["acceptance_decision"])
+
     def test_planned_attempt_tamper_is_integrity_failed_not_verified(self) -> None:
         attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)
         provenance = attempt.path / "provenance.json"

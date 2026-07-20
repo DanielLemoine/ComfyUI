@@ -14,7 +14,6 @@ preset: P0_IDENTITY_BASELINE
 presets: ../../config/presets.yaml
 
 render:
-  workflow: wan22_segment_i2v_native_api.json
   width: 640
   height: 640
   frames: 17
@@ -45,8 +44,8 @@ model_roots:
 workflow_api: ../../workflows/api/wan22_segment_i2v_native_api.json
 bridge_workflow_api: ../../workflows/api/wan22_bridge_flf2v_native_api.json
 workflow_hashes:
-  segment_api: fe7ffa26875ced3487956a68f417cec61a126bebd1e0133cf7bd481ddc069883
-  bridge_api: be005de9c98fcd4467ee0f26b784cd925d79e4eac1e5ec0d127d56517c378126
+  segment_api: 5da8178c3650a0e54166469c0508372c5f1ff60b0b5e2713a60234d0a2068f0e
+  bridge_api: 51116eb39e93349588a5997260dd30ee07ebecc7af96f4f3d6e016a57e80c79d
 
 # Captured from the local preflight on 2026-07-19. Refresh before a production run.
 environment_snapshot:

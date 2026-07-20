@@ -227,7 +227,7 @@ def _conditioner_and_samplers(
         conditioning = find_unique_node(
             graph, i2v_titles["conditioning"], "WanImageToVideo"
         )
-        first_image = find_unique_node(graph, "SEGMENT_FIRST_IMAGE", "LoadImage")
+        first_image = find_unique_node(graph, "START_IMAGE", "LoadImage")
         _require_link(conditioning, "start_image", first_image, 0)
         return (
             conditioning,
@@ -255,7 +255,7 @@ def _create_video_node(graph: ApiGraph) -> NodeRef:
         for node_id, node in graph.items()
         if node.get("class_type") == "CreateVideo"
         and node.get("_meta", {}).get("title")
-        in {"CREATE_VIDEO", "BRIDGE_CREATE_VIDEO"}
+        in {"VIDEO_PREVIEW", "BRIDGE_CREATE_VIDEO"}
     ]
     if len(matches) != 1:
         raise WorkflowError(
@@ -276,8 +276,13 @@ def _has_titled_node(graph: ApiGraph, title: str) -> bool:
 
 
 def validate_graph_against_object_info(
-    graph: ApiGraph, object_info: Mapping[str, object]
+    graph: ApiGraph,
+    object_info: Mapping[str, object],
+    *,
+    trusted_dynamic_images: Mapping[str, str] | None = None,
 ) -> None:
+    """Validate native graph widgets, allowing only explicit image-upload values."""
+    trusted_dynamic_images = trusted_dynamic_images or {}
     for node_id, node in graph.items():
         class_type = node.get("class_type")
         schema = object_info.get(class_type) if isinstance(class_type, str) else None
@@ -316,7 +321,12 @@ def validate_graph_against_object_info(
                 )
             else:
                 _validate_literal_input(
-                    node_id, class_type, input_name, value, input_spec
+                    node_id,
+                    class_type,
+                    input_name,
+                    value,
+                    input_spec,
+                    trusted_dynamic_image=trusted_dynamic_images.get(str(node_id)),
                 )
 
 
@@ -361,13 +371,21 @@ def _validate_literal_input(
     input_name: str,
     value: object,
     input_spec: object,
+    *,
+    trusted_dynamic_image: str | None,
 ) -> None:
     if not isinstance(input_spec, list) or not input_spec:
         return
     descriptor = input_spec[0]
     metadata = input_spec[1] if len(input_spec) > 1 and isinstance(input_spec[1], Mapping) else {}
     choices = _schema_choices(descriptor, metadata)
-    if choices is not None and value not in choices:
+    if choices is not None and value not in choices and not _is_trusted_dynamic_image(
+        class_type,
+        input_name,
+        value,
+        metadata,
+        trusted_dynamic_image,
+    ):
         raise WorkflowError(
             f"node {node_id} class_type {class_type} input {input_name} uses unavailable "
             f"literal value {value!r}"
@@ -392,6 +410,33 @@ def _validate_literal_input(
         raise WorkflowError(
             f"node {node_id} class_type {class_type} input {input_name} must be a string"
         )
+
+
+def trusted_load_image_placeholders(graph: ApiGraph) -> dict[str, str]:
+    """Return only clean API `LoadImage.image` placeholders for schema preflight."""
+    return {
+        str(node_id): ""
+        for node_id, node in graph.items()
+        if node.get("class_type") == "LoadImage"
+        and isinstance(node.get("inputs"), Mapping)
+        and node["inputs"].get("image") == ""
+    }
+
+
+def _is_trusted_dynamic_image(
+    class_type: object,
+    input_name: str,
+    value: object,
+    metadata: Mapping[str, object],
+    trusted_value: str | None,
+) -> bool:
+    return (
+        class_type == "LoadImage"
+        and input_name == "image"
+        and metadata.get("image_upload") is True
+        and isinstance(value, str)
+        and value == trusted_value
+    )
 
 
 def _schema_input_type(input_spec: object) -> str | None:

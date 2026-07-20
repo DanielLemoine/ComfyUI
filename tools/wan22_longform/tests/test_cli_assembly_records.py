@@ -855,6 +855,10 @@ class AssemblyRecordCliTests(unittest.TestCase):
         opening.write_bytes(b"opening")
         segment_graph = PROJECT_DIR / "tests" / "fixtures" / "native_segment_api.json"
         bridge_graph = PROJECT_DIR / "tests" / "fixtures" / "native_bridge_api.json"
+        object_info = root / "object_info.json"
+        object_info.write_bytes(
+            (PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json").read_bytes()
+        )
         manifest = root / "project.yaml"
         segment_seconds = 17 / 16
         total_seconds = segment_seconds * len(segment_ids)
@@ -889,6 +893,8 @@ class AssemblyRecordCliTests(unittest.TestCase):
                 "segment_api": hashlib.sha256(segment_graph.read_bytes()).hexdigest(),
                 "bridge_api": hashlib.sha256(bridge_graph.read_bytes()).hexdigest(),
             },
+            "object_info": str(object_info),
+            "object_info_sha256": hashlib.sha256(object_info.read_bytes()).hexdigest(),
             "environment_snapshot": {
                 "captured_at": "2026-07-19T00:00:00Z",
                 "platform": "fixture",
@@ -896,7 +902,6 @@ class AssemblyRecordCliTests(unittest.TestCase):
                 "gpu": "fixture",
             },
             "render": {
-                "workflow": "wan22_segment_i2v_native_api.json",
                 "width": 640,
                 "height": 640,
                 "frames": 17,

@@ -13,7 +13,7 @@
       "inputs": [
         {"name": "BRIDGE_FIRST_IMAGE", "type": "IMAGE", "link": null},
         {"name": "BRIDGE_LAST_IMAGE", "type": "IMAGE", "link": null},
-        {"name": "POSITIVE_PROMPT", "type": "STRING", "widget": {"name": "POSITIVE_PROMPT"}, "link": null},
+        {"name": "PROMPT_POSITIVE", "type": "STRING", "widget": {"name": "PROMPT_POSITIVE"}, "link": null},
         {"name": "WIDTH", "type": "INT", "widget": {"name": "WIDTH"}, "link": null},
         {"name": "HEIGHT", "type": "INT", "widget": {"name": "HEIGHT"}, "link": null},
         {"name": "LENGTH", "type": "INT", "widget": {"name": "LENGTH"}, "link": null},
@@ -46,7 +46,7 @@
         "inputs": [
           {"id": "bridge-first-image", "name": "BRIDGE_FIRST_IMAGE", "type": "IMAGE", "linkIds": [101], "localized_name": "BRIDGE_FIRST_IMAGE", "shape": 7},
           {"id": "bridge-last-image", "name": "BRIDGE_LAST_IMAGE", "type": "IMAGE", "linkIds": [102], "localized_name": "BRIDGE_LAST_IMAGE", "shape": 7},
-          {"id": "positive-prompt", "name": "POSITIVE_PROMPT", "type": "STRING", "linkIds": [103]},
+          {"id": "positive-prompt", "name": "PROMPT_POSITIVE", "type": "STRING", "linkIds": [103]},
           {"id": "width", "name": "WIDTH", "type": "INT", "linkIds": [104]},
           {"id": "height", "name": "HEIGHT", "type": "INT", "linkIds": [105]},
           {"id": "length", "name": "LENGTH", "type": "INT", "linkIds": [106]},
@@ -98,13 +98,13 @@
             "id": 7, "type": "CLIPTextEncode", "pos": [670, 30], "size": [380, 150], "flags": {}, "order": 6, "mode": 0,
             "inputs": [{"name": "clip", "type": "CLIP", "link": 113}, {"name": "text", "type": "STRING", "widget": {"name": "text"}, "link": 103}],
             "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "slot_index": 0, "links": [115]}],
-            "widgets_values": [""], "title": "POSITIVE_PROMPT"
+            "widgets_values": [""], "title": "PROMPT_POSITIVE"
           },
           {
             "id": 8, "type": "CLIPTextEncode", "pos": [670, 220], "size": [380, 150], "flags": {}, "order": 7, "mode": 0,
             "inputs": [{"name": "clip", "type": "CLIP", "link": 114}, {"name": "text", "type": "STRING", "widget": {"name": "text"}, "link": null}],
             "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "slot_index": 0, "links": [116]}],
-            "widgets_values": ["色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"], "title": "NEGATIVE_PROMPT"
+            "widgets_values": ["色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"], "title": "PROMPT_NEGATIVE"
           },
           {
             "id": 11, "type": "WanFirstLastFrameToVideo", "pos": [1080, 90], "size": [360, 255], "flags": {}, "order": 8, "mode": 0,

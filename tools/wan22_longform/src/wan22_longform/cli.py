@@ -15,7 +15,12 @@ from .assembly import (
     plan_assembly,
 )
 from .comfy_client import ComfyClient
-from .config import ProjectConfig, load_project, validate_project_contract
+from .config import (
+    ProjectConfig,
+    bind_project_object_info,
+    load_project,
+    validate_project_contract,
+)
 from .ffmpeg import probe_media
 from .frames import create_contact_sheet
 from .hashing import sha256_file
@@ -56,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--comfy-url")
     preflight.add_argument("--artifact-dir", default=Path("artifacts") / "preflight", type=Path)
     preflight.add_argument("--project", type=Path)
+    preflight.add_argument(
+        "--bind-project",
+        action="store_true",
+        help="atomically bind a READY preflight object_info snapshot into --project",
+    )
     preflight.add_argument(
         "--extra-model-paths-config",
         action="append",
@@ -249,9 +259,11 @@ def _add_reviewed_boundary_approval_option(parser: argparse.ArgumentParser) -> N
 
 
 def _handle_preflight(args: argparse.Namespace) -> int:
+    if args.bind_project and args.project is None:
+        raise DeploymentError("preflight --bind-project requires --project")
     project = load_project(args.project) if args.project else None
     if project is not None:
-        validate_project_contract(project)
+        validate_project_contract(project, require_object_info_binding=False)
     result = collect_preflight(
         comfy_root=args.comfy_root,
         comfy_url=args.comfy_url,
@@ -261,13 +273,19 @@ def _handle_preflight(args: argparse.Namespace) -> int:
             path for group in args.extra_model_paths_config for path in group
         ),
     )
-    _print_json(
-        {
-            "artifact_dir": str(result.artifact_dir),
-            "blockers": list(result.blockers),
-            "status": result.status,
-        }
-    )
+    binding: str | None = None
+    if args.bind_project and result.status == "READY":
+        bound_project = bind_project_object_info(args.project, result.object_info_path)
+        validate_project_contract(bound_project)
+        binding = str(bound_project.path)
+    payload: dict[str, object] = {
+        "artifact_dir": str(result.artifact_dir),
+        "blockers": list(result.blockers),
+        "status": result.status,
+    }
+    if binding is not None:
+        payload["bound_project"] = binding
+    _print_json(payload)
     return 0 if result.status == "READY" else 1
 
 

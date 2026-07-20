@@ -22,21 +22,21 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "SEGMENT_FIRST_IMAGE",
+          "name": "START_IMAGE",
           "label": "segment first image",
-          "localized_name": "SEGMENT_FIRST_IMAGE",
+          "localized_name": "START_IMAGE",
           "link": null,
           "type": "IMAGE"
         },
         {
-          "localized_name": "POSITIVE_PROMPT",
+          "localized_name": "PROMPT_POSITIVE",
           "type": "STRING",
           "label": "positive prompt",
           "link": null,
           "widget": {
-            "name": "POSITIVE_PROMPT"
+            "name": "PROMPT_POSITIVE"
           },
-          "name": "POSITIVE_PROMPT"
+          "name": "PROMPT_POSITIVE"
         },
         {
           "widget": {
@@ -128,7 +128,7 @@
         "proxyWidgets": [
           [
             "-1",
-            "POSITIVE_PROMPT"
+            "PROMPT_POSITIVE"
           ],
           [
             "-1",
@@ -217,12 +217,12 @@
         "inputs": [
           {
             "id": "32a9d9ec-7fc3-4759-87ae-2363c47f7b9c",
-            "name": "SEGMENT_FIRST_IMAGE",
+            "name": "START_IMAGE",
             "type": "IMAGE",
             "linkIds": [
               186
             ],
-            "localized_name": "SEGMENT_FIRST_IMAGE",
+            "localized_name": "START_IMAGE",
             "shape": 7,
             "pos": [
               -907.39453125,
@@ -232,7 +232,7 @@
           },
           {
             "id": "779b5775-a4cc-4b74-b57e-7a70b050277d",
-            "name": "POSITIVE_PROMPT",
+            "name": "PROMPT_POSITIVE",
             "type": "STRING",
             "linkIds": [
               243
@@ -242,7 +242,7 @@
               -907.39453125,
               110
             ],
-            "localized_name": "POSITIVE_PROMPT"
+            "localized_name": "PROMPT_POSITIVE"
           },
           {
             "id": "7649bdd7-4e34-464c-958b-6ae0a4effcbe",
@@ -567,7 +567,7 @@
             "widgets_values": [
               16
             ],
-            "title": "CREATE_VIDEO"
+            "title": "VIDEO_PREVIEW"
           },
           {
             "id": 104,
@@ -653,7 +653,7 @@
                 "links": 184
               }
             ],
-            "title": "NEGATIVE_PROMPT",
+            "title": "PROMPT_NEGATIVE",
             "properties": {
               "cnr_id": "comfy-core",
               "ver": "0.3.45",
@@ -820,7 +820,7 @@
                 "links": 183
               }
             ],
-            "title": "POSITIVE_PROMPT",
+            "title": "PROMPT_POSITIVE",
             "properties": {
               "cnr_id": "comfy-core",
               "ver": "0.3.45",

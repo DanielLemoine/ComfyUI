@@ -120,11 +120,18 @@ class FakeRenderClient:
         return destination
 
 
-def fixture_media(path: Path, *, frame_count: int, fps: int = 16) -> MediaSpec:
+def fixture_media(
+    path: Path,
+    *,
+    frame_count: int,
+    fps: int = 16,
+    width: int = 832,
+    height: int = 480,
+) -> MediaSpec:
     return MediaSpec(
         path=path,
-        width=832,
-        height=480,
+        width=width,
+        height=height,
         fps=Fraction(fps, 1),
         time_base=Fraction(1, fps),
         pixel_format="yuv420p",
@@ -399,7 +406,6 @@ class RenderSegmentTests(unittest.TestCase):
                 "gpu": "fixture",
             },
             "render": {
-                "workflow": "wan22_segment_i2v_native_api.json",
                 "width": 832,
                 "height": 480,
                 "frames": 81,
@@ -414,7 +420,6 @@ class RenderSegmentTests(unittest.TestCase):
                 "seed": 424242,
                 "width": 832,
                 "height": 480,
-                "frames": 81,
             },
             "inputs": {"opening_frame": str(self.opening)},
             "attempts_dir": str(self.root / "attempts"),
@@ -562,6 +567,10 @@ class RenderSegmentTests(unittest.TestCase):
         self.assertEqual(metadata["details"]["prompt_id"], "fixture-prompt")
         self.assertEqual(metadata["details"]["media_timing"]["actual"]["frame_count"], 81)
         self.assertEqual(metadata["details"]["media_timing"]["actual"]["fps"], "16")
+        self.assertEqual(metadata["details"]["media_timing"]["actual"]["width"], 832)
+        self.assertEqual(metadata["details"]["media_timing"]["actual"]["height"], 480)
+        self.assertEqual(metadata["details"]["media_timing"]["expected"]["width"], 832)
+        self.assertEqual(metadata["details"]["media_timing"]["expected"]["height"], 480)
         self.assertEqual(
             metadata["outputs"]["segment"]["sha256"],
             hashlib.sha256(b"fixture-video").hexdigest(),
@@ -644,6 +653,41 @@ class RenderSegmentTests(unittest.TestCase):
         )
         self.assertFalse((attempt.path / "render-metadata.json").exists())
         self.assertFalse((attempt.path / "qc.yaml").exists())
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_dimension_drift_blocks_metadata_and_qc_before_review(
+        self, extract, contact_sheet
+    ) -> None:
+        extract.side_effect = AssertionError("dimension gate must run before candidate extraction")
+        contact_sheet.side_effect = AssertionError("dimension gate must run before candidate extraction")
+
+        with patch(
+            "wan22_longform.render.probe_media",
+            side_effect=lambda path: fixture_media(
+                path, frame_count=81, width=640, height=480
+            ),
+        ):
+            with self.assertRaisesRegex(RenderError, "dimensions"):
+                render_segment(self.project, "S010", "S010_C001", FakeRenderClient(self.video))
+
+        attempt = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        self.assertFalse((attempt.path / "render-metadata.json").exists())
+        self.assertFalse((attempt.path / "qc.yaml").exists())
+
+    def test_segment_frame_override_is_rejected_before_upload(self) -> None:
+        source = deepcopy(self.project.source)
+        source["shots"][0]["segments"][0]["frames"] = 33
+        project = ProjectConfig(path=self.manifest, source=source)
+        client = FakeRenderClient(self.video)
+
+        with self.assertRaisesRegex(Exception, "frame override"):
+            render_segment(project, "S010", "S010_C001", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
 
     @patch("wan22_longform.render.create_contact_sheet")
     @patch("wan22_longform.render.extract_candidate_frames")
@@ -1088,6 +1132,100 @@ class RenderSegmentTests(unittest.TestCase):
 
     @patch("wan22_longform.render.create_contact_sheet")
     @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_rejects_metadata_without_sealed_media_timing_before_qc(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(f"{where}-{index}".encode("utf-8"))
+                frames.append(frame)
+            return frames
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        client = FakeRenderClient(self.video)
+        original_transition = render_module.transition_attempt
+
+        def interrupt_after_metadata(attempt, target, note, **kwargs):
+            if target is AttemptState.RENDERED:
+                raise RuntimeError("fixture interruption after metadata")
+            return original_transition(attempt, target, note, **kwargs)
+
+        with patch(
+            "wan22_longform.render.transition_attempt",
+            side_effect=interrupt_after_metadata,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "after metadata"):
+                render_segment(self.project, "S010", "S010_C001", client)
+
+        failed = load_attempt(
+            next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+        )
+        metadata_path = failed.path / "render-metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["details"].pop("media_timing")
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(RenderError, "sealed media timing"):
+            resume_attempt(self.project, failed, client)
+
+        self.assertFalse((failed.path / "qc.yaml").exists())
+        self.assertEqual(client.waited, ["fixture-prompt"])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
+    def test_resume_preserves_the_one_frame_timing_tolerance(
+        self, extract, contact_sheet
+    ) -> None:
+        def fake_extract(
+            _video: Path, count: int, where: str, destination: Path
+        ) -> list[Path]:
+            destination.mkdir(parents=True, exist_ok=True)
+            frames = []
+            for index in range(count):
+                frame = destination / f"{where}-{index}.png"
+                frame.write_bytes(f"{where}-{index}".encode("utf-8"))
+                frames.append(frame)
+            return frames
+
+        extract.side_effect = fake_extract
+        contact_sheet.side_effect = lambda _frames, destination: self._write_sheet(destination)
+        client = FakeRenderClient(self.video)
+        original_transition = render_module.transition_attempt
+
+        def interrupt_after_metadata(attempt, target, note, **kwargs):
+            if target is AttemptState.RENDERED:
+                raise RuntimeError("fixture interruption after metadata")
+            return original_transition(attempt, target, note, **kwargs)
+
+        with patch(
+            "wan22_longform.render.probe_media",
+            side_effect=lambda path: fixture_media(path, frame_count=80),
+        ):
+            with patch(
+                "wan22_longform.render.transition_attempt",
+                side_effect=interrupt_after_metadata,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "after metadata"):
+                    render_segment(self.project, "S010", "S010_C001", client)
+
+            failed = load_attempt(
+                next((self.root / "attempts" / "S010" / "S010_C001").iterdir())
+            )
+            resumed = resume_attempt(self.project, failed, client)
+
+        self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
+        self.assertEqual(client.waited, ["fixture-prompt"])
+
+    @patch("wan22_longform.render.create_contact_sheet")
+    @patch("wan22_longform.render.extract_candidate_frames")
     def test_resume_finishes_after_qc_write_interruption_without_repolling(
         self, extract, contact_sheet
     ) -> None:
@@ -1425,7 +1563,6 @@ class RenderBridgeTests(unittest.TestCase):
                 "gpu": "fixture",
             },
             "render": {
-                "workflow": "wan22_segment_i2v_native_api.json",
                 "width": 832,
                 "height": 480,
                 "frames": 17,

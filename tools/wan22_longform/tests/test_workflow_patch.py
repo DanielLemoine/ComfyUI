@@ -241,7 +241,7 @@ class WorkflowPatchTests(unittest.TestCase):
 
     def test_builder_patches_canonical_frame_count_and_create_video_fps(self) -> None:
         for fixture_name, conditioning_title, title, fps, frames in (
-            ("native_segment_api.json", "I2V_CONDITIONING", "CREATE_VIDEO", 16.0, 81),
+            ("native_segment_api.json", "I2V_CONDITIONING", "VIDEO_PREVIEW", 16.0, 81),
             (
                 "native_bridge_api.json",
                 "FLF_CONDITIONING",
@@ -374,6 +374,48 @@ class WorkflowPatchTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkflowError, input_name):
                     validate_graph_against_object_info(graph, schema)
 
+    def test_load_image_upload_choices_require_an_explicit_trusted_value(self) -> None:
+        schema = load_native_schema()
+        schema["LoadImage"]["input"]["required"]["image"] = [  # type: ignore[index]
+            ["already-present.png"],
+            {"image_upload": True},
+        ]
+        graph = load_fixture("native_segment_api.json")
+
+        with self.assertRaisesRegex(WorkflowError, "unavailable literal value ''"):
+            validate_graph_against_object_info(graph, schema)
+
+        validate_graph_against_object_info(
+            graph,
+            schema,
+            trusted_dynamic_images={"9": ""},
+        )
+
+        graph["9"]["inputs"]["image"] = "fresh-upload.png"
+        with self.assertRaisesRegex(WorkflowError, "fresh-upload.png"):
+            validate_graph_against_object_info(graph, schema)
+
+        validate_graph_against_object_info(
+            graph,
+            schema,
+            trusted_dynamic_images={"9": "fresh-upload.png"},
+        )
+
+        graph["1"]["inputs"]["unet_name"] = "not-an-installed-model.safetensors"
+        schema["UNETLoader"]["input"]["required"]["unet_name"] = [  # type: ignore[index]
+            [
+                "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+                "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+            ],
+            {},
+        ]
+        with self.assertRaisesRegex(WorkflowError, "not-an-installed-model"):
+            validate_graph_against_object_info(
+                graph,
+                schema,
+                trusted_dynamic_images={"9": "fresh-upload.png"},
+            )
+
     def test_persisted_i2v_and_flf_graphs_are_clean_and_executable(self) -> None:
         ui_path = PROJECT_DIR / "workflows" / "ui" / "wan22_segment_i2v_native.json"
         api_path = PROJECT_DIR / "workflows" / "api" / "wan22_segment_i2v_native_api.json"
@@ -401,6 +443,12 @@ class WorkflowPatchTests(unittest.TestCase):
             bridge_fixture.with_suffix(".NOT_BUILT.md"),
         ):
             self.assertFalse(note_path.exists())
+
+        segment_titles = titles(load_fixture("native_segment_api.json"))
+        self.assertTrue(
+            {"PROMPT_POSITIVE", "PROMPT_NEGATIVE", "START_IMAGE", "VIDEO_PREVIEW"}
+            <= segment_titles
+        )
 
     def test_quality_graphs_use_their_verified_normal_template_baselines(self) -> None:
         for fixture_name, high_sampler, low_sampler, shift, cfg in (
@@ -654,7 +702,7 @@ class WorkflowPatchTests(unittest.TestCase):
             81,
         )
         self.assertEqual(
-            find_unique_node(api, "CREATE_VIDEO", "CreateVideo").node["inputs"]["fps"],
+            find_unique_node(api, "VIDEO_PREVIEW", "CreateVideo").node["inputs"]["fps"],
             16,
         )
 

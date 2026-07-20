@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
@@ -154,6 +156,57 @@ class CollectPreflightTests(unittest.TestCase):
             source={"project_id": "preflight-fixture", "models": model_names},
         )
         return comfy_root, project, i2v_hash, flf_hash
+
+    @staticmethod
+    def _schema_project_with_enabled_vbvr() -> ProjectConfig:
+        source = yaml.safe_load(
+            (PROJECT_DIR / "projects" / "example" / "project.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        source["presets"] = str(PROJECT_DIR / "config" / "presets.yaml")
+        source["workflow_api"] = str(
+            PROJECT_DIR / "workflows" / "api" / "wan22_segment_i2v_native_api.json"
+        )
+        source["bridge_workflow_api"] = str(
+            PROJECT_DIR / "workflows" / "api" / "wan22_bridge_flf2v_native_api.json"
+        )
+        source["workflow_hashes"] = {
+            "segment_api": hashlib.sha256(
+                Path(source["workflow_api"]).read_bytes()
+            ).hexdigest(),
+            "bridge_api": hashlib.sha256(
+                Path(source["bridge_workflow_api"]).read_bytes()
+            ).hexdigest(),
+        }
+        source["loras"]["vbvr"] = {
+            "enabled": True,
+            "file": "vbvr.safetensors",
+            "weight": 0.25,
+        }
+        return ProjectConfig(
+            path=PROJECT_DIR / "projects" / "example" / "project.yaml",
+            source=source,
+        )
+
+    @staticmethod
+    def _schema_inventory(*, include_lora: bool) -> dict[str, object]:
+        roots: list[dict[str, object]] = [
+            {
+                "kind": "diffusion_models",
+                "files": [
+                    "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+                    "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+                ],
+            },
+            {"kind": "vae", "files": ["wan_2.1_vae.safetensors"]},
+            {
+                "kind": "text_encoders",
+                "files": ["umt5_xxl_fp8_e4m3fn_scaled.safetensors"],
+            },
+            {"kind": "loras", "files": ["vbvr.safetensors"] if include_lora else []},
+        ]
+        return {"roots": roots}
 
     def test_canonical_flf_template_identity_is_pinned(self) -> None:
         self.assertEqual(
@@ -726,6 +779,72 @@ class CollectPreflightTests(unittest.TestCase):
         self.assertFalse(any("model vae is absent" in blocker for blocker in blockers))
         self.assertTrue(
             any("model text_encoder is absent" in blocker for blocker in blockers)
+        )
+
+    def test_preflight_checks_enabled_optional_loras_in_lora_roots(self) -> None:
+        project = self._schema_project_with_enabled_vbvr()
+        inventory_payload = self._schema_inventory(include_lora=False)
+
+        blockers = inventory._model_role_blockers(inventory_payload, project)
+
+        self.assertTrue(
+            any("enabled optional LoRA is absent from a LoRA model root" in blocker for blocker in blockers)
+        )
+
+    def test_preflight_materializes_enabled_loras_and_dynamic_image_placeholders(self) -> None:
+        project = self._schema_project_with_enabled_vbvr()
+        schema = self._native_workflow_schema_fixture()
+        schema["LoadImage"]["input"]["required"]["image"] = [  # type: ignore[index]
+            ["preflight-existing.png"],
+            {"image_upload": True},
+        ]
+        schema["LoraLoaderModelOnly"] = {
+            "input": {
+                "required": {
+                    "model": ["MODEL"],
+                    "lora_name": [["different-lora.safetensors"], {}],
+                    "strength_model": ["FLOAT"],
+                },
+                "optional": {},
+            },
+            "output": ["MODEL"],
+        }
+
+        blockers = inventory._project_workflow_schema_blockers(
+            project,
+            schema,
+            self._schema_inventory(include_lora=True),
+        )
+
+        self.assertTrue(any("lora_name" in blocker for blocker in blockers))
+
+        schema["LoraLoaderModelOnly"]["input"]["required"]["lora_name"] = [  # type: ignore[index]
+            ["vbvr.safetensors"],
+            {},
+        ]
+        self.assertEqual(
+            inventory._project_workflow_schema_blockers(
+                project,
+                schema,
+                self._schema_inventory(include_lora=True),
+            ),
+            (),
+        )
+
+    def test_preflight_rejects_optional_loras_without_a_preset(self) -> None:
+        project = self._schema_project_with_enabled_vbvr()
+        source = dict(project.source)
+        source.pop("preset")
+        unresolvable = ProjectConfig(path=project.path, source=source)
+
+        blockers = inventory._project_workflow_schema_blockers(
+            unresolvable,
+            self._native_workflow_schema_fixture(),
+            self._schema_inventory(include_lora=True),
+        )
+
+        self.assertTrue(
+            any("enabled optional LoRA preflight is invalid" in blocker for blocker in blockers)
         )
 
     def test_model_inventory_includes_default_roots_and_configured_extras(self) -> None:

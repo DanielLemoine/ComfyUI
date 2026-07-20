@@ -165,6 +165,96 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
 
+    def test_ready_preflight_binds_object_info_before_validate_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._write_example_manifest(root)
+            source = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            source.pop("object_info")
+            source.pop("object_info_sha256")
+            manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+            snapshot = root / "preflight" / "object_info.json"
+            snapshot.parent.mkdir(parents=True)
+            snapshot.write_bytes(
+                (PROJECT_DIR / "tests" / "fixtures" / "native_workflow_object_info.json").read_bytes()
+            )
+            result = PreflightResult(
+                artifact_dir=snapshot.parent,
+                object_info_path=snapshot,
+                active_workflow_dir=None,
+                native_i2v_template=None,
+                native_flf_template=None,
+                status="READY",
+                blockers=(),
+                workflow_candidates=(),
+            )
+
+            with patch("wan22_longform.cli.collect_preflight", return_value=result), redirect_stdout(
+                io.StringIO()
+            ):
+                self.assertEqual(
+                    main(
+                        [
+                            "preflight",
+                            "--comfy-root",
+                            str(root),
+                            "--project",
+                            str(manifest),
+                            "--bind-project",
+                        ]
+                    ),
+                    0,
+                )
+
+            bound = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                bound["object_info"], str(snapshot.relative_to(manifest.parent))
+            )
+            self.assertEqual(
+                bound["object_info_sha256"], hashlib.sha256(snapshot.read_bytes()).hexdigest()
+            )
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["validate-project", str(manifest)]), 0)
+
+    def test_blocked_preflight_does_not_bind_the_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._write_example_manifest(root)
+            source = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            source.pop("object_info")
+            source.pop("object_info_sha256")
+            manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+            before = manifest.read_bytes()
+            result = PreflightResult(
+                artifact_dir=root / "preflight",
+                object_info_path=root / "preflight" / "object_info.json",
+                active_workflow_dir=None,
+                native_i2v_template=None,
+                native_flf_template=None,
+                status="BLOCKED",
+                blockers=("fixture blocker",),
+                workflow_candidates=(),
+            )
+
+            with patch("wan22_longform.cli.collect_preflight", return_value=result), redirect_stdout(
+                io.StringIO()
+            ):
+                self.assertEqual(
+                    main(
+                        [
+                            "preflight",
+                            "--comfy-root",
+                            str(root),
+                            "--project",
+                            str(manifest),
+                            "--bind-project",
+                        ]
+                    ),
+                    1,
+                )
+
+            self.assertEqual(manifest.read_bytes(), before)
+
     def test_preflight_cli_blocks_a_hash_pinned_graph_with_invalid_native_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -312,7 +402,6 @@ class CliTests(unittest.TestCase):
                 "gpu": "fixture",
             },
             "render": {
-                "workflow": "wan22_segment_i2v_native_api.json",
                 "width": 640,
                 "height": 640,
                 "frames": 17,
@@ -326,7 +415,6 @@ class CliTests(unittest.TestCase):
                 "negative": "low quality",
                 "width": 640,
                 "height": 640,
-                "frames": 17,
             },
             "inputs": {"opening_frame": str(opening)},
             "attempts_dir": str(root / "attempts"),

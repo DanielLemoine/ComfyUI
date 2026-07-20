@@ -15,7 +15,7 @@ Run the commands from this package with its source directory on `PYTHONPATH`:
 ```powershell
 $env:PYTHONPATH = "$PWD\tools\wan22_longform\src"
 python -m wan22_longform.cli preflight --comfy-root D:\AI\ComfyUI --comfy-url http://127.0.0.1:8188 `
-  --project .\tools\wan22_longform\projects\example\project.yaml
+  --project .\tools\wan22_longform\projects\example\project.yaml --bind-project
 python -m wan22_longform.cli validate-project .\tools\wan22_longform\projects\example\project.yaml
 ```
 
@@ -28,9 +28,9 @@ Install the model files before rendering:
 - `text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors`
 - `vae/wan_2.1_vae.safetensors`
 
-Run preflight again after any ComfyUI, frontend, PyTorch/CUDA, custom-node, model, or template change. READY requires a trustworthy interpreter under `comfy_root`, available ComfyUI/runtime and custom-node revision evidence, the supplied project's exact high/low/VAE/text-encoder filenames in role-correct roots, native schemas, and the registered canonical I2V and FLF package assets with their pinned manifest/local SHA-256s. Inventory combines configured extra model paths with default ComfyUI model roots; high/low must come from diffusion-model or UNET roots, VAE from VAE roots, and text encoders from text/CLIP roots. Without `--project`, model-role proof is unavailable and preflight remains BLOCKED. Workflow discovery enumerates local profile candidates when it cannot prove which profile is active; it never assumes `user/default`.
+Run preflight again after any ComfyUI, frontend, PyTorch/CUDA, custom-node, model, or template change. READY requires a trustworthy interpreter under `comfy_root`, available ComfyUI/runtime and custom-node revision evidence, the supplied project's exact high/low/VAE/text-encoder filenames in role-correct roots, enabled optional LoRAs in LoRA roots, native schemas, and the registered canonical I2V and FLF package assets with their pinned manifest/local SHA-256s. Preflight materializes enabled optional LoRAs into the schema-checked API graph. Inventory combines configured extra model paths with default ComfyUI model roots; high/low must come from diffusion-model or UNET roots, VAE from VAE roots, and text encoders from text/CLIP roots. Without `--project`, model-role proof is unavailable and preflight remains BLOCKED. Workflow discovery enumerates local profile candidates when it cannot prove which profile is active; it never assumes `user/default`.
 
-`preflight` is a machine-readable gate: it writes evidence either way and prints JSON with `artifact_dir`, `status`, and `blockers`. It exits `0` only for `READY`; `BLOCKED` exits nonzero and no render command should follow. Pass every active ComfyUI configuration with `--extra-model-paths-config <path> [<path> ...]` (repeat the option as needed); canonical YAML block-scalar paths and the default `models/` roots are both inventoried.
+`preflight` is a machine-readable gate: it writes evidence either way and prints JSON with `artifact_dir`, `status`, and `blockers`. It exits `0` only for `READY`; `BLOCKED` exits nonzero and no render command should follow. With both `--project` and `--bind-project`, a `READY` preflight atomically updates that manifest's `object_info` path and SHA-256 to the snapshot it just recorded, then revalidates the bound manifest. A blocked preflight leaves the manifest untouched. Pass every active ComfyUI configuration with `--extra-model-paths-config <path> [<path> ...]` (repeat the option as needed); canonical YAML block-scalar paths and the default `models/` roots are both inventoried.
 
 ## UI workflows
 
@@ -43,6 +43,8 @@ python -m wan22_longform.cli deploy-workflows `
 
 Use `--force` only to replace the package's matching files in that target. It preserves unrelated user files. The API JSON files are for the runner; the UI JSON files are for inspecting or manually executing the same native topology.
 
+The persisted I2V graph uses stable executable titles: `PROMPT_POSITIVE`, `PROMPT_NEGATIVE`, `START_IMAGE`, and `VIDEO_PREVIEW`. These are the runner's patch points; do not rename them in a deployed copy.
+
 ## Project manifest
 
 Start at `projects/example/project.yaml`. It is deliberately identity-disabled and uses an adult, fully clothed, neutral subject. Add the two user-owned anchor files named in its `shots[].anchor_image` fields before validation or rendering.
@@ -51,14 +53,14 @@ The companion `prompts/*.txt` files are editable operator references. The sample
 
 Important fields:
 
-- The strict v1 manifest requires project identity/mode/duration, render dimensions/FPS and the fixed V1 codec declarations, a seed family, exact high/low/VAE/text-encoder filenames, output declarations, QC/retry policy, workflow hashes, a hash-bound local `object_info` snapshot, and an environment snapshot. `validate-project` checks this contract without changing the YAML.
+- The strict v1 manifest requires project identity/mode/duration, a resolvable `preset`, render dimensions/FPS and the fixed V1 codec declarations, a seed family, exact high/low/VAE/text-encoder filenames, output declarations, QC/retry policy, workflow hashes, a hash-bound local `object_info` snapshot, and an environment snapshot. The checked-in example intentionally starts without an `object_info` binding: run `preflight --project <manifest> --bind-project` before `validate-project`. `validate-project` checks the contract without changing the YAML.
 - `workflow_api` and `bridge_workflow_api` point at the clean native API graphs.
 - `models` names the high-/low-noise Wan UNETs, VAE, and text encoder; all four exact filenames are recorded.
 - `model_files` is only a portable declaration. Normal validation and every render require role-correct, on-disk `model_roots`; the runner independently verifies each declared high/low UNET, VAE, and text-encoder file before upload or submission.
 - `shots[].segments[]` is the explicit I2V render plan. A normal opening image resolves in this order: `segment.opening_image`, then `shot.anchor_image`, then the optional project fallback `inputs.opening_frame`.
 - A `continue_from` segment is different: it can only use exactly one accepted same-shot upstream attempt's selected, hash-verified **tail** candidate. The attempt must match the current project id and source-manifest SHA-256, and its sealed provenance/render metadata/QC/acceptance evidence must still match. It cannot combine an opening-image override with continuation.
 - Strict-manifest seed families use `render.seed_base + segment.seed_offset`; an explicit `segment.seed` is the only override. A legacy top-level request seed is only a low-level compatibility fallback.
-- Frame timing is a contract: `render.frames` must equal `floor(duration_seconds * render.generation_fps + 1)`. Segment/bridge durations and the explicit `assembly_order` must agree with that timing within one frame. The runner seals the submitted `length` and `CreateVideo.fps`, then verifies the fetched media timing before metadata or QC is written.
+- Frame timing is a contract: `render.frames` must equal `floor(duration_seconds * render.generation_fps + 1)`. Segments and the top-level request may not override `frames` or `length`; each segment derives its exact frame count from the project render contract. A bridge's declared `frames`, its duration, and the project FPS must agree, and the explicit `assembly_order` must agree with that timing within one frame. The runner seals the submitted `length` and `CreateVideo.fps`, then verifies fetched media frames, FPS, duration, width, and height before metadata or QC is written. Resume re-verifies that sealed timing against the video before QC can continue.
 - V1 assembly codecs are deliberately fixed: `review_mp4_codec: h264` and `master_codec: ffv1`; the ProRes edit master uses the fixed `prores_ks` profile 3 command. Other manifest codec values are rejected rather than silently ignored.
 - A story `flf2v` bridge may use literal accepted-QC paths, but new immutable projects should use the manifest-stable pair `first_image: accepted_selected_tail` and `last_image: accepted_selected_head`. At render time those selectors require exactly one current-lineage accepted `from_segment`/`to_segment` attempt and resolve its sealed tail/head selections. The bridge attempt records the resolved literal paths, hashes, upstream attempts, and acceptance-decision evidence. `base_source_image` is allowed only with `purpose: technical_smoke`, never as a story-bridge fallback.
 - A story `flf2v` bridge also requires `from_segment` and `to_segment` in its own shot. Its entry in `assembly_order` must sit directly between those exact segment entries. The runner verifies that its selected tail/head inputs come from those declared accepted attempts.
@@ -91,7 +93,7 @@ python -m wan22_longform.cli render-shot .\project.yaml S020
 # FLF: semantic accepted selectors or literal accepted-QC endpoints; 17, 33, 49, 65, or 81 frames are legal.
 python -m wan22_longform.cli render-bridge .\project.yaml B010 --timeout 1800
 
-# Review and record human selections. The continuation is a tail candidate; --head-frame seals the head used by a later semantic FLF bridge.
+# Review and record human selections. The continuation is a tail candidate; --head-frame seals the head used by a later semantic FLF bridge. Acceptance writes an atomic terminal decision plus an immutable marker that hashes it; each new evidence path is claimed without replacement, so concurrent conflicting decisions cannot overwrite one another. If an interruption leaves only the terminal decision, evidence recovery revalidates it and idempotently publishes the missing marker.
 python -m wan22_longform.cli qc-contact-sheet .\attempts\S010\S010_C001\attempt-...
 python -m wan22_longform.cli accept .\attempts\S010\S010_C001\attempt-... `
   --note "clean motion and stable anatomy" `
@@ -163,6 +165,6 @@ Native assembly creates a review MP4 plus FFV1 and ProRes edit masters after exa
 | Assembly | FFmpeg native timeline validation | Safe audio preservation in V1 |
 | Upscale/interpolation | Explicit RIFE readiness marker | Automatic RIFE or Topaz execution |
 
-If validation says a model is missing, correct the filename or `model_roots`; do not rename a checkpoint to satisfy the manifest. If local schema validation fails, refresh preflight and use the captured local `object_info`. If a bridge refuses to render, check that it has a stable `id`/`shot_id`, an allowed length, and either accepted tail/head QC endpoints or an explicitly marked `technical_smoke` base source. If a deployment target exists, choose a new package directory or explicitly use `--force`; the tool will not clear it.
+If validation says a model is missing, correct the filename or `model_roots`; do not rename a checkpoint to satisfy the manifest. If local schema validation fails, refresh preflight and use the captured local `object_info`. If a bridge refuses to render, check that it has a stable `id`/`shot_id`, an allowed `frames` count, and either accepted tail/head QC endpoints or an explicitly marked `technical_smoke` base source. If a deployment target exists, choose a new package directory or explicitly use `--force`; the tool will not clear it.
 
 Unverified assumptions remain explicit: production creative quality and identity fidelity require a supplied anchor/identity LoRA and human QC; no benchmark proves a particular prompt will preserve a subject through an arbitrary long sequence; RIFE and Topaz configurations are intentionally outside this local package.

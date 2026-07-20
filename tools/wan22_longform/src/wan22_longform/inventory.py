@@ -14,9 +14,21 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 import yaml
 
-from .config import ProjectConfig
+from .config import (
+    ConfigError,
+    ModelFiles,
+    ProjectConfig,
+    load_presets,
+    resolve_preset,
+    validate_lora_policy,
+)
 from .errors import PreflightError
-from .workflow import WorkflowError, validate_graph_against_object_info
+from .workflow import (
+    WorkflowError,
+    build_api_graph,
+    trusted_load_image_placeholders,
+    validate_graph_against_object_info,
+)
 
 
 _CANONICAL_I2V_TEMPLATE_ID = "video_wan2_2_14B_i2v"
@@ -230,7 +242,9 @@ def _preflight_blockers(
             f"{flf_verification}"
         )
     blockers.extend(_model_role_blockers(model_inventory, project))
-    blockers.extend(_project_workflow_schema_blockers(project, object_info))
+    blockers.extend(
+        _project_workflow_schema_blockers(project, object_info, model_inventory)
+    )
     blockers.extend(_runtime_revision_blockers(environment, custom_nodes))
     return tuple(blockers)
 
@@ -246,7 +260,9 @@ def _has_required_input_schema(schema: object) -> bool:
 
 
 def _project_workflow_schema_blockers(
-    project: ProjectConfig | None, object_info: Mapping[str, object]
+    project: ProjectConfig | None,
+    object_info: Mapping[str, object],
+    model_inventory: Mapping[str, object] | None = None,
 ) -> tuple[str, ...]:
     """Validate each hash-pinned API graph against the schema captured this preflight."""
     if project is None or not object_info:
@@ -267,6 +283,15 @@ def _project_workflow_schema_blockers(
     hashes = source.get("workflow_hashes")
     if not isinstance(hashes, Mapping):
         return ("project workflow_hashes is not a mapping",)
+    configured = None
+    available_files = ModelFiles.from_names(set())
+    if "loras" in source:
+        try:
+            configured = _preflight_render_config(project)
+            available_files = _inventory_model_files(model_inventory or {})
+            validate_lora_policy(configured, available_files)
+        except ConfigError as error:
+            return (f"project enabled optional LoRA preflight is invalid: {error}",)
     blockers: list[str] = []
     for workflow_key, hash_key, label in (
         ("workflow_api", "segment_api", "segment"),
@@ -298,7 +323,13 @@ def _project_workflow_schema_blockers(
                 for node_id, node in graph.items()
             ):
                 raise WorkflowError("workflow is not an API graph")
-            validate_graph_against_object_info(graph, object_info)
+            if configured is not None:
+                graph = build_api_graph(graph, configured, available_files)
+            validate_graph_against_object_info(
+                graph,
+                object_info,
+                trusted_dynamic_images=trusted_load_image_placeholders(graph),
+            )
         except (OSError, json.JSONDecodeError, WorkflowError) as error:
             blockers.append(
                 f"project {label} API workflow is incompatible with captured local "
@@ -491,7 +522,55 @@ def _model_role_blockers(
                 f"configured project model {role} is absent from a role-correct "
                 f"local model root: {name}"
             )
+    if "loras" not in project.source:
+        return tuple(blockers)
+    try:
+        resolved = _preflight_render_config(project)
+    except ConfigError as error:
+        blockers.append(f"project optional LoRA configuration is invalid: {error}")
+        return tuple(blockers)
+    lora_files = {
+        Path(candidate).name.casefold()
+        for root in root_entries
+        if isinstance(root, dict)
+        and isinstance(root.get("kind"), str)
+        and root["kind"].casefold() == "loras"
+        and isinstance(root.get("files"), list)
+        for candidate in root["files"]
+        if isinstance(candidate, str)
+    }
+    for slot in resolved.enabled_loras():
+        if slot.file is not None and slot.file.casefold() not in lora_files:
+            blockers.append(
+                "enabled optional LoRA is absent from a LoRA model root: " + slot.file
+            )
     return tuple(blockers)
+
+
+def _preflight_render_config(project: ProjectConfig):
+    raw_presets = project.source.get(
+        "presets", Path(__file__).parents[2] / "config" / "presets.yaml"
+    )
+    if not isinstance(raw_presets, (str, Path)) or not str(raw_presets):
+        raise ConfigError("presets must be a local path")
+    presets_path = Path(raw_presets)
+    if not presets_path.is_absolute():
+        presets_path = project.path.parent / presets_path
+    return resolve_preset(project, load_presets(presets_path))
+
+
+def _inventory_model_files(model_inventory: Mapping[str, object]) -> ModelFiles:
+    roots = model_inventory.get("roots")
+    root_entries = roots if isinstance(roots, list) else ()
+    return ModelFiles.from_names(
+        {
+            Path(candidate).name
+            for root in root_entries
+            if isinstance(root, Mapping)
+            for candidate in root.get("files", ())
+            if isinstance(candidate, str)
+        }
+    )
 
 
 def _configured_model_roots(

@@ -5,7 +5,7 @@
 - Models: `MODEL_HIGH`, `MODEL_LOW`
 - Sampling wrappers: `MODEL_SAMPLING_HIGH`, `MODEL_SAMPLING_LOW`
 - Two-stage samplers: `SAMPLER_HIGH`, `SAMPLER_LOW`
-- Inputs: `SEGMENT_FIRST_IMAGE`, `POSITIVE_PROMPT`
+- Stable segment titles: `START_IMAGE`, `PROMPT_POSITIVE`, `PROMPT_NEGATIVE`, `VIDEO_PREVIEW`
 - Native conditioning: `I2V_CONDITIONING`
 
 The clean base contains no `LoraLoaderModelOnly` nodes. `build_api_graph(base_graph, render)` remains valid when no optional adapter is enabled. If an enabled adapter is requested, callers must supply an explicit `ModelFiles` available-file inventory; the builder independently refuses an adapter whose filename is absent from it. `validate_lora_policy` remains the configuration-policy gate. With both checks satisfied, the builder inserts enabled adapters in this fixed order:

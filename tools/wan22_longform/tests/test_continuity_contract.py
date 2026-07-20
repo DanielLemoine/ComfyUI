@@ -519,10 +519,26 @@ class ContinuityContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "candidate_count.*qc.candidate_count"):
             validate_project_contract(self._project(source))
 
+    def test_strict_manifest_requires_a_preset_for_lora_resolution(self) -> None:
+        source = copy.deepcopy(self.source)
+        source.pop("preset")
+
+        with self.assertRaisesRegex(ConfigError, "preset"):
+            validate_project_contract(self._project(source))
+
     def test_strict_manifest_enforces_frame_duration_and_assembly_targets(self) -> None:
         mutations = {
             "segment duration": lambda source: source["shots"][0]["segments"][0].__setitem__(
                 "expected_seconds", 2.0
+            ),
+            "segment frame override": lambda source: source["shots"][0]["segments"][0].__setitem__(
+                "frames", 33
+            ),
+            "request frame override": lambda source: source["request"].__setitem__(
+                "frames", 33
+            ),
+            "request length override": lambda source: source["request"].__setitem__(
+                "length", 33
             ),
             "shot target": lambda source: source["shots"][0].__setitem__(
                 "target_seconds", 1.0
@@ -534,7 +550,9 @@ class ContinuityContractTests(unittest.TestCase):
                 source = copy.deepcopy(self.source)
                 mutate(source)
 
-                with self.assertRaisesRegex(ConfigError, "expected_seconds|target_seconds"):
+                with self.assertRaisesRegex(
+                    ConfigError, "expected_seconds|target_seconds|frame override"
+                ):
                     validate_project_contract(self._project(source))
 
     def test_strict_manifest_rejects_declarative_codecs_and_dead_seed_increment(self) -> None:
@@ -548,13 +566,16 @@ class ContinuityContractTests(unittest.TestCase):
             "dead seed increment": lambda source: source["render"].__setitem__(
                 "seed_increment", 17
             ),
+            "dead render workflow": lambda source: source["render"].__setitem__(
+                "workflow", "wan22_segment_i2v_native_api.json"
+            ),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label):
                 source = copy.deepcopy(self.source)
                 mutate(source)
 
-                with self.assertRaisesRegex(ConfigError, "codec|seed_increment"):
+                with self.assertRaisesRegex(ConfigError, "codec|seed_increment|render.workflow"):
                     validate_project_contract(self._project(source))
 
     def test_strict_manifest_requires_declared_output_roles_inside_output_root(self) -> None:
@@ -712,10 +733,10 @@ class ContinuityContractTests(unittest.TestCase):
             assembly_duration += durations[key]
         self.assertAlmostEqual(source["target_seconds"], assembly_duration, delta=1 / fps)
 
-    def test_example_manifest_stops_only_at_the_documented_missing_anchor(self) -> None:
+    def test_example_manifest_requires_preflight_binding_before_anchor_validation(self) -> None:
         project = load_project(PROJECT_DIR / "projects" / "example" / "project.yaml")
 
-        with self.assertRaisesRegex(RenderError, "anchor image does not exist"):
+        with self.assertRaisesRegex(ConfigError, "object_info"):
             validate_project(project)
 
     def _source(self) -> dict[str, object]:
@@ -764,7 +785,6 @@ class ContinuityContractTests(unittest.TestCase):
                 "gpu": "fixture",
             },
             "render": {
-                "workflow": "wan22_segment_i2v_native_api.json",
                 "width": 640,
                 "height": 640,
                 "frames": 17,
@@ -795,7 +815,6 @@ class ContinuityContractTests(unittest.TestCase):
                 "seed": 400,
                 "width": 640,
                 "height": 640,
-                "frames": 17,
             },
             "prompt_blocks": {
                 "identity_lock": "same adult identity",

@@ -229,6 +229,89 @@ class AssemblyRecordCliTests(unittest.TestCase):
                 [entry["path"] for entry in resumed["integrity_failures"]], [str(malformed)]
             )
 
+    def test_status_and_resume_report_an_invalid_utf8_root_without_hiding_an_intact_sibling(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001",))
+            project = load_project(manifest)
+            source = self._accepted_attempt(project, "S010_C001")
+            intact = create_assembly_record(
+                project,
+                "project",
+                inputs=(cli._accepted_assembly_input(source)[1],),
+                requested={"scope": "project", "targets": {}},
+            )
+            malformed = root / "assembly-records" / "project" / "assembly-invalid-utf8"
+            malformed.mkdir(parents=True)
+            (malformed / "assembly.json").write_bytes(b"\xff")
+
+            status_stdout = io.StringIO()
+            with contextlib.redirect_stdout(status_stdout):
+                self.assertEqual(cli.main(["status", str(manifest)]), 0)
+            status = json.loads(status_stdout.getvalue())
+            reported = {entry["path"]: entry for entry in status["assembly_records"]}
+            self.assertEqual(reported[str(intact.path)]["state"], "planned")
+            self.assertEqual(reported[str(malformed)]["state"], "integrity_failed")
+
+            resume_stdout = io.StringIO()
+            with contextlib.redirect_stdout(resume_stdout):
+                self.assertEqual(cli.main(["resume", str(manifest)]), 0)
+            resumed = json.loads(resume_stdout.getvalue())
+            self.assertEqual(
+                [entry["assembly_id"] for entry in resumed["incomplete_assembly_records"]],
+                [intact.assembly_id],
+            )
+            self.assertEqual(
+                [entry["path"] for entry in resumed["integrity_failures"]], [str(malformed)]
+            )
+
+    def test_status_and_resume_report_an_invalid_utf8_decision_without_hiding_an_intact_sibling(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001",))
+            project = load_project(manifest)
+            source = self._accepted_attempt(project, "S010_C001")
+            intact = create_assembly_record(
+                project,
+                "project",
+                inputs=(cli._accepted_assembly_input(source)[1],),
+                requested={"scope": "project", "targets": {}},
+            )
+            malformed = create_assembly_record(
+                project,
+                "corrupt",
+                inputs=(cli._accepted_assembly_input(source)[1],),
+                requested={"scope": "corrupt", "targets": {}},
+            )
+            decision_path = malformed.path / "decisions" / "0001-transition.json"
+            decision_path.parent.mkdir()
+            decision_path.write_bytes(b"\xff")
+
+            status_stdout = io.StringIO()
+            with contextlib.redirect_stdout(status_stdout):
+                self.assertEqual(cli.main(["status", str(manifest)]), 0)
+            status = json.loads(status_stdout.getvalue())
+            reported = {entry["path"]: entry for entry in status["assembly_records"]}
+            self.assertEqual(reported[str(intact.path)]["state"], "planned")
+            self.assertEqual(reported[str(malformed.path)]["state"], "integrity_failed")
+
+            resume_stdout = io.StringIO()
+            with contextlib.redirect_stdout(resume_stdout):
+                self.assertEqual(cli.main(["resume", str(manifest)]), 0)
+            resumed = json.loads(resume_stdout.getvalue())
+            self.assertEqual(
+                [entry["assembly_id"] for entry in resumed["incomplete_assembly_records"]],
+                [intact.assembly_id],
+            )
+            self.assertEqual(
+                [entry["path"] for entry in resumed["integrity_failures"]],
+                [str(malformed.path)],
+            )
+
     def test_assemble_shot_uses_explicit_story_bridge_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

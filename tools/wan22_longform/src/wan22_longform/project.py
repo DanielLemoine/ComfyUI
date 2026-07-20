@@ -896,7 +896,7 @@ def _decision_number(path: Path) -> int:
 def _read_json(path: Path) -> Mapping[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ProjectStateError(f"invalid attempt record: {path}") from error
     if not isinstance(value, Mapping):
         raise ProjectStateError(f"attempt record must be a JSON object: {path}")

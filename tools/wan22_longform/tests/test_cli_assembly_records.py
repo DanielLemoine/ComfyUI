@@ -35,6 +35,7 @@ from wan22_longform.project import (  # noqa: E402
     transition_attempt,
 )
 from wan22_longform.config import ConfigError, ProjectConfig, load_project  # noqa: E402
+from wan22_longform.qc import initialize_qc  # noqa: E402
 
 
 class AssemblyRecordCliTests(unittest.TestCase):
@@ -315,7 +316,7 @@ class AssemblyRecordCliTests(unittest.TestCase):
             record = create_assembly_record(
                 project,
                 "project",
-                inputs=(cli._accepted_assembly_input(source)[1],),
+                inputs=(cli._accepted_assembly_input(project, source)[1],),
                 requested={"scope": "project", "targets": {}},
             )
 
@@ -334,6 +335,35 @@ class AssemblyRecordCliTests(unittest.TestCase):
             self.assertEqual(resumed["incomplete_assembly_records"][0]["state"], "planned")
             self.assertEqual(load_assembly_record(record.path).state, AssemblyState.PLANNED)
             self.assertEqual(load_attempt(source.path).state, AttemptState.ACCEPTED)
+
+    def test_status_marks_a_legacy_assembly_record_unverified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001",))
+            project = load_project(manifest)
+            source = self._accepted_attempt(project, "S010_C001")
+            record = create_assembly_record(
+                project,
+                "project",
+                inputs=(cli._accepted_assembly_input(project, source)[1],),
+                requested={"scope": "project", "targets": {}},
+            )
+            root_path = record.path / "assembly.json"
+            root_payload = json.loads(root_path.read_text(encoding="utf-8"))
+            root_payload.pop("root_digest")
+            root_payload.pop("lineage")
+            root_path.write_text(
+                json.dumps(root_payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            status_stdout = io.StringIO()
+            with contextlib.redirect_stdout(status_stdout):
+                self.assertEqual(cli.main(["status", str(manifest)]), 0)
+            reported = json.loads(status_stdout.getvalue())["assembly_records"][0]
+
+            self.assertEqual(reported["state"], "planned")
+            self.assertEqual(reported["integrity"]["status"], "legacy_unverified")
 
     def test_status_and_resume_surface_tampered_final_record_as_an_integrity_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -378,7 +408,7 @@ class AssemblyRecordCliTests(unittest.TestCase):
             intact = create_assembly_record(
                 project,
                 "project",
-                inputs=(cli._accepted_assembly_input(source)[1],),
+                inputs=(cli._accepted_assembly_input(project, source)[1],),
                 requested={"scope": "project", "targets": {}},
             )
             malformed = root / "assembly-records" / "project" / "assembly-corrupt"
@@ -419,7 +449,7 @@ class AssemblyRecordCliTests(unittest.TestCase):
             intact = create_assembly_record(
                 project,
                 "project",
-                inputs=(cli._accepted_assembly_input(source)[1],),
+                inputs=(cli._accepted_assembly_input(project, source)[1],),
                 requested={"scope": "project", "targets": {}},
             )
             malformed = root / "assembly-records" / "project" / "assembly-invalid-utf8"
@@ -457,13 +487,13 @@ class AssemblyRecordCliTests(unittest.TestCase):
             intact = create_assembly_record(
                 project,
                 "project",
-                inputs=(cli._accepted_assembly_input(source)[1],),
+                inputs=(cli._accepted_assembly_input(project, source)[1],),
                 requested={"scope": "project", "targets": {}},
             )
             malformed = create_assembly_record(
                 project,
                 "corrupt",
-                inputs=(cli._accepted_assembly_input(source)[1],),
+                inputs=(cli._accepted_assembly_input(project, source)[1],),
                 requested={"scope": "corrupt", "targets": {}},
             )
             decision_path = malformed.path / "decisions" / "0001-transition.json"
@@ -725,11 +755,27 @@ class AssemblyRecordCliTests(unittest.TestCase):
             video.write_bytes(b"changed after acceptance")
 
             with patch("wan22_longform.cli.execute_assembly_plan") as execute:
-                with self.assertRaisesRegex(ValueError, "video changed or is missing"):
+                with self.assertRaisesRegex(ValueError, "output hash changed or is missing"):
                     cli.main(["assemble-project", str(manifest)])
 
             execute.assert_not_called()
             self.assertEqual(assembly_records(project), ())
+
+    def test_assemble_project_rejects_an_accepted_attempt_from_another_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_manifest = self._manifest(root, ("S010_C001",))
+            first_project = load_project(first_manifest)
+            self._accepted_attempt(first_project, "S010_C001")
+            second_manifest = root / "other-project.yaml"
+            second_source = yaml.safe_load(first_manifest.read_text(encoding="utf-8"))
+            second_source["project_id"] = "other-project"
+            second_manifest.write_text(
+                yaml.safe_dump(second_source, sort_keys=True), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "project lineage"):
+                cli._accepted_project_attempts(load_project(second_manifest))
 
     def test_outcome_handlers_record_each_review_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -902,12 +948,26 @@ class AssemblyRecordCliTests(unittest.TestCase):
         attempt = create_attempt(project, "S010", segment_id)
         for state in (AttemptState.RENDERING, AttemptState.RENDERED, AttemptState.NEEDS_REVIEW):
             attempt = transition_attempt(attempt, state, "fixture")
-        attempt = transition_attempt(attempt, AttemptState.ACCEPTED, "approved fixture")
         output = attempt.path / "outputs" / "segment.mp4"
         output.parent.mkdir(parents=True)
         output.write_bytes(segment_id.encode("utf-8"))
-        write_metadata(attempt, RenderMetadata(outputs={"segment": output}))
-        return attempt
+        output_name = "bridge" if segment_id.startswith("B") else "segment"
+        write_metadata(attempt, RenderMetadata(outputs={output_name: output}))
+        head = attempt.path / "head.png"
+        tail = attempt.path / "tail.png"
+        sheet = attempt.path / "contact-sheet.png"
+        head.write_bytes(b"head")
+        tail.write_bytes(b"tail")
+        sheet.write_bytes(b"sheet")
+        initialize_qc(
+            attempt,
+            video=output,
+            head_frames=[head],
+            tail_frames=[tail],
+            contact_sheet=sheet,
+            automatic_continuation_authorized=False,
+        )
+        return transition_attempt(attempt, AttemptState.ACCEPTED, "approved fixture")
 
     def _assembly_execution_patch(self):
         def fake_execute(plan, *, decision_log):

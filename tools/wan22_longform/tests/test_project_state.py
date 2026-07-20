@@ -21,16 +21,21 @@ from wan22_longform.project import (  # noqa: E402
     AssemblyState,
     AttemptState,
     ProjectStateError,
+    accepted_attempt_evidence,
     create_assembly_record,
     create_attempt,
+    inspect_assembly_records,
+    inspect_attempt_integrity,
     load_assembly_record,
     load_attempt,
     needs_render,
     transition_assembly_record,
     transition_attempt,
     recorded_boundary_approvals,
+    verify_assembly_record_integrity,
     verify_assembly_record_inputs,
 )
+from wan22_longform.qc import initialize_qc  # noqa: E402
 
 
 class ProjectStateTests(unittest.TestCase):
@@ -46,6 +51,7 @@ class ProjectStateTests(unittest.TestCase):
         self.project = ProjectConfig(
             path=self.manifest,
             source={
+                "project_id": "project-state-fixture",
                 "workflow_api": str(self.workflow),
                 "request": {"prompt": "A fixture shot"},
                 "inputs": {"opening_frame": str(self.input_frame)},
@@ -68,6 +74,17 @@ class ProjectStateTests(unittest.TestCase):
         self.assertTrue((first.path / "provenance.json").is_file())
         self.assertEqual(first.state, AttemptState.PLANNED)
         self.assertEqual(retry.parent_attempt, first.path)
+
+        attempt_record = json.loads(
+            (first.path / "attempt.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            attempt_record.get("lineage"),
+            {
+                "project_id": "project-state-fixture",
+                "source_manifest_sha256": hashlib.sha256(self.manifest.read_bytes()).hexdigest(),
+            },
+        )
 
         provenance = json.loads((first.path / "provenance.json").read_text(encoding="utf-8"))
         self.assertEqual(
@@ -195,25 +212,13 @@ class ProjectStateTests(unittest.TestCase):
                 self.assertEqual(sorted(path.name for path in decision_dir.glob("*.json")), before)
 
     def test_assembly_record_leaves_accepted_source_attempt_reusable(self) -> None:
-        source = self._review_attempt()
-        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
-        rendered = self.root / "accepted-segment.mp4"
-        rendered.write_bytes(b"accepted-segment")
+        source, rendered, evidence = self._accepted_source()
 
         record = create_assembly_record(
             self.project,
             "project",
             inputs=(
-                {
-                    "attempt_id": source.attempt_id,
-                    "attempt_path": source.path,
-                    "output": {
-                        "path": rendered,
-                        "sha256": hashlib.sha256(rendered.read_bytes()).hexdigest(),
-                    },
-                    "segment_id": source.segment_id,
-                    "shot_id": source.shot_id,
-                },
+                evidence,
             ),
             requested={"scope": "project", "targets": {"review_mp4": self.root / "review.mp4"}},
             now=self.now,
@@ -235,28 +240,43 @@ class ProjectStateTests(unittest.TestCase):
         payload = json.loads((record.path / "assembly.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["inputs"][0]["attempt_id"], source.attempt_id)
         self.assertEqual(payload["inputs"][0]["output"]["sha256"], hashlib.sha256(rendered.read_bytes()).hexdigest())
+        self.assertEqual(
+            payload["lineage"],
+            {
+                "project_id": "project-state-fixture",
+                "source_manifest_sha256": hashlib.sha256(
+                    self.manifest.read_bytes()
+                ).hexdigest(),
+            },
+        )
+        self.assertEqual(
+            set(payload["inputs"][0]),
+            {
+                "acceptance_decision",
+                "attempt_id",
+                "attempt_path",
+                "lineage",
+                "output",
+                "provenance",
+                "qc",
+                "render_metadata",
+                "segment_id",
+                "shot_id",
+                "source_manifest",
+            },
+        )
+        self.assertRegex(payload["root_digest"], r"^[0-9a-f]{64}$")
 
     def test_invalid_assembly_source_provenance_leaves_no_partial_record_directory(self) -> None:
-        source = self._review_attempt()
-        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
-        rendered = self.root / "accepted-segment.mp4"
-        rendered.write_bytes(b"changed source")
+        _source, _rendered, evidence = self._accepted_source()
+        evidence["output"]["sha256"] = hashlib.sha256(b"original source").hexdigest()
 
-        with self.assertRaisesRegex(ProjectStateError, "output hash changed"):
+        with self.assertRaisesRegex(ProjectStateError, "immutable evidence"):
             create_assembly_record(
                 self.project,
                 "project",
                 inputs=(
-                    {
-                        "attempt_id": source.attempt_id,
-                        "attempt_path": source.path,
-                        "output": {
-                            "path": rendered,
-                            "sha256": hashlib.sha256(b"original source").hexdigest(),
-                        },
-                        "segment_id": source.segment_id,
-                        "shot_id": source.shot_id,
-                    },
+                    evidence,
                 ),
                 requested={"scope": "project"},
                 now=self.now,
@@ -265,24 +285,12 @@ class ProjectStateTests(unittest.TestCase):
         self.assertFalse((self.root / "assembly-records" / "project").exists())
 
     def test_assembly_record_rechecks_source_hashes_before_execution(self) -> None:
-        source = self._review_attempt()
-        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
-        rendered = self.root / "accepted-segment.mp4"
-        rendered.write_bytes(b"original source")
+        _source, rendered, evidence = self._accepted_source()
         record = create_assembly_record(
             self.project,
             "project",
             inputs=(
-                {
-                    "attempt_id": source.attempt_id,
-                    "attempt_path": source.path,
-                    "output": {
-                        "path": rendered,
-                        "sha256": hashlib.sha256(rendered.read_bytes()).hexdigest(),
-                    },
-                    "segment_id": source.segment_id,
-                    "shot_id": source.shot_id,
-                },
+                evidence,
             ),
             requested={"scope": "project"},
             now=self.now,
@@ -293,30 +301,167 @@ class ProjectStateTests(unittest.TestCase):
             verify_assembly_record_inputs(record)
 
     def test_assembly_record_treats_missing_boundary_approvals_as_empty(self) -> None:
-        source = self._review_attempt()
-        source = transition_attempt(source, AttemptState.ACCEPTED, "approved", now=self.now)
-        rendered = self.root / "accepted-segment.mp4"
-        rendered.write_bytes(b"accepted-segment")
+        _source, _rendered, evidence = self._accepted_source()
         record = create_assembly_record(
             self.project,
             "project",
             inputs=(
-                {
-                    "attempt_id": source.attempt_id,
-                    "attempt_path": source.path,
-                    "output": {
-                        "path": rendered,
-                        "sha256": hashlib.sha256(rendered.read_bytes()).hexdigest(),
-                    },
-                    "segment_id": source.segment_id,
-                    "shot_id": source.shot_id,
-                },
+                evidence,
             ),
             requested={"scope": "project"},
             now=self.now,
         )
 
         self.assertEqual(recorded_boundary_approvals(record), ())
+
+    def test_failed_assembly_root_detects_requested_approval_tampering(self) -> None:
+        _source, _rendered, evidence = self._accepted_source()
+        record = create_assembly_record(
+            self.project,
+            "project",
+            inputs=(
+                evidence,
+            ),
+            requested={
+                "boundary_approvals": [
+                    {"boundary_index": 1, "note": "Reviewed at 200%."}
+                ],
+                "scope": "project",
+            },
+            now=self.now,
+        )
+        failed = transition_assembly_record(
+            record,
+            AssemblyState.FAILED,
+            "planning failed",
+            now=self.now,
+        )
+        root_payload = json.loads(
+            (record.path / "assembly.json").read_text(encoding="utf-8")
+        )
+        root_payload["requested"]["boundary_approvals"][0]["note"] = "forged approval"
+        (record.path / "assembly.json").write_text(
+            json.dumps(root_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        integrity = verify_assembly_record_integrity(failed)
+
+        self.assertFalse(integrity.intact)
+
+    def test_assembly_decision_chain_detects_intermediate_tampering(self) -> None:
+        _source, _rendered, evidence = self._accepted_source()
+        record = create_assembly_record(
+            self.project,
+            "project",
+            inputs=(
+                evidence,
+            ),
+            requested={"scope": "project"},
+            now=self.now,
+        )
+        assembling = transition_assembly_record(
+            record, AssemblyState.ASSEMBLING, "started", now=self.now
+        )
+        failed = transition_assembly_record(
+            assembling, AssemblyState.FAILED, "failed", now=self.now
+        )
+        first_decision_path = record.path / "decisions" / "0001.json"
+        first_decision = json.loads(first_decision_path.read_text(encoding="utf-8"))
+        first_decision["note"] = "forged start"
+        first_decision_path.write_text(
+            json.dumps(first_decision, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        integrity = verify_assembly_record_integrity(failed)
+
+        self.assertFalse(integrity.intact)
+
+    def test_accepted_attempt_rejects_changed_immutable_artifact_hashes(self) -> None:
+        cases = (
+            "source-manifest.yaml",
+            "provenance.json",
+            "render-metadata.json",
+            "qc.yaml",
+            "decisions/0004.json",
+        )
+        for relative_path in cases:
+            with self.subTest(relative_path=relative_path):
+                accepted, _output, _evidence = self._accepted_source()
+                path = accepted.path / relative_path
+                path.write_bytes(path.read_bytes() + b"\n")
+
+                with self.assertRaises(ProjectStateError):
+                    accepted_attempt_evidence(self.project, accepted)
+
+    def test_legacy_attempt_is_readable_but_explicitly_unverified(self) -> None:
+        accepted, _output, _evidence = self._accepted_source()
+        attempt_path = accepted.path / "attempt.json"
+        attempt_payload = json.loads(attempt_path.read_text(encoding="utf-8"))
+        attempt_payload.pop("lineage")
+        attempt_path.write_text(
+            json.dumps(attempt_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        loaded = load_attempt(accepted.path)
+        status, failures = inspect_attempt_integrity(self.project, loaded)
+
+        self.assertEqual(loaded.state, AttemptState.ACCEPTED)
+        self.assertEqual(status, "legacy_unverified")
+        self.assertTrue(any("legacy" in failure for failure in failures))
+        with self.assertRaisesRegex(ProjectStateError, "legacy"):
+            accepted_attempt_evidence(self.project, loaded)
+
+    def test_legacy_assembly_record_is_readable_but_explicitly_unverified(self) -> None:
+        _source, _output, evidence = self._accepted_source()
+        record = create_assembly_record(
+            self.project,
+            "project",
+            inputs=(evidence,),
+            requested={"scope": "project"},
+            now=self.now,
+        )
+        root_path = record.path / "assembly.json"
+        root_payload = json.loads(root_path.read_text(encoding="utf-8"))
+        root_payload.pop("root_digest")
+        root_payload.pop("lineage")
+        root_path.write_text(
+            json.dumps(root_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        loaded = load_assembly_record(record.path)
+        integrity = verify_assembly_record_integrity(loaded, self.project)
+
+        self.assertEqual(loaded.state, AssemblyState.PLANNED)
+        self.assertEqual(integrity.status, "legacy_unverified")
+        self.assertFalse(integrity.intact)
+
+    def test_project_inspection_rejects_another_projects_assembly_record(self) -> None:
+        _source, _output, evidence = self._accepted_source()
+        create_assembly_record(
+            self.project,
+            "project",
+            inputs=(evidence,),
+            requested={"scope": "project"},
+            now=self.now,
+        )
+        other_manifest = self.root / "other-project.yaml"
+        other_manifest.write_text("project_id: other-project\n", encoding="utf-8")
+        other_source = dict(self.project.source)
+        other_source["project_id"] = "other-project"
+        other_source["assembly_records_dir"] = str(self.root / "assembly-records")
+        other_project = ProjectConfig(path=other_manifest, source=other_source)
+
+        inspected = inspect_assembly_records(other_project)
+
+        self.assertEqual(len(inspected), 1)
+        self.assertEqual(inspected[0].status, "failed")
+        self.assertTrue(
+            any("project lineage" in failure for failure in inspected[0].failures)
+        )
 
     def test_metadata_records_output_provenance_without_overwriting(self) -> None:
         attempt = create_attempt(self.project, "S010", "S010_C001", now=self.now)
@@ -339,7 +484,8 @@ class ProjectStateTests(unittest.TestCase):
 
     def test_loaded_immutable_config_snapshots_structured_request_and_workflow(self) -> None:
         self.manifest.write_text(
-            """preset: P0_IDENTITY_BASELINE
+            """project_id: structured-snapshot-fixture
+preset: P0_IDENTITY_BASELINE
 models:
   high: high.safetensors
   low: low.safetensors
@@ -374,6 +520,31 @@ inputs:
         ):
             attempt = transition_attempt(attempt, state, None, now=self.now)
         return attempt
+
+    def _accepted_source(self):
+        attempt = self._review_attempt()
+        output = attempt.path / "outputs" / "segment.mp4"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"accepted-segment")
+        write_metadata(attempt, RenderMetadata(outputs={"segment": output}))
+        head = attempt.path / "head.png"
+        tail = attempt.path / "tail.png"
+        sheet = attempt.path / "contact-sheet.png"
+        head.write_bytes(b"head")
+        tail.write_bytes(b"tail")
+        sheet.write_bytes(b"sheet")
+        initialize_qc(
+            attempt,
+            video=output,
+            head_frames=[head],
+            tail_frames=[tail],
+            contact_sheet=sheet,
+            automatic_continuation_authorized=False,
+        )
+        accepted = transition_attempt(
+            attempt, AttemptState.ACCEPTED, "approved", now=self.now
+        )
+        return accepted, output, accepted_attempt_evidence(self.project, accepted)
 
 
 if __name__ == "__main__":

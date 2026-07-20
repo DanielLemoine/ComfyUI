@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from wan22_longform.errors import PreflightError
 from wan22_longform import inventory
+from wan22_longform.config import ProjectConfig
 from wan22_longform.inventory import collect_preflight
 
 
@@ -54,6 +55,15 @@ class CollectPreflightTests(unittest.TestCase):
     def _write_registered_flf_manifest(
         template_dir: Path, asset_hash: str
     ) -> None:
+        CollectPreflightTests._write_registered_manifest(
+            template_dir,
+            {"video_wan2_2_14B_flf2v": asset_hash},
+        )
+
+    @staticmethod
+    def _write_registered_manifest(
+        template_dir: Path, asset_hashes: dict[str, str]
+    ) -> None:
         manifest_path = (
             template_dir.parent.parent
             / "comfyui_workflow_templates_core"
@@ -66,15 +76,16 @@ class CollectPreflightTests(unittest.TestCase):
                     "manifest_version": 1,
                     "templates": [
                         {
-                            "id": "video_wan2_2_14B_flf2v",
+                            "id": template_id,
                             "bundle": "media-video",
                             "assets": [
                                 {
-                                    "filename": "video_wan2_2_14B_flf2v.json",
+                                    "filename": f"{template_id}.json",
                                     "sha256": asset_hash,
                                 }
                             ],
                         }
+                        for template_id, asset_hash in asset_hashes.items()
                     ],
                 }
             ),
@@ -92,6 +103,20 @@ class CollectPreflightTests(unittest.TestCase):
         self.assertEqual(
             inventory._CANONICAL_FLF_TEMPLATE_SHA256,
             "9fb579e07caff9081c14a4c0e3b983e210aa7d976f83f1c2758d2ad6ed949fdf",
+        )
+
+    def test_canonical_i2v_template_identity_is_pinned(self) -> None:
+        self.assertEqual(
+            getattr(inventory, "_CANONICAL_I2V_TEMPLATE_ID", None),
+            "video_wan2_2_14B_i2v",
+        )
+        self.assertEqual(
+            getattr(inventory, "_CANONICAL_I2V_TEMPLATE_FILENAME", None),
+            "video_wan2_2_14B_i2v.json",
+        )
+        self.assertEqual(
+            getattr(inventory, "_CANONICAL_I2V_TEMPLATE_SHA256", None),
+            "6eea9b627b10fcfaf3e75a43aad2c58d8daabdbf72b32ede1602c668cac376bb",
         )
 
     @patch("wan22_longform.inventory.subprocess.run")
@@ -303,7 +328,7 @@ class CollectPreflightTests(unittest.TestCase):
                 object_info=self._object_info_fixture(),
             )
 
-            self.assertEqual(result.native_i2v_template, valid_i2v.resolve())
+            self.assertIsNone(result.native_i2v_template)
             self.assertIsNone(result.native_flf_template)
             self.assertEqual(result.status, "BLOCKED")
             self.assertIn(
@@ -347,7 +372,7 @@ class CollectPreflightTests(unittest.TestCase):
                         object_info=self._object_info_fixture(),
                     )
 
-                    self.assertEqual(result.native_i2v_template, i2v_template.resolve())
+                    self.assertIsNone(result.native_i2v_template)
                     self.assertIsNone(result.native_flf_template)
                     self.assertEqual(result.status, "BLOCKED")
                     self.assertTrue(
@@ -358,7 +383,7 @@ class CollectPreflightTests(unittest.TestCase):
                     )
 
     @patch("wan22_longform.inventory.subprocess.run")
-    def test_collect_preflight_recognizes_wan_i2v_blueprint_subgraph(self, run) -> None:
+    def test_collect_preflight_rejects_wan_i2v_blueprint_subgraph(self, run) -> None:
         run.return_value = CompletedProcess([], 0, "fixture output", "")
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -386,14 +411,163 @@ class CollectPreflightTests(unittest.TestCase):
                 object_info=self._object_info_fixture(),
             )
 
-            self.assertEqual(result.native_i2v_template, i2v_blueprint.resolve())
+            self.assertIsNone(result.native_i2v_template)
             self.assertIsNone(result.native_flf_template)
             self.assertEqual(result.status, "BLOCKED")
             self.assertTrue(
                 any(
-                    "official native Wan FLF template could not be verified" in blocker
+                    "official native Wan I2V template could not be verified" in blocker
                     for blocker in result.blockers
                 )
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_records_runtime_revisions_and_filters_non_nodes(self, run) -> None:
+        run.return_value = CompletedProcess([], 1, "", "unavailable fixture")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            comfy_root = temporary_path / "ComfyUI"
+            for name in ("real-node", "__pycache__", "tests"):
+                (comfy_root / "custom_nodes" / name).mkdir(parents=True)
+            for profile in ("alice", "default"):
+                (comfy_root / "user" / profile / "workflows").mkdir(parents=True)
+
+            result = collect_preflight(
+                comfy_root=comfy_root,
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            environment = json.loads(
+                (result.artifact_dir / "environment.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                set(environment).intersection(
+                    {"comfyui_revision", "frontend_version", "pytorch_version", "cuda_version"}
+                ),
+                {"comfyui_revision", "frontend_version", "pytorch_version", "cuda_version"},
+            )
+            custom_nodes = json.loads(
+                (result.artifact_dir / "custom_nodes.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual([node["name"] for node in custom_nodes["nodes"]], ["real-node"])
+            self.assertIn("revision", custom_nodes["nodes"][0])
+            self.assertIsNone(result.active_workflow_dir)
+            self.assertEqual(
+                {path.parent.name for path in result.workflow_candidates},
+                {"alice", "default"},
+            )
+
+    def test_preflight_blocks_without_project_model_role_proof(self) -> None:
+        blockers = inventory._preflight_blockers(
+            self._object_info_fixture(),
+            Path("i2v.json"),
+            Path("flf.json"),
+            "verified fixture",
+            "verified fixture",
+            {"roots": [], "required_roles": {}},
+            None,
+        )
+
+        self.assertTrue(any("project model-role proof" in blocker for blocker in blockers))
+
+    def test_preflight_blocks_a_required_model_absent_from_local_inventory(self) -> None:
+        project = ProjectConfig(
+            path=Path("project.yaml"),
+            source={
+                "models": {
+                    "high": "high.safetensors",
+                    "low": "low.safetensors",
+                    "vae": "vae.safetensors",
+                    "text_encoder": "text.safetensors",
+                }
+            },
+        )
+        blockers = inventory._preflight_blockers(
+            self._object_info_fixture(),
+            Path("i2v.json"),
+            Path("flf.json"),
+            "verified fixture",
+            "verified fixture",
+            {
+                "roots": [
+                    {
+                        "files": [
+                            "high.safetensors",
+                            "low.safetensors",
+                            "text.safetensors",
+                        ]
+                    }
+                ],
+                "required_roles": {},
+            },
+            project,
+        )
+
+        self.assertTrue(
+            any("model vae is absent" in blocker for blocker in blockers)
+        )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_rejects_an_i2v_package_asset_missing_its_manifest_entry(
+        self, run
+    ) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = self._package_template_dir(temporary_path)
+            template_dir.mkdir(parents=True)
+            i2v_template = template_dir / "video_wan2_2_14B_i2v.json"
+            i2v_template.write_text(
+                json.dumps({"nodes": [{"type": "WanImageToVideo"}]}),
+                encoding="utf-8",
+            )
+            self._write_registered_flf_manifest(template_dir, "0" * 64)
+
+            result = collect_preflight(
+                comfy_root=temporary_path / "ComfyUI",
+                comfy_url=None,
+                artifact_dir=temporary_path / "artifacts" / "preflight",
+                object_info=self._object_info_fixture(),
+            )
+
+            self.assertIsNone(result.native_i2v_template)
+            self.assertTrue(
+                any("I2V JSON has no registered" in blocker for blocker in result.blockers)
+            )
+
+    @patch("wan22_longform.inventory.subprocess.run")
+    def test_collect_preflight_rejects_changed_registered_i2v_bytes(self, run) -> None:
+        run.return_value = CompletedProcess([], 0, "fixture output", "")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            template_dir = self._package_template_dir(temporary_path)
+            template_dir.mkdir(parents=True)
+            i2v_template = template_dir / "video_wan2_2_14B_i2v.json"
+            i2v_template.write_text(
+                json.dumps({"nodes": [{"type": "WanImageToVideo"}], "changed": True}),
+                encoding="utf-8",
+            )
+            registered_hash = hashlib.sha256(b"official fixture bytes").hexdigest()
+            self._write_registered_manifest(
+                template_dir, {"video_wan2_2_14B_i2v": registered_hash}
+            )
+
+            with patch(
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256",
+                registered_hash,
+            ):
+                result = collect_preflight(
+                    comfy_root=temporary_path / "ComfyUI",
+                    comfy_url=None,
+                    artifact_dir=temporary_path / "artifacts" / "preflight",
+                    object_info=self._object_info_fixture(),
+                )
+
+            self.assertIsNone(result.native_i2v_template)
+            self.assertTrue(
+                any("package I2V JSON SHA-256" in blocker for blocker in result.blockers)
             )
 
     @patch("wan22_longform.inventory.subprocess.run")
@@ -421,7 +595,7 @@ class CollectPreflightTests(unittest.TestCase):
                 object_info=self._object_info_fixture(),
             )
 
-            self.assertEqual(result.native_i2v_template, i2v_template.resolve())
+            self.assertIsNone(result.native_i2v_template)
             self.assertIsNone(result.native_flf_template)
             self.assertEqual(result.status, "BLOCKED")
             self.assertTrue(
@@ -527,17 +701,42 @@ class CollectPreflightTests(unittest.TestCase):
                 encoding="utf-8",
             )
             expected_hash = hashlib.sha256(flf_template.read_bytes()).hexdigest()
-            self._write_registered_flf_manifest(template_dir, expected_hash)
+            i2v_hash = hashlib.sha256(i2v_template.read_bytes()).hexdigest()
+            self._write_registered_manifest(
+                template_dir,
+                {
+                    "video_wan2_2_14B_i2v": i2v_hash,
+                    "video_wan2_2_14B_flf2v": expected_hash,
+                },
+            )
+            model_dir = temporary_path / "ComfyUI" / "models" / "fixtures"
+            model_dir.mkdir(parents=True)
+            model_names = {
+                "high": "high.safetensors",
+                "low": "low.safetensors",
+                "vae": "vae.safetensors",
+                "text_encoder": "text.safetensors",
+            }
+            for name in model_names.values():
+                (model_dir / name).write_bytes(name.encode("utf-8"))
+            project_path = temporary_path / "project.yaml"
+            project_path.write_text("project_id: preflight-fixture\n", encoding="utf-8")
+            project = ProjectConfig(
+                path=project_path,
+                source={"project_id": "preflight-fixture", "models": model_names},
+            )
 
             with patch(
-                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256",
-                expected_hash,
+                "wan22_longform.inventory._CANONICAL_I2V_TEMPLATE_SHA256", i2v_hash
+            ), patch(
+                "wan22_longform.inventory._CANONICAL_FLF_TEMPLATE_SHA256", expected_hash
             ):
                 result = collect_preflight(
                     comfy_root=temporary_path / "ComfyUI",
                     comfy_url=None,
                     artifact_dir=temporary_path / "artifacts" / "preflight",
                     object_info=self._object_info_fixture(),
+                    project=project,
                 )
 
             self.assertEqual(result.native_i2v_template, i2v_template.resolve())

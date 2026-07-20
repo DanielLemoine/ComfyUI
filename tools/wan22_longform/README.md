@@ -14,7 +14,8 @@ Run the commands from this package with its source directory on `PYTHONPATH`:
 
 ```powershell
 $env:PYTHONPATH = "$PWD\tools\wan22_longform\src"
-python -m wan22_longform.cli preflight --comfy-root D:\AI\ComfyUI --comfy-url http://127.0.0.1:8188
+python -m wan22_longform.cli preflight --comfy-root D:\AI\ComfyUI --comfy-url http://127.0.0.1:8188 `
+  --project .\tools\wan22_longform\projects\example\project.yaml
 python -m wan22_longform.cli validate-project .\tools\wan22_longform\projects\example\project.yaml
 ```
 
@@ -27,7 +28,7 @@ Install the model files before rendering:
 - `text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors`
 - `vae/wan_2.1_vae.safetensors`
 
-Run preflight again after any ComfyUI, model, or template change. It is the gate that confirms native node availability and the registered official FLF template provenance.
+Run preflight again after any ComfyUI, frontend, PyTorch/CUDA, custom-node, model, or template change. READY requires the supplied project's exact high/low/VAE/text-encoder filenames in the discovered local inventory, native schemas, and the registered canonical I2V and FLF package assets with their pinned manifest/local SHA-256s. Without `--project`, model-role proof is unavailable and preflight remains BLOCKED. Workflow discovery enumerates local profile candidates when it cannot prove which profile is active; it never assumes `user/default`.
 
 ## UI workflows
 
@@ -53,7 +54,7 @@ Important fields:
 - `models` names the high-/low-noise Wan UNETs, VAE, and text encoder; all four exact filenames are recorded.
 - `model_files` is a portable inventory declaration. Replace it with local `model_roots` when you want the runner to discover installed names from disk.
 - `shots[].segments[]` is the explicit I2V render plan. A normal opening image resolves in this order: `segment.opening_image`, then `shot.anchor_image`, then the optional project fallback `inputs.opening_frame`.
-- A `continue_from` segment is different: it can only use exactly one accepted same-shot upstream attempt's selected, hash-verified **tail** candidate. It cannot combine an opening-image override with continuation.
+- A `continue_from` segment is different: it can only use exactly one accepted same-shot upstream attempt's selected, hash-verified **tail** candidate. The attempt must match the current project id and source-manifest SHA-256, and its sealed provenance/render metadata/QC/acceptance evidence must still match. It cannot combine an opening-image override with continuation.
 - Strict-manifest seed families use `render.seed_base + segment.seed_offset`; an explicit `segment.seed` is the only override. A legacy top-level request seed is only a low-level compatibility fallback.
 - A story `flf2v` bridge requires explicit `first_image`/`last_image` paths backed by accepted, hash-verified QC provenance: first is a tail candidate and last is a head candidate. `base_source_image` is allowed only with `purpose: technical_smoke`, never as a story-bridge fallback.
 - A story `flf2v` bridge also requires `from_segment` and `to_segment` in its own shot. Its entry in `assembly_order` must sit directly between those exact segment entries. The runner verifies that its selected tail/head inputs come from those declared accepted attempts.
@@ -116,9 +117,9 @@ The `--timeout` default is 1800 seconds because a cold two-UNET Wan load can tak
 
 ### Assembly records and recovery
 
-`assemble-shot` and `assemble-project` first validate the strict manifest, re-hash every accepted source video, then create an append-only record in `assembly-records/<scope>/assembly-...`. The record captures the selected attempt ids and paths, source hashes, resolved output-role template, exact FFmpeg plan, boundary decisions, output hashes, and lifecycle decisions: `planned → assembling → assembled → final`. The plan, output-evidence file, boundary decisions, and final output hashes are cryptographically bound in the append-only transition details. A failed plan or FFmpeg run is recorded as `failed` and its partial targets are never overwritten.
+`assemble-shot` and `assemble-project` first validate the strict manifest and require every accepted source to match the current project lineage (`project_id` plus source-manifest SHA-256). Each input binds and re-hashes the source snapshot, `provenance.json`, `render-metadata.json`, `qc.yaml`, terminal acceptance decision, and selected video before creating an append-only record in `assembly-records/<scope>/assembly-...`. The root digest covers the complete request, approvals, lineage, and inputs. Every lifecycle decision binds that root, its own digest, and the predecessor decision hash across `planned → assembling → assembled → final` or any `failed` transition. Reviewed approvals always retain `requires_review=true` and zero trim. A failed plan or FFmpeg run is recorded as `failed` and its partial targets are never overwritten.
 
-Use `status project.yaml` to inspect every record. It rechecks accepted source videos, the serialized plan, boundary evidence, and finalized outputs read-only. If any hash no longer matches, the record is reported as `integrity_failed` with its original `recorded_state`; a structurally unreadable record root is also reported per-record as `integrity_failed` and does not hide intact siblings. `resume` excludes either kind of failed record from recovery guidance and never restarts an assembly, overwrites a target, or re-renders an accepted segment. Start a new reviewed assembly request with a new `--output-dir` when recovering from a partial explicit target; the default record-local output directory is already unique.
+Use `status project.yaml` to inspect every record. It rechecks project lineage, the root/decision chain, all accepted-source evidence, the serialized plan, boundary evidence, and finalized outputs read-only. If any hash no longer matches, the record is reported as `integrity_failed` with its original `recorded_state`; a structurally unreadable record root is also reported per-record and does not hide intact siblings. Legacy attempts and assembly records remain readable but report `legacy_unverified`; they cannot drive continuation, FLF endpoint selection, render resume, or reviewed assembly. `resume` excludes unverified or failed records from recovery guidance and never restarts an assembly, overwrites a target, or re-renders an accepted segment. Start a new reviewed assembly request with a new `--output-dir` when recovering from a partial explicit target; the default record-local output directory is already unique.
 
 The low-level `assemble` command accepts arbitrary files only for diagnostics and requires `--diagnostic-only`. It is not the reviewed project assembly path and does not produce an accepted-project assembly record.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -65,10 +66,11 @@ class AssemblyRecordIntegrity:
     record: AssemblyRecord | None
     path: Path
     failures: tuple[str, ...]
+    status: str = "verified"
 
     @property
     def intact(self) -> bool:
-        return self.record is not None and not self.failures
+        return self.record is not None and self.status == "verified" and not self.failures
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,19 @@ _OPERATOR_OUTCOMES = frozenset(
 )
 
 
+def project_lineage(project: ProjectConfig) -> dict[str, str]:
+    """Return the current manifest identity used by all privileged project paths."""
+    project_id = project.source.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise ProjectStateError("project lineage requires a non-empty project_id")
+    if not project.path.is_file():
+        raise ProjectStateError(f"project lineage source manifest does not exist: {project.path}")
+    return {
+        "project_id": project_id,
+        "source_manifest_sha256": sha256_file(project.path),
+    }
+
+
 def create_attempt(
     project: ProjectConfig,
     shot_id: str,
@@ -122,6 +137,7 @@ def create_attempt(
     _validate_identifier(shot_id, "shot_id")
     _validate_identifier(segment_id, "segment_id")
     created_at = _as_utc(now())
+    lineage = project_lineage(project)
     segment_root = _attempts_root(project) / shot_id / segment_id
     segment_root.mkdir(parents=True, exist_ok=True)
     existing = sorted(path for path in segment_root.iterdir() if path.is_dir())
@@ -159,6 +175,7 @@ def create_attempt(
             "attempt_id": attempt.attempt_id,
             "created_at": _utc_timestamp(created_at),
             "parent_attempt": str(parent_attempt) if parent_attempt else None,
+            "lineage": lineage,
             "retry_of": str(parent_attempt) if parent_attempt else None,
             "segment_id": segment_id,
             "shot_id": shot_id,
@@ -170,6 +187,7 @@ def create_attempt(
         "request": sha256_file(request_snapshot),
         "source_manifest": sha256_file(manifest_snapshot),
         "workflow": sha256_file(workflow_snapshot),
+        "lineage": lineage,
     }
     if selected_inputs is not None:
         provenance["selected_inputs"] = _selected_inputs_payload(selected_inputs)
@@ -220,6 +238,8 @@ def transition_attempt(
         "timestamp": _utc_timestamp(timestamp),
         "to": target,
     }
+    if target is AttemptState.ACCEPTED:
+        payload["accepted_evidence"] = _acceptance_evidence(persisted)
     decision_path = decision_dir / f"{decision_number:04d}.json"
     try:
         _write_json(decision_path, payload)
@@ -228,6 +248,15 @@ def transition_attempt(
         raise ProjectStateError(
             f"attempt decision claim lost; persisted state is {current.state}"
         ) from error
+    if target is AttemptState.ACCEPTED:
+        _write_json(
+            attempt.path / "acceptance.json",
+            {
+                "accepted_evidence": payload["accepted_evidence"],
+                "attempt_id": persisted.attempt_id,
+                "decision": _attempt_artifact(decision_path, "acceptance decision"),
+            },
+        )
     return replace(persisted, state=target)
 
 
@@ -328,6 +357,204 @@ def selected_input(attempt: Attempt, name: str) -> SelectedInput:
     return SelectedInput(path, actual_hash, dict(entry))
 
 
+def verify_attempt_lineage(project: ProjectConfig, attempt: Attempt) -> dict[str, str]:
+    """Require a new-format attempt to match the current project manifest exactly."""
+    expected = project_lineage(project)
+    actual = _attempt_lineage(attempt)
+    if actual != expected:
+        raise ProjectStateError(
+            "attempt project lineage does not match the current project manifest"
+        )
+    return actual
+
+
+def accepted_attempt_evidence(
+    project: ProjectConfig, attempt: Attempt
+) -> dict[str, Any]:
+    """Return canonical immutable evidence for a current-project accepted attempt."""
+    return _accepted_attempt_evidence(attempt, project_lineage(project))
+
+
+def inspect_attempt_integrity(
+    project: ProjectConfig, attempt: Attempt
+) -> tuple[str, tuple[str, ...]]:
+    """Classify readable attempts without promoting legacy data to verified."""
+    try:
+        verify_attempt_lineage(project, attempt)
+        if attempt.state is AttemptState.ACCEPTED:
+            accepted_attempt_evidence(project, attempt)
+    except ProjectStateError as error:
+        detail = str(error)
+        status = "legacy_unverified" if "legacy" in detail else "failed"
+        return status, (detail,)
+    return "verified", ()
+
+
+def _attempt_lineage(attempt: Attempt) -> dict[str, str]:
+    record = _read_json(attempt.path / "attempt.json")
+    lineage = record.get("lineage")
+    if lineage is None:
+        raise ProjectStateError("legacy attempt has unverified project lineage")
+    return _lineage_payload(lineage, "attempt")
+
+
+def _acceptance_evidence(attempt: Attempt) -> dict[str, Any] | None:
+    metadata_path = attempt.path / "render-metadata.json"
+    qc_path = attempt.path / "qc.yaml"
+    if not metadata_path.exists() and not qc_path.exists():
+        return None
+    if not metadata_path.is_file() or not qc_path.is_file():
+        raise ProjectStateError(
+            "accepted attempt requires render metadata and QC evidence together"
+        )
+    lineage = _attempt_lineage(attempt)
+    source_manifest = _source_manifest_evidence(attempt, lineage)
+    provenance = _attempt_artifact(attempt.path / "provenance.json", "provenance")
+    render_metadata = _attempt_artifact(metadata_path, "render metadata")
+    qc = _attempt_artifact(qc_path, "QC")
+    output = _selected_video_evidence(attempt, metadata_path, qc_path)
+    return {
+        "lineage": lineage,
+        "output": output,
+        "provenance": provenance,
+        "qc": qc,
+        "render_metadata": render_metadata,
+        "source_manifest": source_manifest,
+    }
+
+
+def _accepted_attempt_evidence(
+    attempt: Attempt, expected_lineage: Mapping[str, Any]
+) -> dict[str, Any]:
+    persisted, decision_paths = _load_attempt(attempt.path)
+    if persisted.state is not AttemptState.ACCEPTED:
+        raise ProjectStateError("attempt is not accepted")
+    lineage = _attempt_lineage(persisted)
+    if lineage != _lineage_payload(expected_lineage, "expected project"):
+        raise ProjectStateError(
+            "attempt project lineage does not match the current project manifest"
+        )
+    source_manifest = _source_manifest_evidence(persisted, lineage)
+    provenance_path = persisted.path / "provenance.json"
+    provenance_payload = _read_json(provenance_path)
+    if provenance_payload.get("source_manifest") != lineage["source_manifest_sha256"]:
+        raise ProjectStateError("attempt provenance source-manifest hash changed")
+    if _lineage_payload(provenance_payload.get("lineage"), "attempt provenance") != lineage:
+        raise ProjectStateError("attempt provenance project lineage changed")
+    provenance = _attempt_artifact(provenance_path, "provenance")
+    metadata_path = persisted.path / "render-metadata.json"
+    qc_path = persisted.path / "qc.yaml"
+    render_metadata = _attempt_artifact(metadata_path, "render metadata")
+    qc = _attempt_artifact(qc_path, "QC")
+    output = _selected_video_evidence(persisted, metadata_path, qc_path)
+    acceptances = [
+        (path, _read_json(path))
+        for path in decision_paths
+        if _read_json(path).get("to") == AttemptState.ACCEPTED
+    ]
+    if len(acceptances) != 1:
+        raise ProjectStateError("accepted attempt has no unambiguous terminal decision")
+    acceptance_path, acceptance = acceptances[0]
+    sealed = acceptance.get("accepted_evidence")
+    if not isinstance(sealed, Mapping):
+        raise ProjectStateError("legacy accepted attempt has unverified artifact evidence")
+    current = {
+        "lineage": lineage,
+        "output": output,
+        "provenance": provenance,
+        "qc": qc,
+        "render_metadata": render_metadata,
+        "source_manifest": source_manifest,
+    }
+    if _json_ready(sealed) != current:
+        raise ProjectStateError("accepted attempt immutable artifact evidence changed")
+    seal = _read_json(persisted.path / "acceptance.json")
+    if seal.get("attempt_id") != persisted.attempt_id:
+        raise ProjectStateError("acceptance seal belongs to a different attempt")
+    if _json_ready(seal.get("accepted_evidence")) != current:
+        raise ProjectStateError("acceptance seal immutable artifact evidence changed")
+    decision_evidence = _hashed_entry(
+        seal.get("decision") if isinstance(seal.get("decision"), Mapping) else {},
+        "terminal acceptance decision",
+    )
+    if Path(decision_evidence["path"]) != acceptance_path.resolve():
+        raise ProjectStateError("acceptance seal references a different terminal decision")
+    return {
+        "acceptance_decision": decision_evidence,
+        "attempt_id": persisted.attempt_id,
+        "attempt_path": str(persisted.path.resolve()),
+        **current,
+        "segment_id": persisted.segment_id,
+        "shot_id": persisted.shot_id,
+    }
+
+
+def _source_manifest_evidence(
+    attempt: Attempt, lineage: Mapping[str, str]
+) -> dict[str, str]:
+    snapshots = tuple(attempt.path.glob("source-manifest.*"))
+    if len(snapshots) != 1:
+        raise ProjectStateError("attempt has no unambiguous source manifest snapshot")
+    evidence = _attempt_artifact(snapshots[0], "source manifest")
+    if evidence["sha256"] != lineage["source_manifest_sha256"]:
+        raise ProjectStateError("attempt source-manifest project lineage changed")
+    return evidence
+
+
+def _selected_video_evidence(
+    attempt: Attempt, metadata_path: Path, qc_path: Path
+) -> dict[str, str]:
+    metadata = _read_json(metadata_path)
+    if metadata.get("attempt_id") != attempt.attempt_id:
+        raise ProjectStateError("render metadata belongs to a different attempt")
+    outputs = metadata.get("outputs")
+    if not isinstance(outputs, Mapping):
+        raise ProjectStateError("accepted attempt has no render outputs")
+    candidates = [outputs[name] for name in ("segment", "bridge") if name in outputs]
+    if len(candidates) != 1 or not isinstance(candidates[0], Mapping):
+        raise ProjectStateError("accepted attempt has no unambiguous video output")
+    output = _hashed_entry(candidates[0], "accepted attempt output")
+    qc = _read_qc(qc_path)
+    if qc.get("attempt_id") != attempt.attempt_id:
+        raise ProjectStateError("QC record belongs to a different attempt")
+    if _json_ready(qc.get("video")) != output:
+        raise ProjectStateError("QC video evidence does not match render metadata")
+    return output
+
+
+def _attempt_artifact(path: Path, label: str) -> dict[str, str]:
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise ProjectStateError(f"attempt {label} does not exist: {resolved}")
+    return {"path": str(resolved), "sha256": sha256_file(resolved)}
+
+
+def _hashed_entry(entry: Mapping[str, Any], label: str) -> dict[str, str]:
+    raw_path = entry.get("path")
+    expected_hash = entry.get("sha256")
+    if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
+        raise ProjectStateError(f"{label} provenance is invalid")
+    path = Path(raw_path).resolve()
+    if not path.is_file() or sha256_file(path) != expected_hash:
+        raise ProjectStateError(f"{label} hash changed or is missing: {path}")
+    return {"path": str(path), "sha256": expected_hash}
+
+
+def _lineage_payload(value: Any, context: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ProjectStateError(f"{context} project lineage is invalid")
+    project_id = value.get("project_id")
+    manifest_hash = value.get("source_manifest_sha256")
+    if not isinstance(project_id, str) or not project_id:
+        raise ProjectStateError(f"{context} project lineage project_id is invalid")
+    if not _is_sha256(manifest_hash):
+        raise ProjectStateError(f"{context} source-manifest lineage hash is invalid")
+    return {
+        "project_id": project_id,
+        "source_manifest_sha256": manifest_hash.casefold(),
+    }
+
+
 def create_assembly_record(
     project: ProjectConfig,
     scope: str,
@@ -342,7 +569,8 @@ def create_assembly_record(
         raise ProjectStateError("assembly record requires at least one accepted input")
     if not isinstance(requested, Mapping):
         raise ProjectStateError("assembly record requested details must be a mapping")
-    input_payload = _assembly_inputs_payload(inputs)
+    lineage = project_lineage(project)
+    input_payload = _assembly_inputs_payload(inputs, lineage)
     _requested_boundary_approvals(requested)
     requested_payload = _json_ready(requested)
     created_at = _as_utc(now())
@@ -367,17 +595,17 @@ def create_assembly_record(
         state=AssemblyState.PLANNED,
         created_at=created_at,
     )
-    _write_json(
-        record.path / "assembly.json",
-        {
-            "assembly_id": record.assembly_id,
-            "created_at": _utc_timestamp(created_at),
-            "inputs": input_payload,
-            "requested": requested_payload,
-            "scope": scope,
-            "state": record.state,
-        },
-    )
+    root_payload = {
+        "assembly_id": record.assembly_id,
+        "created_at": _utc_timestamp(created_at),
+        "inputs": input_payload,
+        "lineage": lineage,
+        "requested": requested_payload,
+        "scope": scope,
+        "state": record.state,
+    }
+    root_payload["root_digest"] = _payload_sha256(root_payload)
+    _write_json(record.path / "assembly.json", root_payload)
     return record
 
 
@@ -412,14 +640,23 @@ def transition_assembly_record(
     decision_dir.mkdir(exist_ok=True)
     decision_number = len(decision_paths) + 1
     decision_path = decision_dir / f"{decision_number:04d}.json"
+    root_payload = _read_json(record.path / "assembly.json")
+    root_digest = _verified_assembly_root_digest(root_payload)
+    if root_digest is None:
+        raise ProjectStateError("legacy assembly record cannot append lifecycle decisions")
     payload = {
         "assembly_id": persisted.assembly_id,
         "details": _json_ready(details) if details is not None else None,
         "from": persisted.state,
         "note": note,
+        "previous_decision_sha256": (
+            sha256_file(decision_paths[-1]) if decision_paths else None
+        ),
+        "root_digest": root_digest,
         "timestamp": _utc_timestamp(_as_utc(now())),
         "to": target,
     }
+    payload["decision_digest"] = _payload_sha256(payload)
     try:
         _write_json(decision_path, payload)
     except FileExistsError as error:
@@ -455,13 +692,14 @@ def inspect_assembly_records(project: ProjectConfig) -> tuple[AssemblyRecordInte
         path = assembly_json.parent
         try:
             record = load_assembly_record(path)
-            results.append(verify_assembly_record_integrity(record))
+            results.append(verify_assembly_record_integrity(record, project))
         except (OSError, ProjectStateError) as error:
             results.append(
                 AssemblyRecordIntegrity(
                     record=None,
                     path=path,
                     failures=(f"assembly root: {error}",),
+                    status="failed",
                 )
             )
     return tuple(results)
@@ -485,16 +723,26 @@ def write_assembly_record_json(
     return destination
 
 
-def verify_assembly_record_inputs(record: AssemblyRecord) -> tuple[dict[str, Any], ...]:
+def verify_assembly_record_inputs(
+    record: AssemblyRecord, project: ProjectConfig | None = None
+) -> tuple[dict[str, Any], ...]:
     """Recheck accepted source identity and hashes immediately before assembly work."""
     persisted = load_assembly_record(record.path)
     if persisted.assembly_id != record.assembly_id:
         raise ProjectStateError("assembly record input verification identity does not match")
     payload = _read_json(record.path / "assembly.json")
+    root_digest = _verified_assembly_root_digest(payload)
+    if root_digest is None:
+        raise ProjectStateError("legacy assembly record has unverified root integrity")
+    lineage = _lineage_payload(payload.get("lineage"), "assembly record")
+    if project is not None and lineage != project_lineage(project):
+        raise ProjectStateError(
+            "assembly record project lineage does not match the current project manifest"
+        )
     inputs = payload.get("inputs")
     if not isinstance(inputs, list) or not inputs:
         raise ProjectStateError("assembly record requires an immutable input list")
-    return tuple(_assembly_inputs_payload(inputs))
+    return tuple(_assembly_inputs_payload(inputs, lineage))
 
 
 def recorded_boundary_approvals(record: AssemblyRecord) -> tuple[dict[str, Any], ...]:
@@ -509,13 +757,60 @@ def recorded_boundary_approvals(record: AssemblyRecord) -> tuple[dict[str, Any],
     return _requested_boundary_approvals(requested)
 
 
-def verify_assembly_record_integrity(record: AssemblyRecord) -> AssemblyRecordIntegrity:
+def verify_assembly_record_integrity(
+    record: AssemblyRecord, project: ProjectConfig | None = None
+) -> AssemblyRecordIntegrity:
     """Rehash persisted assembly evidence without changing a lifecycle record."""
-    persisted, decision_paths = _load_assembly_record(record.path)
+    try:
+        persisted, decision_paths = _load_assembly_record(record.path)
+    except (OSError, ProjectStateError) as error:
+        return AssemblyRecordIntegrity(
+            record,
+            record.path,
+            (f"assembly root or decision chain: {error}",),
+            "failed",
+        )
     if persisted.assembly_id != record.assembly_id:
         raise ProjectStateError("assembly record integrity identity does not match")
     failures: list[str] = []
     payload = _read_json(record.path / "assembly.json")
+    root_digest = payload.get("root_digest")
+    decisions = tuple(_read_json(path) for path in decision_paths)
+    if root_digest is None:
+        if any(
+            any(
+                key in decision
+                for key in (
+                    "decision_digest",
+                    "previous_decision_sha256",
+                    "root_digest",
+                )
+            )
+            for decision in decisions
+        ):
+            return AssemblyRecordIntegrity(
+                persisted,
+                persisted.path,
+                ("legacy assembly root has partial lifecycle integrity fields",),
+                "failed",
+            )
+        return AssemblyRecordIntegrity(
+            persisted,
+            persisted.path,
+            ("legacy assembly record has no root digest or decision chain",),
+            "legacy_unverified",
+        )
+    _capture_integrity_failure(
+        failures,
+        "assembly root",
+        lambda: _verified_assembly_root_digest(payload),
+    )
+    if project is not None:
+        _capture_integrity_failure(
+            failures,
+            "project lineage",
+            lambda: _verify_assembly_project_lineage(payload, project),
+        )
     inputs = payload.get("inputs")
     if not isinstance(inputs, list) or not inputs:
         failures.append("source inputs: assembly record requires an immutable input list")
@@ -523,10 +818,11 @@ def verify_assembly_record_integrity(record: AssemblyRecord) -> AssemblyRecordIn
         _capture_integrity_failure(
             failures,
             "source inputs",
-            lambda: _assembly_inputs_payload(inputs),
+            lambda: _assembly_inputs_payload(
+                inputs, _lineage_payload(payload.get("lineage"), "assembly record")
+            ),
         )
 
-    decisions = tuple(_read_json(path) for path in decision_paths)
     assembling = _assembly_transition(decisions, AssemblyState.ASSEMBLING)
     if assembling is not None:
         _capture_integrity_failure(
@@ -550,7 +846,12 @@ def verify_assembly_record_integrity(record: AssemblyRecord) -> AssemblyRecordIn
             "finalized evidence",
             lambda: _verify_assembly_output_evidence(record, final),
         )
-    return AssemblyRecordIntegrity(persisted, persisted.path, tuple(failures))
+    return AssemblyRecordIntegrity(
+        persisted,
+        persisted.path,
+        tuple(failures),
+        "failed" if failures else "verified",
+    )
 
 
 def _attempts_root(project: ProjectConfig) -> Path:
@@ -573,7 +874,9 @@ def _assembly_records_root(project: ProjectConfig) -> Path:
 
 def _assembly_inputs_payload(
     inputs: Sequence[Mapping[str, Any]],
+    expected_lineage: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
+    lineage = _lineage_payload(expected_lineage, "assembly input")
     payload: list[dict[str, Any]] = []
     for entry in inputs:
         if not isinstance(entry, Mapping):
@@ -588,31 +891,24 @@ def _assembly_inputs_payload(
             raise ProjectStateError("assembly record input attempt_id does not match")
         if entry.get("shot_id") != attempt.shot_id or entry.get("segment_id") != attempt.segment_id:
             raise ProjectStateError("assembly record input identity does not match")
-        output = entry.get("output")
-        if not isinstance(output, Mapping):
-            raise ProjectStateError("assembly record input requires output provenance")
-        raw_output_path = output.get("path")
-        expected_hash = output.get("sha256")
-        if not isinstance(raw_output_path, (str, Path)) or not isinstance(expected_hash, str):
-            raise ProjectStateError("assembly record input output provenance is invalid")
-        output_path = Path(raw_output_path).resolve()
-        if not output_path.is_file():
-            raise ProjectStateError(f"assembly record input output does not exist: {output_path}")
-        actual_hash = sha256_file(output_path)
-        if actual_hash != expected_hash:
+        canonical = _accepted_attempt_evidence(attempt, lineage)
+        if _json_ready(entry) != canonical:
             raise ProjectStateError(
-                f"assembly record input output hash changed: {output_path}"
+                "assembly record input immutable evidence does not match the accepted attempt"
             )
-        payload.append(
-            {
-                "attempt_id": attempt.attempt_id,
-                "attempt_path": str(attempt.path.resolve()),
-                "output": {"path": str(output_path), "sha256": actual_hash},
-                "segment_id": attempt.segment_id,
-                "shot_id": attempt.shot_id,
-            }
-        )
+        payload.append(canonical)
     return payload
+
+
+def _verify_assembly_project_lineage(
+    payload: Mapping[str, Any], project: ProjectConfig
+) -> None:
+    if _lineage_payload(payload.get("lineage"), "assembly record") != project_lineage(
+        project
+    ):
+        raise ProjectStateError(
+            "assembly record project lineage does not match the current project manifest"
+        )
 
 
 def _requested_boundary_approvals(requested: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -951,11 +1247,18 @@ def _load_assembly_record(path: Path) -> tuple[AssemblyRecord, tuple[Path, ...]]
         created_at=created_at,
     )
     decision_paths = _assembly_decision_paths(path)
+    root_digest = _verified_assembly_root_digest(payload)
     state = record.state
+    previous_decision_hash: str | None = None
     for expected_number, decision_path in enumerate(decision_paths, start=1):
         if _decision_number(decision_path) != expected_number:
             raise ProjectStateError("assembly record decision log is not sequential")
         decision = _read_json(decision_path)
+        _verify_assembly_decision_linkage(
+            decision,
+            root_digest=root_digest,
+            previous_decision_hash=previous_decision_hash,
+        )
         if decision.get("assembly_id") != assembly_id:
             raise ProjectStateError("assembly record decision belongs to a different record")
         source = _assembly_state(decision.get("from"), "assembly decision from state")
@@ -972,7 +1275,71 @@ def _load_assembly_record(path: Path) -> tuple[AssemblyRecord, tuple[Path, ...]]
             raise ProjectStateError("assembly record decision details must be a mapping or null")
         _timestamp(decision.get("timestamp"), "assembly decision timestamp")
         state = target
+        previous_decision_hash = sha256_file(decision_path)
     return replace(record, state=state), decision_paths
+
+
+def _verified_assembly_root_digest(payload: Mapping[str, Any]) -> str | None:
+    root_digest = payload.get("root_digest")
+    if root_digest is None:
+        return None
+    if not _is_sha256(root_digest):
+        raise ProjectStateError("assembly root digest is invalid")
+    if _payload_sha256(payload, omit="root_digest") != root_digest.casefold():
+        raise ProjectStateError("assembly root digest changed")
+    _lineage_payload(payload.get("lineage"), "assembly record")
+    return root_digest.casefold()
+
+
+def _verify_assembly_decision_linkage(
+    decision: Mapping[str, Any],
+    *,
+    root_digest: str | None,
+    previous_decision_hash: str | None,
+) -> None:
+    linkage_keys = {
+        "decision_digest",
+        "previous_decision_sha256",
+        "root_digest",
+    }
+    if root_digest is None:
+        if any(key in decision for key in linkage_keys):
+            raise ProjectStateError(
+                "legacy assembly record has partial lifecycle integrity fields"
+            )
+        return
+    if decision.get("root_digest") != root_digest:
+        raise ProjectStateError("assembly decision root linkage changed")
+    if decision.get("previous_decision_sha256") != previous_decision_hash:
+        raise ProjectStateError("assembly predecessor decision linkage changed")
+    decision_digest = decision.get("decision_digest")
+    if not _is_sha256(decision_digest):
+        raise ProjectStateError("assembly decision digest is invalid")
+    if _payload_sha256(decision, omit="decision_digest") != decision_digest.casefold():
+        raise ProjectStateError("assembly decision digest changed")
+
+
+def _payload_sha256(payload: Mapping[str, Any], *, omit: str | None = None) -> str:
+    canonical = {
+        str(key): _json_ready(value)
+        for key, value in payload.items()
+        if key != omit
+    }
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
 
 
 def _decision_paths(attempt_path: Path) -> tuple[Path, ...]:

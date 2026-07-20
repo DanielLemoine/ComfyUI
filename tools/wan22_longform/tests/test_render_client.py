@@ -23,9 +23,16 @@ from wan22_longform.comfy_client import (  # noqa: E402
     HistoryResult,
 )
 from wan22_longform.config import ProjectConfig  # noqa: E402
+from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
 from wan22_longform.project import AttemptState, create_attempt, transition_attempt  # noqa: E402
 from wan22_longform.qc import initialize_qc, read_qc  # noqa: E402
-from wan22_longform.render import render_bridge, render_segment, resume_attempt  # noqa: E402
+from wan22_longform import render as render_module  # noqa: E402
+from wan22_longform.render import (  # noqa: E402
+    RenderError,
+    render_bridge,
+    render_segment,
+    resume_attempt,
+)
 
 
 class FakeTransport:
@@ -510,6 +517,71 @@ class RenderSegmentTests(unittest.TestCase):
         self.assertEqual(resumed.state, AttemptState.NEEDS_REVIEW)
         self.assertEqual(len(list(planned.path.parent.iterdir())), 1)
 
+    def test_resume_rejects_a_planned_attempt_from_another_project(self) -> None:
+        planned = create_attempt(
+            self.project,
+            "S040",
+            "S040_C001",
+            selected_inputs={
+                "opening_frame": {
+                    "path": str(self.opening),
+                    "sha256": hashlib.sha256(self.opening.read_bytes()).hexdigest(),
+                    "source": "project_fallback",
+                }
+            },
+        )
+        other_manifest = self.root / "other-project.yaml"
+        other_source = dict(self.project.source)
+        other_source["project_id"] = "other-project"
+        other_manifest.write_text(yaml.safe_dump(other_source, sort_keys=True), encoding="utf-8")
+        other_project = ProjectConfig(path=other_manifest, source=other_source)
+
+        with self.assertRaisesRegex(RuntimeError, "project lineage"):
+            resume_attempt(other_project, planned, FakeRenderClient(self.video))
+
+    def test_continuation_rejects_changed_accepted_attempt_evidence(self) -> None:
+        upstream = create_attempt(self.project, "S010", "S010_C001")
+        for state in (
+            AttemptState.RENDERING,
+            AttemptState.RENDERED,
+            AttemptState.NEEDS_REVIEW,
+        ):
+            upstream = transition_attempt(upstream, state, "fixture")
+        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
+        sheet = upstream.path / "sheet.png"
+        sheet.write_bytes(b"sheet")
+        initialize_qc(
+            upstream,
+            video=self.video,
+            head_frames=[self.opening],
+            tail_frames=[self.opening],
+            contact_sheet=sheet,
+            automatic_continuation_authorized=False,
+        )
+        upstream = transition_attempt(
+            upstream,
+            AttemptState.ACCEPTED,
+            "accepted fixture",
+            selected_continuation_frame=self.opening,
+        )
+        provenance = upstream.path / "provenance.json"
+        provenance.write_bytes(provenance.read_bytes() + b"\n")
+        shot = {
+            "segments": [
+                {"id": "S010_C001"},
+                {"id": "S010_C002", "continue_from": "S010_C001"},
+            ]
+        }
+
+        with self.assertRaisesRegex(RenderError, "immutable artifact evidence"):
+            render_module._continuation_selection(
+                self.project,
+                "S010",
+                shot,
+                shot["segments"][1],
+                "S010_C001",
+            )
+
     @staticmethod
     def _write_sheet(destination: Path) -> Path:
         destination.write_bytes(b"sheet")
@@ -679,6 +751,7 @@ class RenderBridgeTests(unittest.TestCase):
             contact_sheet=sheet,
             automatic_continuation_authorized=False,
         )
+        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
         transition_attempt(
             upstream,
             AttemptState.ACCEPTED,
@@ -702,6 +775,37 @@ class RenderBridgeTests(unittest.TestCase):
         uploaded = json.loads((attempt.path / "input-upload.json").read_text(encoding="utf-8"))
         self.assertEqual(uploaded["first_image"]["sha256"], hashlib.sha256(b"first-frame").hexdigest())
         self.assertEqual(uploaded["last_image"]["sha256"], hashlib.sha256(b"last-frame").hexdigest())
+
+    def test_bridge_rejects_changed_accepted_endpoint_evidence(self) -> None:
+        upstream = create_attempt(self.project, "S010", "S010_C001")
+        for state in (
+            AttemptState.RENDERING,
+            AttemptState.RENDERED,
+            AttemptState.NEEDS_REVIEW,
+        ):
+            upstream = transition_attempt(upstream, state, "fixture")
+        sheet = self.root / "tamper-sheet.png"
+        sheet.write_bytes(b"sheet")
+        initialize_qc(
+            upstream,
+            video=self.video,
+            head_frames=[self.last],
+            tail_frames=[self.first],
+            contact_sheet=sheet,
+            automatic_continuation_authorized=False,
+        )
+        write_metadata(upstream, RenderMetadata(outputs={"segment": self.video}))
+        transition_attempt(
+            upstream,
+            AttemptState.ACCEPTED,
+            "accepted endpoint fixture",
+            selected_continuation_frame=self.first,
+        )
+        metadata = upstream.path / "render-metadata.json"
+        metadata.write_bytes(metadata.read_bytes() + b"\n")
+
+        with self.assertRaisesRegex(RenderError, "accepted evidence is invalid"):
+            render_module._accepted_bridge_endpoint(self.project, self.first, "tail")
 
     def test_bridge_rejects_an_illegal_length_before_uploading_or_submitting(self) -> None:
         source = dict(self.source)

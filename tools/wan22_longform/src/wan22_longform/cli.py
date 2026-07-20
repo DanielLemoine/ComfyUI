@@ -26,8 +26,10 @@ from .project import (
     AssemblyState,
     Attempt,
     AttemptState,
+    accepted_attempt_evidence,
     create_assembly_record,
     inspect_assembly_records,
+    inspect_attempt_integrity,
     load_assembly_record,
     load_attempt,
     recorded_boundary_approvals,
@@ -53,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--comfy-root", required=True, type=Path)
     preflight.add_argument("--comfy-url")
     preflight.add_argument("--artifact-dir", default=Path("artifacts") / "preflight", type=Path)
+    preflight.add_argument("--project", type=Path)
     preflight.set_defaults(handler=_handle_preflight)
 
     validate = subparsers.add_parser("validate-project", help="validate a project without modifying it")
@@ -233,10 +236,14 @@ def _add_reviewed_boundary_approval_option(parser: argparse.ArgumentParser) -> N
 
 
 def _handle_preflight(args: argparse.Namespace) -> int:
+    project = load_project(args.project) if args.project else None
+    if project is not None:
+        validate_project_contract(project)
     result = collect_preflight(
         comfy_root=args.comfy_root,
         comfy_url=args.comfy_url,
         artifact_dir=args.artifact_dir,
+        project=project,
     )
     print(result.artifact_dir)  # noqa: T201
     return 0
@@ -257,7 +264,7 @@ def _handle_render_segment(args: argparse.Namespace) -> int:
         args.segment_id,
         _client(args),
     )
-    _print_json(_attempt_payload(attempt))
+    _print_json(_attempt_payload(attempt, project))
     return 0
 
 
@@ -265,7 +272,7 @@ def _handle_render_bridge(args: argparse.Namespace) -> int:
     project = load_project(args.project)
     validate_project(project)
     attempt = render_bridge(project, args.bridge_id, _client(args))
-    _print_json(_attempt_payload(attempt))
+    _print_json(_attempt_payload(attempt, project))
     return 0
 
 
@@ -289,7 +296,7 @@ def _handle_render_shot(args: argparse.Namespace) -> int:
         if not isinstance(segment, Mapping) or not isinstance(segment.get("id"), str):
             raise ValueError(f"shot has an invalid segment: {args.shot_id}")
         attempt = render_segment(project, args.shot_id, segment["id"], client)
-        rendered.append(_attempt_payload(attempt))
+        rendered.append(_attempt_payload(attempt, project))
     _print_json({"attempts": rendered, "shot_id": args.shot_id})
     return 0
 
@@ -364,7 +371,9 @@ def _handle_status(args: argparse.Namespace) -> int:
                 "assembly_records": [
                     _assembly_integrity_payload(record) for record in records
                 ],
-                "attempts": [_attempt_payload(attempt) for attempt in _project_attempts(project)],
+                "attempts": [
+                    _attempt_payload(attempt, project) for attempt in _project_attempts(project)
+                ],
                 "project": str(project.path),
             }
         )
@@ -378,13 +387,16 @@ def _handle_resume(args: argparse.Namespace) -> int:
     project = load_project(args.project)
     validate_project_contract(project)
     planned = [
-        attempt for attempt in _project_attempts(project) if attempt.state is AttemptState.PLANNED
+        attempt
+        for attempt in _project_attempts(project)
+        if attempt.state is AttemptState.PLANNED
+        and inspect_attempt_integrity(project, attempt)[0] == "verified"
     ]
     resumed: list[dict[str, str]] = []
     if planned:
         client = _client(args)
         for attempt in planned:
-            resumed.append(_attempt_payload(resume_attempt(project, attempt, client)))
+            resumed.append(_attempt_payload(resume_attempt(project, attempt, client), project))
     records = _assembly_record_integrities(project)
     _print_json(
         {
@@ -577,6 +589,7 @@ def _accepted_by_key(project: ProjectConfig) -> dict[tuple[str, str], Attempt]:
     for attempt in _project_attempts(project):
         if attempt.state is not AttemptState.ACCEPTED:
             continue
+        accepted_attempt_evidence(project, attempt)
         key = (attempt.shot_id, attempt.segment_id)
         if key in selected:
             raise ValueError(
@@ -636,7 +649,7 @@ def _assemble_attempts(
     _safe_path_component(scope, "assembly scope")
     _validate_rife_request(args)
     output_policy = _manifest_output_policy(project)
-    selected = [_accepted_assembly_input(attempt) for attempt in attempts]
+    selected = [_accepted_assembly_input(project, attempt) for attempt in attempts]
     videos = [video for video, _ in selected]
     approvals = _canonical_boundary_approvals(args.boundary_approvals, len(videos) - 1)
     record = create_assembly_record(
@@ -681,6 +694,7 @@ def _assemble_attempts(
     try:
         result, finalized = _execute_assembly_record(
             record,
+            project,
             videos,
             targets,
             request_rife=args.request_rife,
@@ -693,49 +707,25 @@ def _assemble_attempts(
         {
             **_assembly_payload(result),
             "assembly_record": _assembly_record_payload(
-                finalized, verify_assembly_record_integrity(finalized)
+                finalized, verify_assembly_record_integrity(finalized, project)
             ),
-            "attempts": [_attempt_payload(attempt) for attempt in attempts],
+            "attempts": [_attempt_payload(attempt, project) for attempt in attempts],
             "scope": scope,
         }
     )
     return 0
 
 
-def _accepted_video(attempt: Attempt) -> Path:
-    metadata_path = attempt.path / "render-metadata.json"
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"accepted attempt has no valid render metadata: {attempt.path}") from error
-    outputs = metadata.get("outputs") if isinstance(metadata, Mapping) else None
-    if not isinstance(outputs, Mapping):
-        raise ValueError(f"accepted attempt has no outputs: {attempt.path}")
-    candidates = [outputs[name] for name in ("segment", "bridge") if name in outputs]
-    if len(candidates) != 1 or not isinstance(candidates[0], Mapping):
-        raise ValueError(f"accepted attempt has no unambiguous video output: {attempt.path}")
-    raw_path = candidates[0].get("path")
-    expected_hash = candidates[0].get("sha256")
-    if not isinstance(raw_path, str) or not isinstance(expected_hash, str):
-        raise ValueError(f"accepted attempt has invalid video provenance: {attempt.path}")
-    video = Path(raw_path)
-    if not video.is_file() or sha256_file(video) != expected_hash:
-        raise ValueError(f"accepted attempt video changed or is missing: {video}")
-    return video
+def _accepted_video(project: ProjectConfig, attempt: Attempt) -> Path:
+    evidence = accepted_attempt_evidence(project, attempt)
+    return Path(evidence["output"]["path"])
 
 
-def _accepted_assembly_input(attempt: Attempt) -> tuple[Path, dict[str, Any]]:
-    video = _accepted_video(attempt)
-    return (
-        video,
-        {
-            "attempt_id": attempt.attempt_id,
-            "attempt_path": attempt.path,
-            "output": {"path": video, "sha256": sha256_file(video)},
-            "segment_id": attempt.segment_id,
-            "shot_id": attempt.shot_id,
-        },
-    )
+def _accepted_assembly_input(
+    project: ProjectConfig, attempt: Attempt
+) -> tuple[Path, dict[str, Any]]:
+    evidence = accepted_attempt_evidence(project, attempt)
+    return Path(evidence["output"]["path"]), evidence
 
 
 def _execute_assembly(
@@ -757,13 +747,14 @@ def _execute_assembly(
 
 def _execute_assembly_record(
     record: AssemblyRecord,
+    project: ProjectConfig,
     input_paths: Sequence[Path],
     targets: AssemblyTargets,
     *,
     request_rife: bool,
     qc_approved: bool,
 ) -> tuple[Any, AssemblyRecord]:
-    verified = verify_assembly_record_inputs(record)
+    verified = verify_assembly_record_inputs(record, project)
     verified_paths = tuple(Path(item["output"]["path"]).resolve() for item in verified)
     requested_paths = tuple(path.resolve() for path in input_paths)
     if verified_paths != requested_paths:
@@ -854,14 +845,25 @@ def _plan_assembly(
     )
 
 
-def _attempt_payload(attempt: Attempt) -> dict[str, str]:
-    return {
+def _attempt_payload(
+    attempt: Attempt, project: ProjectConfig | None = None
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "attempt_id": attempt.attempt_id,
         "path": str(attempt.path),
         "segment_id": attempt.segment_id,
         "shot_id": attempt.shot_id,
         "state": str(attempt.state),
     }
+    if project is not None:
+        status, failures = inspect_attempt_integrity(project, attempt)
+        payload["integrity"] = {"failures": list(failures), "status": status}
+    else:
+        payload["integrity"] = {
+            "failures": ["project context is required to verify attempt lineage"],
+            "status": "unverified",
+        }
+    return payload
 
 
 def _assembly_payload(result: Any) -> dict[str, Any]:
@@ -881,7 +883,10 @@ def _assembly_integrity_payload(integrity: AssemblyRecordIntegrity) -> dict[str,
     if integrity.record is None:
         return {
             "assembly_id": None,
-            "integrity": {"failures": list(integrity.failures), "status": "failed"},
+            "integrity": {
+                "failures": list(integrity.failures),
+                "status": integrity.status,
+            },
             "path": str(integrity.path),
             "state": "integrity_failed",
         }
@@ -901,6 +906,12 @@ def _assembly_record_payload(
         return payload
     if integrity.intact:
         payload["integrity"] = {"failures": [], "status": "verified"}
+        return payload
+    if integrity.status == "legacy_unverified":
+        payload["integrity"] = {
+            "failures": list(integrity.failures),
+            "status": "legacy_unverified",
+        }
         return payload
     payload["recorded_state"] = payload["state"]
     payload["state"] = "integrity_failed"

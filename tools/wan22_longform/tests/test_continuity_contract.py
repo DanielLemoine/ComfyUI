@@ -30,6 +30,7 @@ from wan22_longform.project import (  # noqa: E402
     create_attempt,
     transition_attempt,
 )
+from wan22_longform.metadata import RenderMetadata, write_metadata  # noqa: E402
 from wan22_longform.qc import initialize_qc  # noqa: E402
 from wan22_longform.render import RenderError, render_bridge, render_segment, validate_project  # noqa: E402
 
@@ -227,7 +228,7 @@ class ContinuityContractTests(unittest.TestCase):
             {"shot_id": "S010", "segment_id": "S010_C002"},
             {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
-        project = self._project(source)
+        project = ProjectConfig(path=self.manifest, source=source)
         client = FakeRenderClient(self.video)
 
         with self._render_artifact_patches():
@@ -267,7 +268,7 @@ class ContinuityContractTests(unittest.TestCase):
             {"shot_id": "S010", "segment_id": "S010_C002"},
             {"shot_id": "S020", "segment_id": "S020_C001"},
         ]
-        project = self._project(source)
+        project = ProjectConfig(path=self.manifest, source=source)
         client = FakeRenderClient(self.video)
 
         with self._render_artifact_patches():
@@ -629,6 +630,7 @@ class ContinuityContractTests(unittest.TestCase):
             contact_sheet=sheet,
             automatic_continuation_authorized=False,
         )
+        write_metadata(attempt, RenderMetadata(outputs={"segment": self.video}))
         return attempt, head, tail
 
     def _accepted_attempt(

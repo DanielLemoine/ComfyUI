@@ -24,12 +24,14 @@ from .project import (
     Attempt,
     AttemptState,
     ProjectStateError,
+    accepted_attempt_evidence,
     accepted_qc_candidate,
     create_attempt,
     load_attempt,
     selected_input,
     selected_tail_frame,
     transition_attempt,
+    verify_attempt_lineage,
 )
 from .qc import initialize_qc
 from .workflow import (
@@ -407,6 +409,10 @@ def _new_or_planned_attempt(
     if supplied is None:
         return create_attempt(project, shot_id, segment_id, selected_inputs=selected_inputs)
     persisted = load_attempt(supplied.path)
+    try:
+        verify_attempt_lineage(project, persisted)
+    except ProjectStateError as error:
+        raise RenderError(f"planned attempt project lineage is invalid: {error}") from error
     if persisted.shot_id != shot_id or persisted.segment_id != segment_id:
         raise RenderError("planned attempt identity does not match the requested render")
     if persisted.state is not AttemptState.PLANNED:
@@ -888,6 +894,7 @@ def _continuation_selection(
     if len(accepted) != 1:
         raise RenderError("continue_from requires exactly one accepted upstream attempt")
     try:
+        accepted_attempt_evidence(project, accepted[0])
         candidate = selected_tail_frame(accepted[0])
     except ProjectStateError as error:
         raise RenderError(f"continue_from cannot use the selected upstream tail: {error}") from error
@@ -908,10 +915,13 @@ def _accepted_bridge_endpoint(
         if attempt.state is not AttemptState.ACCEPTED:
             continue
         try:
+            accepted_attempt_evidence(project, attempt)
             candidate = accepted_qc_candidate(attempt, path, kind)
         except ProjectStateError as error:
-            if "hash changed" in str(error):
-                raise RenderError(f"bridge {kind} endpoint hash changed: {path}") from error
+            if "unambiguous" not in str(error):
+                raise RenderError(
+                    f"bridge {kind} endpoint accepted evidence is invalid: {error}"
+                ) from error
             continue
         matches.append((attempt, candidate))
     if len(matches) != 1:

@@ -62,12 +62,13 @@ class AssemblyRecord:
 class AssemblyRecordIntegrity:
     """Read-only verification result for one persisted assembly record."""
 
-    record: AssemblyRecord
+    record: AssemblyRecord | None
+    path: Path
     failures: tuple[str, ...]
 
     @property
     def intact(self) -> bool:
-        return not self.failures
+        return self.record is not None and not self.failures
 
 
 @dataclass(frozen=True)
@@ -443,6 +444,28 @@ def assembly_records(project: ProjectConfig) -> tuple[AssemblyRecord, ...]:
     return tuple(sorted(records, key=lambda record: str(record.path)))
 
 
+def inspect_assembly_records(project: ProjectConfig) -> tuple[AssemblyRecordIntegrity, ...]:
+    """Return record-level integrity results without hiding malformed sibling roots."""
+    root = _assembly_records_root(project)
+    if not root.is_dir():
+        return ()
+    results: list[AssemblyRecordIntegrity] = []
+    for assembly_json in sorted(root.rglob("assembly.json"), key=lambda path: str(path)):
+        path = assembly_json.parent
+        try:
+            record = load_assembly_record(path)
+            results.append(verify_assembly_record_integrity(record))
+        except (OSError, ProjectStateError) as error:
+            results.append(
+                AssemblyRecordIntegrity(
+                    record=None,
+                    path=path,
+                    failures=(f"assembly root: {error}",),
+                )
+            )
+    return tuple(results)
+
+
 def write_assembly_record_json(
     record: AssemblyRecord,
     name: str,
@@ -514,7 +537,7 @@ def verify_assembly_record_integrity(record: AssemblyRecord) -> AssemblyRecordIn
             "finalized evidence",
             lambda: _verify_assembly_output_evidence(record, final),
         )
-    return AssemblyRecordIntegrity(persisted, tuple(failures))
+    return AssemblyRecordIntegrity(persisted, persisted.path, tuple(failures))
 
 
 def _attempts_root(project: ProjectConfig) -> Path:

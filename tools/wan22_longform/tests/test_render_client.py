@@ -714,6 +714,43 @@ class RenderBridgeTests(unittest.TestCase):
         self.assertEqual(client.uploaded, [])
         self.assertEqual(client.submitted, [])
 
+    def test_external_control_policy_is_not_submitted_as_a_bridge_clip(self) -> None:
+        source = dict(self.source)
+        source["bridges"] = [
+            {
+                "id": "X010",
+                "shot_id": "S010",
+                "strategy": "external_control",
+                "from_segment": "S010_C001",
+                "to_segment": "S010_C001_NEXT",
+            }
+        ]
+        source["shots"] = [
+            {
+                **source["shots"][0],
+                "segments": [
+                    *source["shots"][0]["segments"],
+                    {
+                        "id": "S010_C001_NEXT",
+                        "action": "The neutral adult remains still.",
+                        "expected_seconds": 1.0625,
+                        "seed_offset": 1,
+                    },
+                ],
+            }
+        ]
+        source["assembly_order"] = [
+            {"shot_id": "S010", "segment_id": "S010_C001"},
+            {"shot_id": "S010", "segment_id": "S010_C001_NEXT"},
+        ]
+        client = FakeRenderClient(self.video)
+
+        with self.assertRaisesRegex(RuntimeError, "only handles bridges with strategy flf2v"):
+            render_bridge(ProjectConfig(path=self.manifest, source=source), "X010", client)
+
+        self.assertEqual(client.uploaded, [])
+        self.assertEqual(client.submitted, [])
+
     def test_bridge_base_source_image_requires_a_technical_smoke_purpose(self) -> None:
         source = dict(self.source)
         source["bridges"] = [

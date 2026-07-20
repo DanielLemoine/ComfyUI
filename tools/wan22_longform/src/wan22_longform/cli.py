@@ -19,8 +19,8 @@ from .project import (
     AssemblyState,
     Attempt,
     AttemptState,
-    assembly_records,
     create_assembly_record,
+    inspect_assembly_records,
     load_assembly_record,
     load_attempt,
     transition_assembly_record,
@@ -341,7 +341,7 @@ def _handle_status(args: argparse.Namespace) -> int:
         _print_json(
             {
                 "assembly_records": [
-                    _assembly_record_payload(record.record, record) for record in records
+                    _assembly_integrity_payload(record) for record in records
                 ],
                 "attempts": [_attempt_payload(attempt) for attempt in _project_attempts(project)],
                 "project": str(project.path),
@@ -368,15 +368,17 @@ def _handle_resume(args: argparse.Namespace) -> int:
     _print_json(
         {
             "assembly_records": [
-                _assembly_record_payload(record.record, record) for record in records
+                _assembly_integrity_payload(record) for record in records
             ],
             "incomplete_assembly_records": [
                 _assembly_recovery_payload(record.record)
                 for record in records
-                if record.intact and record.record.state is not AssemblyState.FINAL
+                if record.intact
+                and record.record is not None
+                and record.record.state is not AssemblyState.FINAL
             ],
             "integrity_failures": [
-                _assembly_record_payload(record.record, record)
+                _assembly_integrity_payload(record)
                 for record in records
                 if not record.intact
             ],
@@ -485,7 +487,11 @@ def _accepted_shot_attempts(project: ProjectConfig, shot_id: str) -> tuple[Attem
     for bridge in bridges:
         if not isinstance(bridge, Mapping):
             raise ValueError("project bridge must be a mapping")
-        if bridge.get("shot_id") != shot_id or bridge.get("purpose") == "technical_smoke":
+        if (
+            bridge.get("shot_id") != shot_id
+            or bridge.get("purpose") == "technical_smoke"
+            or bridge.get("strategy") != "flf2v"
+        ):
             continue
         bridge_id = bridge.get("id")
         if not isinstance(bridge_id, str):
@@ -824,7 +830,18 @@ def _assembly_payload(result: Any) -> dict[str, Any]:
 
 
 def _assembly_record_integrities(project: ProjectConfig) -> tuple[AssemblyRecordIntegrity, ...]:
-    return tuple(verify_assembly_record_integrity(record) for record in assembly_records(project))
+    return inspect_assembly_records(project)
+
+
+def _assembly_integrity_payload(integrity: AssemblyRecordIntegrity) -> dict[str, Any]:
+    if integrity.record is None:
+        return {
+            "assembly_id": None,
+            "integrity": {"failures": list(integrity.failures), "status": "failed"},
+            "path": str(integrity.path),
+            "state": "integrity_failed",
+        }
+    return _assembly_record_payload(integrity.record, integrity)
 
 
 def _assembly_record_payload(

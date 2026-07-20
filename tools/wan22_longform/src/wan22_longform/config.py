@@ -445,11 +445,23 @@ def _bridges_contract(
                     )
                 if from_segment == to_segment:
                     raise ConfigError(f"bridge {bridge_id} from_segment and to_segment must differ")
-        elif base is not None or first is not None or last is not None:
-            raise ConfigError(f"bridge {bridge_id} endpoints require strategy flf2v")
         else:
-            from_segment = None
-            to_segment = None
+            if base is not None or first is not None or last is not None:
+                raise ConfigError(f"bridge {bridge_id} endpoints require strategy flf2v")
+            from_segment = _string(
+                bridge.get("from_segment"), f"bridge {bridge_id} from_segment"
+            )
+            to_segment = _string(bridge.get("to_segment"), f"bridge {bridge_id} to_segment")
+            if from_segment not in shot_segments[shot_id]:
+                raise ConfigError(
+                    f"bridge {bridge_id} from_segment is not configured in shot {shot_id}"
+                )
+            if to_segment not in shot_segments[shot_id]:
+                raise ConfigError(
+                    f"bridge {bridge_id} to_segment is not configured in shot {shot_id}"
+                )
+            if from_segment == to_segment:
+                raise ConfigError(f"bridge {bridge_id} from_segment and to_segment must differ")
         bridge_shots[bridge_id] = BridgeContract(
             shot_id=shot_id,
             strategy=strategy,
@@ -488,6 +500,11 @@ def _assembly_order(
                 raise ConfigError(
                     f"assembly_order cannot include technical_smoke bridge: {shot_id}/{segment_id}"
                 )
+            if bridge.strategy != "flf2v":
+                raise ConfigError(
+                    f"assembly_order cannot include non-rendered {bridge.strategy} transition policy: "
+                    f"{shot_id}/{segment_id}"
+                )
             entries.append(key)
             continue
         raise ConfigError(
@@ -507,6 +524,21 @@ def _assembly_order(
         if entries[index - 1] != expected_left or entries[index + 1] != expected_right:
             raise ConfigError(
                 f"story FLF bridge {segment_id} must be directly between declared source and destination segments"
+            )
+    for bridge_id, bridge in bridge_shots.items():
+        if bridge.strategy == "flf2v":
+            continue
+        expected_left = (bridge.shot_id, bridge.from_segment)
+        expected_right = (bridge.shot_id, bridge.to_segment)
+        try:
+            index = entries.index(expected_left)
+        except ValueError as error:
+            raise ConfigError(
+                f"transition policy {bridge_id} must be directly between declared source and destination segments"
+            ) from error
+        if index == len(entries) - 1 or entries[index + 1] != expected_right:
+            raise ConfigError(
+                f"transition policy {bridge_id} must be directly between declared source and destination segments"
             )
 
 

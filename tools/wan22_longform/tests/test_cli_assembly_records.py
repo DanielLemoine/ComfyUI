@@ -190,6 +190,45 @@ class AssemblyRecordCliTests(unittest.TestCase):
             self.assertEqual(resumed["incomplete_assembly_records"], [])
             self.assertEqual(resumed["integrity_failures"][0]["assembly_id"], record.assembly_id)
 
+    def test_status_and_resume_report_a_malformed_root_without_hiding_an_intact_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001",))
+            project = load_project(manifest)
+            source = self._accepted_attempt(project, "S010_C001")
+            intact = create_assembly_record(
+                project,
+                "project",
+                inputs=(cli._accepted_assembly_input(source)[1],),
+                requested={"scope": "project", "targets": {}},
+            )
+            malformed = root / "assembly-records" / "project" / "assembly-corrupt"
+            malformed.mkdir(parents=True)
+            (malformed / "assembly.json").write_text('{"inputs": []}\n', encoding="utf-8")
+
+            status_stdout = io.StringIO()
+            with contextlib.redirect_stdout(status_stdout):
+                self.assertEqual(cli.main(["status", str(manifest)]), 0)
+            status = json.loads(status_stdout.getvalue())
+            reported = {entry["path"]: entry for entry in status["assembly_records"]}
+            self.assertEqual(reported[str(intact.path)]["state"], "planned")
+            malformed_status = reported[str(malformed)]
+            self.assertEqual(malformed_status["state"], "integrity_failed")
+            self.assertEqual(malformed_status["integrity"]["status"], "failed")
+            self.assertNotIn("recorded_state", malformed_status)
+
+            resume_stdout = io.StringIO()
+            with contextlib.redirect_stdout(resume_stdout):
+                self.assertEqual(cli.main(["resume", str(manifest)]), 0)
+            resumed = json.loads(resume_stdout.getvalue())
+            self.assertEqual(
+                [entry["assembly_id"] for entry in resumed["incomplete_assembly_records"]],
+                [intact.assembly_id],
+            )
+            self.assertEqual(
+                [entry["path"] for entry in resumed["integrity_failures"]], [str(malformed)]
+            )
+
     def test_assemble_shot_uses_explicit_story_bridge_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -230,6 +269,87 @@ class AssemblyRecordCliTests(unittest.TestCase):
                 [entry["segment_id"] for entry in record["inputs"]],
                 ["S010_C001", "B010", "S010_C002"],
             )
+
+    def test_assemble_shot_keeps_a_direct_transition_as_adjacent_segment_media(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001", "S010_C002"))
+            source = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            source["bridges"] = [
+                {
+                    "id": "D010",
+                    "shot_id": "S010",
+                    "strategy": "direct",
+                    "from_segment": "S010_C001",
+                    "to_segment": "S010_C002",
+                }
+            ]
+            manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+            project = load_project(manifest)
+            self._accepted_attempt(project, "S010_C001")
+            self._accepted_attempt(project, "S010_C002")
+
+            with self._assembly_execution_patch(), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["assemble-shot", str(manifest), "S010"]), 0)
+
+            record = json.loads(
+                (assembly_records(project)[0].path / "assembly.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                [entry["segment_id"] for entry in record["inputs"]],
+                ["S010_C001", "S010_C002"],
+            )
+
+    def test_policy_transitions_require_their_declared_segments_to_be_adjacent(self) -> None:
+        for strategy in ("direct", "intentional_cut", "external_control"):
+            with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                manifest = self._manifest(root, ("S010_C001", "S010_C002"))
+                source = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+                source["bridges"] = [
+                    {
+                        "id": "T010",
+                        "shot_id": "S010",
+                        "strategy": strategy,
+                        "from_segment": "S010_C001",
+                        "to_segment": "S010_C002",
+                    }
+                ]
+                source["assembly_order"] = [
+                    {"shot_id": "S010", "segment_id": "S010_C002"},
+                    {"shot_id": "S010", "segment_id": "S010_C001"},
+                ]
+                manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    ConfigError,
+                    "must be directly between declared source and destination segments",
+                ):
+                    cli.main(["assemble-shot", str(manifest), "S010"])
+
+    def test_assembly_order_rejects_a_non_rendered_transition_policy_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._manifest(root, ("S010_C001", "S010_C002"))
+            source = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+            source["bridges"] = [
+                {
+                    "id": "D010",
+                    "shot_id": "S010",
+                    "strategy": "direct",
+                    "from_segment": "S010_C001",
+                    "to_segment": "S010_C002",
+                }
+            ]
+            source["assembly_order"] = [
+                {"shot_id": "S010", "segment_id": "S010_C001"},
+                {"shot_id": "S010", "segment_id": "D010"},
+                {"shot_id": "S010", "segment_id": "S010_C002"},
+            ]
+            manifest.write_text(yaml.safe_dump(source, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaisesRegex(ConfigError, "non-rendered direct transition policy"):
+                cli.main(["assemble-project", str(manifest)])
 
     def test_assemble_project_binds_manifest_outputs_and_honors_explicit_rife_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 - 2026-07-19
+
+- Kept direct, intentional-cut, and external-control transitions as adjacent segment policies rather than fabricated bridge attempts or assembly media; only story FLF2V bridges are rendered media.
+- Made the runner reject a non-rendered policy in `assembly_order` and require its declared same-shot source and destination segments to be adjacent.
+- Made `status` and `resume` surface a malformed assembly-record root as a per-record `integrity_failed` payload while continuing to report intact siblings.
+
 ## 0.1.3 - 2026-07-19
 
 - Made `status` and `resume` read-only integrity checks: source video hashes, serialized plan evidence, boundary decisions, and finalized outputs now fail closed as `integrity_failed` instead of appearing as clean final records.

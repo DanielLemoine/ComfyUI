@@ -482,16 +482,19 @@ def validate_project(project: ProjectConfig) -> dict[str, int]:
     bridges = project.source.get("bridges", ())
     if not isinstance(bridges, (list, tuple)):
         raise RenderError("bridges must be a list")
-    if bridges:
+    renderable_bridges = []
+    for bridge in bridges:
+        if not isinstance(bridge, Mapping) or not isinstance(bridge.get("id"), str):
+            raise RenderError("each bridge requires a string id")
+        if bridge.get("strategy") == "flf2v":
+            renderable_bridges.append(bridge)
+    if renderable_bridges:
         bridge_project = _project_with_bridge_workflow(project)
         bridge_graph = build_api_graph(
             _project_workflow_graph(bridge_project), resolved, available_files
         )
         _validate_submission_graph(bridge_project, bridge_graph)
-        for bridge in bridges:
-            if not isinstance(bridge, Mapping) or not isinstance(bridge.get("id"), str):
-                raise RenderError("each bridge requires a string id")
-            bridge_count += 1
+        bridge_count = len(renderable_bridges)
     return {"bridges": bridge_count, "segments": segment_count}
 
 
